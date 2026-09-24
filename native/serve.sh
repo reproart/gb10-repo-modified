@@ -13,7 +13,7 @@
 cd "$(dirname "$0")" || exit 1
 
 # Where the venv lives: $GB10_WORKDIR/venv. `./serve.sh install` creates it;
-# it also carries the hf CLI and what HumanEval needs.
+# it also carries the hf CLI.
 export GB10_WORKDIR="$HOME/spark"
 
 # Required: the target checkpoint and the DFlash2 draft, downloaded once with

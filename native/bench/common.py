@@ -3,21 +3,18 @@
 Endpoint, model and key come from the environment so nothing is baked in, and
 one command shape measures any server:
 
-    GB10_BASE_URL=http://127.0.0.1:8888/v1 GB10_MODEL=qwen3.8-27b-sglang \\
-      python3 bench/perf.py
+    GB10_BASE_URL=http://127.0.0.1:8888/v1 python3 bench/perf.py
 
 Env:
   GB10_BASE_URL  OpenAI-compatible API root INCLUDING /v1
-                 (default http://127.0.0.1:8000/v1, the SparkStation gateway;
-                 the standalone SGLang server is :8888)
+                 (default http://127.0.0.1:8888/v1, ./serve.sh)
   GB10_MODEL     served model name; unset -> read from GB10_BASE_URL/models
                  ("default" if the server lists it, else the first entry)
-  GB10_API_KEY   bearer token (default dummy-key, SparkStation's default)
+  GB10_API_KEY   bearer token (default none; serve.sh's API_KEY if set)
   GB10_METRICS_URL  Prometheus endpoint of the ENGINE (default: GB10_BASE_URL
-                 without /v1, plus /metrics). Behind the SparkStation gateway
-                 point it at the model container, e.g.
-                 http://127.0.0.1:8001/metrics. SGLang needs --enable-metrics.
-                 Unreachable -> the metric columns just show n/a.
+                 without /v1, plus /metrics). Behind a gateway, point it at
+                 the engine itself. SGLang needs --enable-metrics (serve.sh
+                 sets it). Unreachable -> the metric columns just show n/a.
                  Its host also serves /get_server_info (SGLang), printed as
                  the run header.
   GB10_GPU_WATCH  1 / 0: sample GPU temperature, SM clock and throttle reasons
@@ -51,8 +48,8 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
-BASE_URL = os.environ.get("GB10_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
-API_KEY = os.environ.get("GB10_API_KEY", "dummy-key")
+BASE_URL = os.environ.get("GB10_BASE_URL", "http://127.0.0.1:8888/v1").rstrip("/")
+API_KEY = os.environ.get("GB10_API_KEY", "")
 
 CHAT_URL = f"{BASE_URL}/chat/completions"
 SERVER_ROOT = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL

@@ -1,75 +1,104 @@
-# Moving the weights to a new machine, offline
+# Moving the model cache to a new machine, offline
 
-Bring up a new DGX Spark (or rebuild this one) without downloading the
-checkpoints again, and without repeating the first boot's kernel compilation
-where that can be avoided.
+Bring up a new DGX Spark (or rebuild this one) without re-downloading
+~100 GB of checkpoints — and without repeating the one-off 77-minute FP8
+autotune boot.
 
 ## What lives where
 
-| Path | Contents | Carry it? |
+Three caches, three roles:
+
+| Path | Contents | Why it matters |
 |---|---|---|
-| `MODEL_DIR`, `DRAFT_DIR` (default `/models/...`) | the checkpoints the server loads | **yes**, this is the ~32 GB that matters |
-| `~/.cache/flashinfer`, `~/.triton` | JIT-compiled kernels and autotune results | optional: they are keyed to the exact FlashInfer / Triton / CUDA versions, so they help only a machine with the same lock file |
-| `~/spark/venv` | SGLang and its dependencies | no: rebuild it with `./serve.sh install`, which installs the exact versions from `requirements/` |
+| `~/spark/Qwen3.8-27B-SGLang-DGX-Spark/.cache/huggingface` | the HF cache `start.sh` mounts into the container (`$(pwd)`-relative) | **the one the server actually reads — and writes: a cold launch downloads straight into it** |
+| `~/.cache/huggingface` | the `hf` CLI cache, where a bare `hf download` lands | **not used by standalone launches** — a model prefetched here is invisible to the container and gets silently re-downloaded. Keep it only for `hf` CLI work or a SparkStation deployment |
+| `~/spark/Qwen3.8-27B-SGLang-DGX-Spark/.cache/triton` | flashinfer/triton autotune artifacts | without it, the first boots repeat kernel autotuning |
+
+Standalone launches fetch their own weights: with no prefetch, the first boot
+pulls the checkpoint into the mounted toolkit cache — convenient, but it hides
+a ~30 GB transfer inside a "slow boot" (a 77-min FP8 boot was exactly this).
+To control the timing, prefetch into the *mounted* cache:
+
+```bash
+HF_HOME=~/spark/Qwen3.8-27B-SGLang-DGX-Spark/.cache/huggingface \
+  ~/spark/venv/bin/hf download orcarouter/Qwen3.8-27B-Uncensored-FP8 \
+  --revision 0f3cdb83820a8190ffedaef5b29cf4a635e49b4d
+```
+
+Survey before packing — `-L` follows the snapshot symlinks, without it you
+measure the symlink stubs:
+
+```bash
+du -shL ~/spark/Qwen3.8-27B-SGLang-DGX-Spark/.cache/huggingface/hub/models--* 2>/dev/null
+du -shL ~/.cache/huggingface/hub/models--* 2>/dev/null
+```
+
+If the same model appears in both caches, that is the silent re-download at
+work; pack one copy and reclaim the other.
 
 ## Pack
 
-`hf download --local-dir` directories hold real files, so any copy works:
-
 ```bash
-tar -C / -cpf /media/root/2TB/gb10-models.tar models/Qwen3.8-27B-FP8 models/Qwen3.8-27B-DFlash2
-# optional, same lock file on both machines only:
-# tar -C "$HOME" -cpf /media/root/2TB/gb10-kernels.tar .cache/flashinfer .triton
+tar -C "$HOME" -cpf /media/root/2TB/gb10-caches.tar \
+    spark/Qwen3.8-27B-SGLang-DGX-Spark/.cache
+# optional: the CLI/SparkStation cache — add only if you use those
+# tar -C "$HOME" -rpf /media/root/2TB/gb10-caches.tar .cache/huggingface
 ```
 
-Keep each directory's `.cache/huggingface/` subdirectory: it records the
-revision the files came from, which the server prints at startup.
-
-**If `serve.sh` points into an HF cache** (`.../snapshots/<sha>`), the files
-there are symlinks into `../../blobs/`. Either carry the whole
-`models--<org>--<name>` directory with `tar`, `rsync -a` or `cp -a` (never
-`cp -rL` on the whole thing, which doubles the size and breaks the layout),
-or turn the snapshot into a plain directory on the way:
-
-```bash
-mkdir -p /models/Qwen3.8-27B-FP8
-cp -rL ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7af6b5689d5dd426a76e0bc077eb5ca20a/. \
-       /models/Qwen3.8-27B-FP8/
-```
-
-A directory made that way has no revision record, so the server reports
-`revision unknown`; keep a note of it. For the cache layout the target
-filesystem must support symlinks: ext4/APFS/btrfs are fine, exFAT/FAT are not
-(`stat -f -c %T /media/root/2TB` to check).
+- `tar`, `rsync -a`, `cp -a` all preserve the cache's **relative** symlinks
+  (`snapshots/<sha>/* -> ../../blobs/<hash>`). Never dereference — `cp -rL`
+  doubles the size and breaks the layout.
+- The target filesystem must support symlinks: ext4/APFS/btrfs are fine,
+  exFAT/FAT are not (`stat -f -c %T /media/root/2TB` to check).
+- Expect ~100+ GB with several checkpoints; the `du -shL` pass above is the
+  real number.
 
 ## Restore
 
 ```bash
-sudo mkdir -p /models && sudo chown "$USER" /models
-tar -C / -xpf /media/root/2TB/gb10-models.tar
-./serve.sh install      # the venv
+mkdir -p "$HOME"
+tar -C "$HOME" -xpf /media/root/2TB/gb10-caches.tar
 ```
 
-None of these checkpoints needs an `hf` token.
+The caches are path-independent internally, but `start.sh` mounts
+`$(pwd)/.cache/...`, so the toolkit directory must live where you launch it
+from. None of these checkpoints needs an `hf` token.
 
-## Verify
+## Verify — cheap first, then full
 
-The server's startup lines name each directory and its revision; compare
-them with the table below before trusting a benchmark. With network,
-re-running the `hf download --revision <sha> --local-dir <dir>` command from
-the README is an integrity check: it downloads nothing when the directory is
-complete and fills in what is missing when not.
+With network: an integrity check that downloads **nothing** when the copy is
+complete — `hf` prints the snapshot path and exits.
 
-`HF_OFFLINE=1` (the default in `serve.sh`) keeps the server off the Hub, so a
-boot on a machine without network behaves the same as one with it.
+```bash
+~/spark/venv/bin/hf download RadixArk/Qwen3.8-27B-NVFP4 \
+  --revision 554ebba9b5f1b79dc11246341960360e6ef05ef4
+```
+
+Offline: boot with **pinned revisions** and no network. The pin is what makes
+offline resolution deterministic — `--revision <sha>` resolves straight to the
+local snapshot, while an unpinned load consults the repo's default branch.
+The draft model resolves the same way (its revision is pinned inside
+`start-dflash.sh`), so it must be in the transferred cache — it is, if you
+packed the cache whole.
+
+While verifying, check provenance too: the revision you *served* is the one
+whose snapshot directory you *see*, which is not always the one you think —
+see the README trap about the 2026-08-22 default-branch move.
+
+```bash
+ls ~/spark/Qwen3.8-27B-SGLang-DGX-Spark/.cache/huggingface/hub/models--*/snapshots/
+```
 
 ## Revisions used around this repo
 
 | Checkpoint | Revision | Note |
 |---|---|---|
-| `Qwen/Qwen3.8-27B-FP8` | `017b9c7a…` | the default target; the FP8 leg in `results/` |
-| `RadixArk/Qwen3.8-27B-NVFP4` | `554ebba9…` | behind every earlier table in `results/` |
+| `RadixArk/Qwen3.8-27B-NVFP4` | `554ebba9…` | behind every published table in `results/` |
 | `RadixArk/Qwen3.8-27B-NVFP4` | `319f741c…` | upstream default since 2026-08-22; the 2026-08-27 FP8-comparison leg |
+| `Qwen/Qwen3.8-27B-FP8` | `017b9c7a…` | the FP8 leg |
 | `orcarouter/Qwen3.8-27B-Uncensored-NVFP4` | `69d21348…` | side measurement |
 | `orcarouter/Qwen3.8-27B-Uncensored-FP8` | `0f3cdb83…` | not benchmarked here |
-| `z-lab/Qwen3.8-27B-DFlash2` (draft) | `50307d4c…` | `incoai/Qwen3.8-27B-DFlash2` mirrors the same weights |
+| `z-lab/Qwen3.8-27B-DFlash2` (draft) | `50307d4c…` | pinned by `start-dflash.sh` |
+
+Carry the snapshot you intend to pin. If the pinned sha has no local snapshot
+directory, the offline load will not find it — download that revision first.

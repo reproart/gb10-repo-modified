@@ -103,11 +103,11 @@ def main():
     for n in args.streams:
         done, errors, wall, m0, m1, peak, gpu = run_level(n, args.ctx, args.gen)
         if restarted(m0, m1):
-            print(f"{n:>7}  !! the engine restarted during this row (OOM, or the supervisor's "
-                  "health probe?) — its numbers are not comparable")
+            print(f"{n:>7}  !! the engine restarted during this row (OOM or earlyoom, "
+                  "then a systemd restart?) — its numbers are not comparable")
         if errors:
             print(f"{n:>7}  {len(errors)} request(s) failed, e.g. {errors[0][:120]}"
-                  " — check `docker logs` (OOM, or the supervisor restarted the model?)")
+                  " — check the server log (journalctl -u gb10-sglang; earlyoom or OOM?)")
             if not done:
                 continue
         ttfts = [r["ttft"] for r in done if r["ttft"] is not None]

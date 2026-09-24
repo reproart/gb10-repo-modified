@@ -4,6 +4,13 @@ Resolved build configuration for every number in
 [`RESULTS.md`](RESULTS.md). Recorded 2026-08-24 from the machine that produced
 them.
 
+> **Historical: the Docker build.** This describes the patched SGLang image
+> the published numbers came from. The recipe now installs stock SGLang
+> natively (README, Quick start); that install is not benchmarked yet. Record
+> it with `./serve.sh manifest > results/BUILD-MANIFEST-native.md`,
+> which writes a different, native format. This file stays as the record of
+> what produced `RESULTS.md`.
+
 Tags and default branches move; digests and commits do not. If your numbers
 differ from ours, compare this table first — a mismatch here explains more than
 any amount of re-benchmarking.
@@ -46,7 +53,9 @@ build date. If `lmsysorg/sglang:qwen38-27b` is republished, a rebuild produces a
 different image than the one benchmarked here, and nothing in the build will
 warn you.
 
-Regenerate this table with [`scripts/build-manifest.sh`](../scripts/build-manifest.sh).
+The original generator, which read the toolkit checkout and Docker images, is
+part of the Docker-based project this one grew out of
+([reproart/gb10-repo-modified](https://github.com/reproart/gb10-repo-modified), `scripts/build-manifest.sh`).
 
 ## Image note
 

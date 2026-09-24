@@ -2,6 +2,14 @@
 
 One ASUS DGX Spark, August 2026, box otherwise idle for every figure.
 
+> **Build.** Every figure here was measured on the Docker build: the
+> MiaAI-Lab toolkit's patched SGLang image, see
+> [BUILD-MANIFEST.md](BUILD-MANIFEST.md). The recipe now runs stock SGLang
+> 0.5.20 natively (`serve.sh`), carrying over the serving flags the
+> toolkit passed except `--mem-fraction-static`: 0.80 instead of 0.85. Expect
+> the same ordering; re-measure before quoting absolute numbers for the
+> native build.
+
 **Compute** GB10, 20 cores, 128 GB unified, 916 GB NVMe. Ubuntu 24.04,
 kernel 6.17.0-1031-nvidia, aarch64. Driver 580.173.02, CUDA 13.0.
 Docker 29.2.1, nvidia-container-toolkit 1.20 via CDI.

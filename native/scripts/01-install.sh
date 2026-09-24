@@ -5,7 +5,7 @@
 #   ./serve.sh install
 #
 # Everything goes into one venv, $GB10_WORKDIR/venv (default ~/spark/venv):
-# SGLang, the hf CLI, and pandas/pyarrow for HumanEval. Re-running is safe;
+# SGLang and the hf CLI. Re-running is safe;
 # an existing venv is updated in place.
 #
 # On aarch64 + Python 3.12 (DGX OS) it installs the exact versions in
