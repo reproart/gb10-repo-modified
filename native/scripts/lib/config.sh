@@ -1,0 +1,32 @@
+# shellcheck shell=bash disable=SC2034  # variables are used by the scripts that source this
+# Shared defaults for the scripts in scripts/. Source it, don't run it.
+#
+# Variables already in the environment win: ./serve.sh in the repo root
+# exports the settings, and anything it leaves unset gets the default here.
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+GB10_WORKDIR="${GB10_WORKDIR:-$HOME/spark}"
+VENV="$GB10_WORKDIR/venv"
+
+# Local checkpoint directories (README, "Weights"): an `hf download
+# --local-dir` target, or a snapshot directory inside an HF cache.
+MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
+DRAFT_DIR="${DRAFT_DIR:-/models/Qwen3.8-27B-DFlash2}"
+
+# The Hub commit a checkpoint directory holds, or "unknown". A cache snapshot
+# is named after it; `hf download --local-dir` records it per file in
+# .cache/huggingface/download/<file>.metadata (first line).
+revision_of() {
+  local dir="${1%/}" meta
+  if [[ "$dir" =~ /snapshots/([0-9a-f]{40})$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return
+  fi
+  meta="$dir/.cache/huggingface/download/config.json.metadata"
+  if [ -r "$meta" ]; then
+    head -1 "$meta"
+  else
+    echo unknown
+  fi
+}

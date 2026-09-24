@@ -20,6 +20,13 @@ Reproduce with [`bench/`](bench/). Full data in
 build inputs behind those numbers are in
 [`results/BUILD-MANIFEST.md`](results/BUILD-MANIFEST.md).
 
+> **Without Docker:** SGLang 0.5.20 supports DFlash2 upstream, so the same
+> recipe now runs on stock SGLang installed with pip, as a systemd service.
+> That version lives in [`native/`](native/), a self-contained project (no
+> SparkStation, no patched image, no HumanEval harness) that can be split off
+> on its own. It is not benchmarked yet; the numbers here are from this
+> Docker build.
+
 ## Ingredients
 
 | Component | Pin |
