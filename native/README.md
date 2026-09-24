@@ -169,6 +169,7 @@ commit on top of it.
 | `MEM_FRACTION` | `0.80` | see the earlyoom trap |
 | `CHUNKED_PREFILL` | `8192` | the cookbook uses 2048: smoother decode under mixed load |
 | `PREFILL_CUDA_GRAPH` | `0` | 1 turns prefill CUDA graphs on (untested here) |
+| `JIT_JOBS` | `2` | parallel compiles for kernels built on first boot; see the traps |
 | `API_KEY` | none | `"$(cat ~/.qwen-api-key)"` keeps the secret out of git |
 | `HF_OFFLINE` | `1` | no Hub access while serving |
 | `CPUSET` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
@@ -372,6 +373,13 @@ Each of these cost real time.
   headers; the Docker image had them, DGX OS doesn't:
   `sudo apt install python3.12-dev`. `00-check-host.sh`, `install` and
   `serve.sh` now check for them (and for a C compiler) before anything else.
+- **`Ninja build failed`, compilers `Killed` (code 137), during the first
+  CUDA-graph capture.** FlashInfer compiles the CUTLASS FP4 GEMMs on first use,
+  after the server already holds `MEM_FRACTION` of memory, and ninja defaults
+  to one job per core. Twenty-odd `nvcc` on those templates exhaust the ~23 GB
+  left, and the kernel kills them. `JIT_JOBS` (default 2) caps the parallelism;
+  what did compile is cached, so a rerun only builds the rest, and later boots
+  build nothing.
 - **`FileNotFoundError: 'ninja'` while capturing CUDA graphs.** FlashInfer's
   JIT runs a bare `ninja`, which lives in the venv's `bin/`; the Docker image
   had its venv active, a plain `python` from the venv does not. The server is

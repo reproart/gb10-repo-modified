@@ -67,6 +67,8 @@ if [ -z "${CUDA_HOME:-}" ] && [ -x /usr/local/cuda/bin/nvcc ]; then
 fi
 [ -n "${CUDA_HOME:-}" ] && export PATH="$CUDA_HOME/bin:$PATH"
 export PYTHONUNBUFFERED=1
+# FlashInfer's JIT passes MAX_JOBS to ninja as -j (see JIT_JOBS in serve.sh).
+export MAX_JOBS="${JIT_JOBS:-${MAX_JOBS:-2}}"
 [ "$HF_OFFLINE" = 1 ] && export HF_HUB_OFFLINE=1
 
 args=(

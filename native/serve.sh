@@ -86,6 +86,15 @@ export CHUNKED_PREFILL=8192
 # GB10 cell. Not benchmarked here.
 export PREFILL_CUDA_GRAPH=0
 
+# Parallel compiler jobs for kernels built on first use (FlashInfer JIT, e.g.
+# the CUTLASS FP4 GEMMs, while CUDA graphs are captured). They compile after
+# the server has taken MEM_FRACTION of memory, and each nvcc on those templates
+# takes several GB: left unset, ninja runs one per core, ~22 at once, and the
+# kernel kills them (exit 137, "Capture cuda graph failed: Ninja build
+# failed"). 2 fits in what is left at 0.80; the first boot is slower, later
+# ones load the cached result (~/.cache/sglang/.cache/flashinfer).
+export JIT_JOBS=2
+
 # Context: 262144 is the model's native length.
 export CONTEXT_LENGTH=262144
 
