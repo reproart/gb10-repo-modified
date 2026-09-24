@@ -329,13 +329,34 @@ The accept lengths come from different SGLang builds and are not compared.
 Two things to re-check:
 
 - **The 8K prefill point, 1,262 tok/s**, is lower than both the 2K (2,073)
-  and the trend. The warmup's longest prompt is ~3K tokens, so 8K was
-  probably the first extend at that size and paid a one-off kernel compile
-  inside its TTFT. `perf.py --only prefill` on the warm server settles it.
+  and the trend. It came back at 1,333 on a second boot (below), so it is
+  not a one-off kernel compile. It sits at the low edge of what the
+  finetune's 25–40% prefill penalty predicts from RadixArk's 9.7K figures
+  (1,300–2,000 tok/s).
 - **83 °C at 101K prefill**, with no throttle reported and no suspend,
   against 74 °C sustained prefill in the Docker-era measurements (at 121K).
   Room temperature, the box, or the 80 °C suspend figure under "Thermals":
   one run cannot tell which, but the 80 °C figure was not a hard limit here.
+
+### Draft 16 / cap 16 on the native build
+
+Same finetune and build, next boot, only `DRAFT_TOKENS` and `MAX_RUNNING`
+changed (the `qwen3.8-27b-single` profile; GDN pool 80).
+
+| | 10 / 32 | 16 / 16 | |
+|---|---:|---:|---:|
+| Single-stream decode | 56.4 | **70.9** tok/s | **+26%** |
+| `spec_accept_length` | 7.7–8.6 | 8.7–9.8 | |
+| TTFT, short prompt | 239 ms | 246 ms | |
+| Aggregate @ 16 streams | 439.6 | 375.4 tok/s | −15% |
+| Peak aggregate | **558.0 @ 32** | 375.4 @ 16 | −33% |
+| Prefill, 8K prompt | 1,262 | 1,333 tok/s | |
+
+The direction and size match the Docker-era sweep (draft 10 → 16: +20%
+single-stream, −11.5% aggregate at 16 streams), and +26% is well outside the
+~8% boot-to-boot spread. The 10 / 32 single-stream figure repeated at 56.4 on
+a later run of the same boot. At 24 and 32 streams the 16 / 16 config queues
+against its cap of 16, as expected.
 
 ## Reference comparison
 

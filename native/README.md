@@ -289,6 +289,11 @@ For a single interactive user, `MAX_RUNNING=4` gives the memory back to KV at
 over 8; a second machine measured +41.6%), **10 for concurrent serving**, the
 default here. You cannot have both.
 
+On the native build, with the Uncensored NVFP4 finetune: **56.4 → 70.9
+tok/s** single-stream going from 10 / 32 to 16 / 16, peak aggregate 558 → 375
+([RESULTS](results/RESULTS.md#draft-16--cap-16-on-the-native-build)). The
+`qwen3.8-27b-single` profile is that setting: `./serve.sh qwen3.8-27b-single`.
+
 Move `MAX_RUNNING` with it. The DFlash2 verify buffer
 (`intermediate_ssm_state_cache` in the boot log) costs ~70 MB per running
 request per draft token: 23.2 GB at 32 x 10 on the native build, ~37 GB at
@@ -324,7 +329,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b.sh  qwen3.8-27b.sh
+ls models/                        # gemma4-31b.sh  qwen3.8-27b.sh  qwen3.8-27b-single.sh
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest
@@ -486,7 +491,8 @@ Each of these cost real time.
 
 ```
 serve.sh       the launcher: machine knobs, profile choice; also `install` and `manifest`
-models/        one profile per model: qwen3.8-27b.sh (this README), gemma4-31b.sh
+models/        one profile per model: qwen3.8-27b.sh (this README), its
+               single-stream variant qwen3.8-27b-single.sh, gemma4-31b.sh
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
