@@ -31,6 +31,12 @@ What the columns mean (and the traps they avoid):
     before anything is measured; it runs before any section, also with
     `--only <section>`; `--only warmup` does just that (useful right after a
     server start), and `--no-warmup` measures the cold server on purpose.
+  * GPU: peak temperature / lowest SM clock per section or row from the local
+    nvidia-smi (GB10_GPU_WATCH), flagged on throttling or near the 80 °C
+    suspend threshold. A server restart mid-run is flagged too.
+  * the run header records the engine's effective settings (SGLang
+    /get_server_info: revision, draft tokens, request cap ...), and the whole
+    output is saved under results/runs/ (GB10_RUN_DIR).
   * PLE ms/op (patched vLLM only, GB10_METRICS_PORT) comes from the
     engine-side metrics sidecar as a delta around each section; each closing
     read waits one sidecar refresh (~6 s per row).
@@ -43,8 +49,9 @@ import time
 import uuid
 
 import common
-from common import (CODE_PROMPT, PeakWatch, chat, decode_rate, delta, metrics, ple_summary,
-                    sidecar, spec_summary, unique_prompt)
+from common import (CODE_PROMPT, GpuWatch, PeakWatch, cache_hit_significant, calibrate, chat,
+                    decode_rate, delta, metrics, ple_summary, restarted, sidecar, spec_summary,
+                    unique_prompt)
 
 
 def _med(xs):
@@ -102,10 +109,11 @@ def single_stream(n=5, max_tokens=700):
     print(f"## 2. Single-stream decode (code, thinking off, up to {max_tokens} tokens)")
     rows = []
     s0 = sidecar(settle=True)
-    for _ in range(n):
-        m0 = metrics()
-        r = chat(CODE_PROMPT, max_tokens, stream=True)
-        rows.append((r, spec_summary(m0, metrics())))
+    with GpuWatch() as gpu:
+        for _ in range(n):
+            m0 = metrics()
+            r = chat(CODE_PROMPT, max_tokens, stream=True)
+            rows.append((r, spec_summary(m0, metrics())))
     for r, spec in rows:
         print(f"   {r['completion_tokens']:>4} tok  decode {_fmt(decode_rate(r), '.1f')} tok/s  "
               f"e2e {r['completion_tokens'] / r['e2e']:.1f} tok/s  ttft {_fmt(r['ttft'], '.2f', 's')}"
@@ -117,7 +125,8 @@ def single_stream(n=5, max_tokens=700):
     ple = ple_summary(s0, sidecar(settle=True))
     print(f"   MEDIAN decode {_fmt(_med(decode_rate(r) for r, _ in rows), '.1f')} tok/s   "
           f"e2e {statistics.median(r['completion_tokens'] / r['e2e'] for r, _ in rows):.1f} tok/s"
-          f"{'   ' + ple if ple else ''}\n")
+          f"{'   ' + ple if ple else ''}")
+    print(f"   {gpu}\n" if str(gpu) else "")
 
 
 def concurrency(levels, tokens=300):
@@ -130,10 +139,14 @@ def concurrency(levels, tokens=300):
     for n in levels:
         m0, s0 = metrics(), s_prev
         # uuid first: unique from the first token, no prefix reuse
-        with PeakWatch() as watch:
+        with PeakWatch() as watch, GpuWatch() as gpu:
             done, errors, wall = _parallel(n, lambda i: chat(
                 f"[{uuid.uuid4().hex[:8]}] {CODE_PROMPT} Variant {i}.", tokens, stream=True))
         m1 = metrics()
+        cold = restarted(m0, m1)
+        if cold:
+            print(f"   {n:>7}  !! the engine restarted during this row — its numbers "
+                  "(and the next rows') are cold-server numbers")
         s1 = s_prev = sidecar(settle=True)
         ops = delta(s0, s1, "ple_ops")
         ple = delta(s0, s1, "ple_op_ms") / ops if ops else None
@@ -155,11 +168,13 @@ def concurrency(levels, tokens=300):
         # Waiting = not yet scheduled: more streams than the running-request
         # cap, or the per-step token budget taken by other requests' prefill.
         flag = "  <- queued (request cap / prefill budget)" if queued else ""
-        if agg > peak[1] and not flag:
+        if agg > peak[1] and not flag and not cold:
             peak = (n, agg)
         print(f"   {n:>7} {wall:>8.1f} {agg:>7.1f} t/s {_fmt(_med(decode_rate(r) for r in done), '>9.1f')} t/s "
               f"{_fmt(_med(ttfts), '>8.2f', 's')} {_fmt(max(ttfts) if ttfts else None, '>8.2f', 's')} "
               f"{queue_col:>9} {_fmt(ple, '>10.1f')}{flag}")
+        if str(gpu):
+            print(f"   {'':>7} {gpu}")
         time.sleep(3)
     if peak[0]:
         print(f"\n   peak aggregate without queueing: {peak[1]:.1f} tok/s at {peak[0]} streams\n")
@@ -172,7 +187,9 @@ def prefill(targets):
     s_prev = sidecar(settle=True)
     for target in targets:
         m0, s0 = metrics(), s_prev
-        r = chat(unique_prompt(uuid.uuid4().hex, target), 8, stream=True)
+        prompt = unique_prompt(uuid.uuid4().hex, target)
+        with GpuWatch() as gpu:
+            r = chat(prompt, 8, stream=True)
         hits = r["cached_tokens"]
         if hits is None:
             hits = delta(m0, metrics(), "pc_hits")
@@ -183,8 +200,8 @@ def prefill(targets):
         cached = "n/a" if hits is None else f"{hits:.0f}"
         print(f"   prompt {r['prompt_tokens']:>7} tok (cached {cached:>5}) -> "
               f"TTFT {_fmt(r['ttft'], '>6.2f', 's')}   prefill ~{_fmt(rate, '>6.0f')} tok/s"
-              f"{'   ' + ple if ple else ''}")
-        if hits:
+              f"{'   ' + ple if ple else ''}{'   ' + str(gpu) if str(gpu) else ''}")
+        if cache_hit_significant(hits, r["prompt_tokens"]):
             print("   !! prefix-cache hit on a unique prompt — the rate above excludes it")
     print()
 
@@ -201,16 +218,16 @@ def main():
                     help="skip the warmup pass (measure first-use JIT stalls on purpose)")
     args = ap.parse_args()
 
-    print(f"endpoint {common.BASE_URL}  model {common.MODEL}")
-    if not metrics():
-        print(f"note: {common.METRICS_URL} unreachable — queue / spec / prefix-cache "
-              "columns show n/a (set GB10_METRICS_URL; SGLang needs --enable-metrics)")
+    saved = common.save_output("perf")
+    common.print_header()
     print("warmup...", flush=True)
     try:
-        chat("hi", 8)
+        chat("hi", 8, stream=True)  # streamed: also proves usage comes back in streams
     except Exception as e:  # noqa: BLE001
         sys.exit(f"warmup request failed: {e}")
+    calibrate()  # before any measured interval, also with --no-warmup
     print("ok\n")
+    m_start = metrics()
     # Warm up before any measured section (a cold server skews whichever
     # section runs first), unless --no-warmup asks for the cold numbers.
     if args.only == "warmup" or not args.no_warmup:
@@ -224,6 +241,11 @@ def main():
     for name, fn in sections.items():
         if args.only in (None, name):
             fn()
+    if restarted(m_start, metrics()):
+        print("!! the engine restarted during this run — see the rows flagged above; "
+              "re-run on a stable server before quoting anything")
+    if saved:
+        print(f"saved -> {saved}")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,13 @@ Env:
                  point it at the model container, e.g.
                  http://127.0.0.1:8001/metrics. SGLang needs --enable-metrics.
                  Unreachable -> the metric columns just show n/a.
+                 Its host also serves /get_server_info (SGLang), printed as
+                 the run header.
+  GB10_GPU_WATCH  1 / 0: sample GPU temperature, SM clock and throttle reasons
+                 with the local nvidia-smi (default: on when GB10_BASE_URL is
+                 this host and nvidia-smi exists)
+  GB10_RUN_DIR   where perf.py / longctx.py save a copy of their output
+                 (default results/runs; empty = don't save)
   GB10_METRICS_PORT  optional engine-side metrics sidecar on the same host
                  (PLE counters of a patched vLLM; default 0 = off)
   GB10_METRICS_INTERVAL  the sidecar's refresh period (default 5 s); settled
@@ -29,11 +36,15 @@ Token counts always come from the server's `usage`, never from counting SSE
 events: DFlash2 emits ~3.75 tokens per event (MTP several too), so
 event-counting inflates the rate by roughly 4x.
 """
+import datetime
 import itertools
 import json
 import os
 import random
 import re
+import shutil
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -46,6 +57,7 @@ API_KEY = os.environ.get("GB10_API_KEY", "dummy-key")
 CHAT_URL = f"{BASE_URL}/chat/completions"
 SERVER_ROOT = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
 METRICS_URL = os.environ.get("GB10_METRICS_URL") or f"{SERVER_ROOT}/metrics"
+ENGINE_ROOT = METRICS_URL[:-len("/metrics")] if METRICS_URL.endswith("/metrics") else SERVER_ROOT
 HEADERS = {"Content-Type": "application/json"}
 if API_KEY:
     HEADERS["Authorization"] = f"Bearer {API_KEY}"
@@ -101,10 +113,14 @@ _TOK_PER_WORD = [None]
 _TOK_LOCK = threading.Lock()
 
 
-def _tokens_per_word():
+def calibrate():
     """Calibrate words -> tokens once from the server's own `usage`: the prompt
     token difference between a 2000-word and a one-word request. Works on any
-    OpenAI-compatible server (no /tokenize needed); falls back to 2.0."""
+    OpenAI-compatible server (no /tokenize needed); falls back to 2.0.
+
+    Call it before anything is measured: done lazily, its two requests (the
+    2000-word one is the same text every run, so a prefix-cache hit on repeat
+    runs) would land inside the first measured interval."""
     with _TOK_LOCK:
         if _TOK_PER_WORD[0] is None:
             sample = " ".join(random.Random(7).choices(_VOCAB, cum_weights=_ZIPF_CUM, k=2000))
@@ -126,9 +142,15 @@ def unique_prompt(seed, approx_tokens, tail="Reply with only: OK"):
     Zipf-drawn words from a 30k-word vocabulary.
     """
     rng = random.Random(seed)
-    words = int(approx_tokens / _tokens_per_word())
+    words = int(approx_tokens / calibrate())
     body = " ".join(rng.choices(_VOCAB, cum_weights=_ZIPF_CUM, k=words))
     return f"Document {seed}. Below is a log excerpt.\n\n{body}\n\n{tail}"
+
+
+def cache_hit_significant(hits, prompt_tokens):
+    """True when a prefix-cache hit on a unique prompt is more than the shared
+    chat-template head (a handful of tokens every prompt starts with)."""
+    return bool(hits) and hits > max(64, 0.01 * (prompt_tokens or 0))
 
 
 # ---- chat --------------------------------------------------------------------
@@ -187,6 +209,11 @@ def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=
                     d = json.loads(payload)
                 except ValueError:
                     continue
+                if d.get("error"):
+                    # SGLang / vLLM / LiteLLM report a mid-stream failure as an
+                    # SSE event; ignoring it would count a dead request as a
+                    # successful one with zero tokens.
+                    raise RuntimeError(f"stream error: {json.dumps(d['error'])[:300]}")
                 for ch in d.get("choices") or []:
                     delta = ch.get("delta") or {}
                     if ttft is None and (delta.get("content") or delta.get("reasoning_content")
@@ -195,6 +222,9 @@ def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=
                     finish = ch.get("finish_reason") or finish
                 if d.get("usage"):
                     usage = d["usage"]
+    if not usage:
+        raise RuntimeError("response carried no `usage` — token counts would read as 0 "
+                           "(does the endpoint pass stream_options.include_usage through?)")
     details = usage.get("prompt_tokens_details") or {}
     return {
         "e2e": time.perf_counter() - t0,
@@ -236,6 +266,7 @@ _GAUGES = {
     "running": ("vllm:num_requests_running", "sglang:num_running_reqs"),
     "waiting": ("vllm:num_requests_waiting", "sglang:num_queue_reqs"),
     "accept_len": ("sglang:spec_accept_length",),
+    "start_time": ("process_start_time_seconds",),
 }
 
 
@@ -267,6 +298,12 @@ def delta(m0, m1, key):
     if key in m0 and key in m1:
         return m1[key] - m0[key]
     return None
+
+
+def restarted(m0, m1):
+    """True when the engine process changed between two metrics() reads — a
+    supervisor restart mid-run makes everything after it a cold-server number."""
+    return "start_time" in m0 and "start_time" in m1 and m1["start_time"] > m0["start_time"] + 1
 
 
 def spec_summary(m0, m1):
@@ -305,6 +342,161 @@ class PeakWatch:
     def __exit__(self, *exc):
         self._stop.set()
         self._thread.join()
+
+
+# ---- run header ---------------------------------------------------------------
+
+_SERVER_KEYS = (
+    "version", "model_path", "revision", "speculative_algorithm",
+    "speculative_draft_model_path", "speculative_draft_model_revision",
+    "speculative_num_draft_tokens", "max_running_requests", "max_mamba_cache_size",
+    "cuda_graph_max_bs", "max_total_tokens", "chunked_prefill_size", "context_length",
+    "mem_fraction_static", "kv_cache_dtype", "mamba_ssm_dtype",
+)
+
+
+def server_info():
+    """The engine's effective settings (SGLang /get_server_info), {} elsewhere.
+
+    Recorded with every run because the README's worst traps are invisible in
+    the numbers: which checkpoint revision actually loaded, and which draft
+    token count (16 wins single-stream, 10 wins concurrency) was in effect."""
+    try:
+        d = json.loads(_get(f"{ENGINE_ROOT}/get_server_info", timeout=10))
+    except Exception:  # noqa: BLE001 - optional
+        return {}
+    return {k: d[k] for k in _SERVER_KEYS if d.get(k) is not None}
+
+
+def print_header(extra=""):
+    print(f"endpoint {BASE_URL}  model {MODEL}{extra}")
+    print(f"started {datetime.datetime.now(datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}")
+    info = server_info()
+    if info:
+        print("server " + "  ".join(f"{k}={v}" for k, v in info.items()))
+    else:
+        print(f"server settings unknown ({ENGINE_ROOT}/get_server_info unreachable)")
+    if not metrics():
+        print(f"note: {METRICS_URL} unreachable — queue / spec / prefix-cache "
+              "columns show n/a (set GB10_METRICS_URL; SGLang needs --enable-metrics)")
+    if gpu_watch_enabled():
+        print("GPU: sampling the local nvidia-smi (GB10_GPU_WATCH=0 to disable)")
+
+
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for st in self.streams:
+            st.write(data)
+
+    def flush(self):
+        for st in self.streams:
+            st.flush()
+
+
+def save_output(script):
+    """Mirror stdout into GB10_RUN_DIR/<UTC time>-<script>-<model>.txt."""
+    run_dir = os.environ.get("GB10_RUN_DIR",
+                             os.path.join(os.path.dirname(__file__), "..", "results", "runs"))
+    if not run_dir:
+        return None
+    os.makedirs(run_dir, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = os.path.join(run_dir, f"{stamp}-{script}-{re.sub(r'[^A-Za-z0-9._-]', '_', MODEL)}.txt")
+    sys.stdout = _Tee(sys.stdout, open(path, "w", buffering=1))
+    return os.path.abspath(path)
+
+
+# ---- GPU temperature / clocks (local nvidia-smi) -------------------------------
+
+# Throttle bits that mean the GPU was slowed: SW power cap, HW slowdown,
+# SW / HW thermal slowdown, HW power brake. Idle (0x1) and app-clock (0x2)
+# settings are normal between requests.
+_THROTTLE_MASK = 0x4 | 0x8 | 0x40 | 0x80 | 0x100
+# RESULTS.md: the box suspends at 80 °C; sustained prefill measured 74 °C.
+GPU_TEMP_WARN = 78
+_GPU_QUERIES = ("temperature.gpu,clocks.sm,clocks_event_reasons.active",
+                "temperature.gpu,clocks.sm,clocks_throttle_reasons.active")
+_GPU_QUERY = [None]
+
+
+def gpu_watch_enabled():
+    flag = os.environ.get("GB10_GPU_WATCH")
+    if flag is not None:
+        return flag == "1" and shutil.which("nvidia-smi") is not None
+    local = urlparse(BASE_URL).hostname in ("127.0.0.1", "localhost", "::1")
+    return local and shutil.which("nvidia-smi") is not None
+
+
+def gpu_sample():
+    """(temp °C, SM MHz, throttle bits) of GPU 0, or None."""
+    for q in ([_GPU_QUERY[0]] if _GPU_QUERY[0] else _GPU_QUERIES):
+        try:
+            out = subprocess.run(["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=10)
+        except Exception:  # noqa: BLE001 - optional
+            return None
+        if out.returncode:
+            continue
+        _GPU_QUERY[0] = q
+
+        def num(x, base=10):
+            try:
+                return int(float(x)) if base == 10 else int(x, base)
+            except ValueError:
+                return None
+        f = [x.strip() for x in out.stdout.splitlines()[0].split(",")]
+        return num(f[0]), num(f[1]), num(f[2], 16)
+    return None
+
+
+class GpuWatch:
+    """Peak temperature, lowest SM clock and any throttle bits while active;
+    a no-op when disabled. str() gives a short summary for a table row."""
+
+    def __init__(self, every=2.0):
+        self.enabled = gpu_watch_enabled()
+        self.every, self.max_temp, self.min_clock, self.reasons = every, None, None, 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _take(self):
+        s = gpu_sample()
+        if not s:
+            return
+        t, c, r = s
+        if t is not None:
+            self.max_temp = t if self.max_temp is None else max(self.max_temp, t)
+        if c is not None:
+            self.min_clock = c if self.min_clock is None else min(self.min_clock, c)
+        self.reasons |= (r or 0) & _THROTTLE_MASK
+
+    def _run(self):
+        while not self._stop.wait(self.every):
+            self._take()
+
+    def __enter__(self):
+        if self.enabled:
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        if self.enabled:
+            self._stop.set()
+            self._thread.join()
+            self._take()
+
+    def __str__(self):
+        if self.max_temp is None:
+            return ""
+        s = f"GPU {self.max_temp}°C / {self.min_clock} MHz"
+        if self.reasons:
+            s += f"  !! throttled (0x{self.reasons:x})"
+        if self.max_temp >= GPU_TEMP_WARN:
+            s += f"  !! within {80 - self.max_temp}°C of the 80°C suspend threshold"
+        return s
 
 
 # ---- optional PLE sidecar (patched vLLM only) --------------------------------

@@ -175,6 +175,13 @@ rejected. `accept_rate` collapses from 0.80 to 0.32.
 164 problems at temperature 0, each executed against its real unit tests in a
 `--network none` container. Real pass@1, not self-judged.
 
+The script uses the venv from step 2 (`~/spark/venv`: `hf`, pandas, pyarrow);
+point `GB10_PYTHON` / `GB10_HF` elsewhere if you keep them in another place.
+The sandbox is capped at 2 GB (`GB10_SANDBOX_MEMORY`), 256 processes and 4 CPUs:
+memory is unified, the engine already holds most of it, and a runaway candidate
+must not push the host into OOM. Failed requests (a 503 while the supervisor
+restarts the model) are reported as `REQUEST-ERR`, not counted as wrong answers.
+
 | Mode | pass@1 | Tokens/problem | Wall |
 |---|---:|---:|---:|
 | Thinking off | 93.9% | ~200 | 3 min |
@@ -236,6 +243,36 @@ Each of these cost real time.
   authenticate its own download; pre-pull on the host.
 - **Never `docker rm -f` a managed container.** The supervisor's state goes
   stale; `sparkstation stop && start` reconciles.
+- **Nothing rotates the serving logs.** Neither the toolkit's `start.sh` nor
+  SparkStation's SGLang launcher passes `--log-opt`, so the container's stdout
+  grows without bound in `/var/lib/docker/containers/*/*-json.log` unless the
+  Docker daemon caps it. Slow under normal logging, fast with `--log-requests`
+  (every 100k-token prompt lands in the log). Cap it daemon-wide — applies to
+  containers created afterwards:
+
+  ```bash
+  # /etc/docker/daemon.json — merge into the existing file, don't replace it
+  { "log-driver": "local", "log-opts": { "max-size": "50m", "max-file": "5" } }
+  sudo systemctl restart docker
+  ```
+
+  SparkStation's own `data/sparkstation.log` rotates, but `supervisor.log`,
+  `gateway.log`, `gateway-proxy.log` (in `~/.sparkstation/logs/`) only rotate
+  on restart, and `gateway/.litellm-<port>.log` in the repo is appended
+  forever. A logrotate rule with `copytruncate` (the processes keep the files
+  open) covers them — logrotate needs absolute paths:
+
+  ```
+  /home/YOU/.sparkstation/logs/*.log /home/YOU/sparkstation/gateway/.litellm-*.log {
+      weekly
+      rotate 4
+      maxsize 100M
+      compress
+      missingok
+      notifempty
+      copytruncate
+  }
+  ```
 - **Boot-to-boot variance is ~8% on single-stream**, against <2% run-to-run
   within one server instance. Size A/B deltas against 8%, and re-measure on a
   fresh boot before believing a small win.
@@ -277,6 +314,22 @@ SGLang with `--enable-metrics`. Without it those columns show `n/a`.
 `perf.py` takes `--levels`, `--prefill`, `--only <section>` and `--no-warmup`;
 `longctx.py` takes `--ctx`, `--streams` and `--gen N` (forced generation, a KV
 capacity test). See each script's docstring.
+
+Every run records what it measured:
+
+- **Server settings.** The header lists the engine's effective settings from
+  SGLang's `/get_server_info` (model path, revision, draft tokens, request
+  cap, ...). That catches the "which snapshot loaded" and "which draft count"
+  traps above from the output alone.
+- **Saved output.** The full output is saved under `results/runs/`
+  (`GB10_RUN_DIR`; set it empty to skip saving).
+- **GPU.** When the server is local, peak temperature, lowest SM clock and
+  throttle reasons come from `nvidia-smi` per section or row
+  (`GB10_GPU_WATCH=0|1`). A row is flagged when the GPU throttled or came
+  within 2 °C of the 80 °C suspend threshold.
+- **Engine restarts.** A restart mid-run, detected from
+  `process_start_time_seconds`, is flagged too, and such rows are left out of
+  the peak.
 
 ## Caveats
 

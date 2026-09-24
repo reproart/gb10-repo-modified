@@ -7,7 +7,9 @@
 
 The distinction this script exists to draw: a candidate whose finish_reason is
 "length" never emitted code. That is a BUDGET failure, not a quality failure.
-Reporting the two together is how a 97% run reads as 90.9%.
+Reporting the two together is how a 97% run reads as 90.9%. Likewise a request
+that failed outright (HTTP 503 while the supervisor restarts the model, a
+timeout) is reported as REQUEST-ERR, not as an empty answer.
 """
 import json
 import sys
@@ -18,6 +20,8 @@ def load(path):
 
 
 def classify(result, gen_entry):
+    if gen_entry and gen_entry.get("error"):
+        return "REQUEST-ERR"
     if gen_entry and gen_entry.get("finish_reason") == "length":
         return "TRUNCATED"
     err = result["err"]
@@ -51,7 +55,8 @@ def main():
         kind = classify(r, gen.get(r["task_id"]))
         counts[kind] = counts.get(kind, 0) + 1
         entry = gen.get(r["task_id"], {})
-        print(f"  {r['task_id']:<16} {kind:<13} tokens={entry.get('completion_tokens')}")
+        note = f"  {entry['error'][:80]}" if kind == "REQUEST-ERR" else ""
+        print(f"  {r['task_id']:<16} {kind:<13} tokens={entry.get('completion_tokens')}{note}")
 
     print(f"\nbreakdown: {counts}")
 
@@ -62,6 +67,12 @@ def main():
         print(f"pass@1 excluding truncated: "
               f"{100.0 * data['passed'] / adjusted:.1f}% ({data['passed']}/{adjusted})")
         print("Re-run those with a larger --max-tokens before quoting a quality number.")
+
+    request_errs = counts.get("REQUEST-ERR", 0)
+    if request_errs:
+        print(f"\n{request_errs} failure(s) are failed requests (server error, restart, "
+              "timeout) — the model never answered. Not a quality number: check the "
+              "server and re-run.")
 
     if compare:
         other = load(compare)
