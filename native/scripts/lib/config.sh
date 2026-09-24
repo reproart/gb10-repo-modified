@@ -34,3 +34,21 @@ revision_of() {
     echo unknown
   fi
 }
+
+# Triton compiles a small C launcher at first use, so the server needs the
+# interpreter's headers (Python.h) and a C compiler. The official Docker image
+# ships both; DGX OS lacks the headers, and the failure then shows up mid-boot
+# as "fatal error: Python.h" and "Triton is not supported on current
+# platform". Prints one line per missing piece; returns 1 if any.
+check_build_deps() {  # $1 = python interpreter
+  local py="$1" inc ver ok=0
+  inc="$("$py" -c 'import sysconfig; print(sysconfig.get_paths()["include"])' 2>/dev/null)"
+  ver="$("$py" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null)"
+  if [ ! -f "$inc/Python.h" ]; then
+    echo "  Python.h (for Triton): sudo apt install python${ver}-dev"; ok=1
+  fi
+  if ! command -v "${CC:-cc}" >/dev/null && ! command -v gcc >/dev/null; then
+    echo "  a C compiler (for Triton): sudo apt install build-essential"; ok=1
+  fi
+  return $ok
+}

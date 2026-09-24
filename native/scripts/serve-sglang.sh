@@ -44,6 +44,9 @@ HF_OFFLINE="${HF_OFFLINE:-1}"
 
 [ -x "$VENV/bin/python" ] || {
   echo "no venv for SGLang $SGLANG_VERSION at $VENV - run ./serve.sh install" >&2; exit 1; }
+if ! missing="$(check_build_deps "$VENV/bin/python")"; then
+  echo "missing, needed at boot:" >&2; echo "$missing" >&2; exit 1
+fi
 for d in "$MODEL_DIR" "$DRAFT_DIR"; do
   [ -f "$d/config.json" ] || {
     echo "no checkpoint at $d (config.json missing) - see README, \"Weights\"" >&2; exit 1; }
