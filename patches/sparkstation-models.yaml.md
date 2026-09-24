@@ -1,17 +1,26 @@
 # SparkStation `models.yaml` edits
 
-Two changes to the `qwen3.8-sglang` entry. Back up first: `cp models.yaml models.yaml.bak`
+Edits to the `qwen3.8-sglang` entry, against SparkStation `6a19736` (the
+last commit whose `generic` profile runs this recipe — see the README, step 4).
+Back up first: `cp models.yaml models.yaml.bak`
 
 ## 1. Required on a single Spark
 
-The entry ships pinned to a second machine.
+The entry ships pinned to a second machine, and it names the locally built
+image tag, which the registry does not have. With the official image from
+step 2:
 
 ```diff
    qwen3.8-sglang:
      backend: "sglang"
 -    host: worker1
 +    host: primary
+ ...
+-    docker_image: "lmsysorg/sglang:qwen38-27b-dflash2"
++    docker_image: "lmsysorg/sglang:dev-cu13-qwen38-27b-dflash2"
 ```
+
+Keep the old tag only if you built the image with `BUILD_LOCAL=1`.
 
 The default `generic` profile enables this alias with `{}` (base spec), so
 nothing pins it back. Check any profile you actually use — a profile-level

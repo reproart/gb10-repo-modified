@@ -28,6 +28,7 @@ build inputs behind those numbers are in
 | Draft | `z-lab/Qwen3.8-27B-DFlash2` @ `50307d4c` |
 | Image | `lmsysorg/sglang:dev-cu13-qwen38-27b-dflash2` |
 | Toolkit | [MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark](https://github.com/MiaAI-Lab/Qwen3.8-27B-SGLang-DGX-Spark) @ `c90d8c34` |
+| SparkStation | [kshetrajna12/sparkstation](https://github.com/kshetrajna12/sparkstation) @ `6a19736` |
 | Disk | ~110 GB |
 
 All model repos are public; no token needed. Verified on Ubuntu 24.04,
@@ -84,17 +85,30 @@ GB10_BASE_URL=http://127.0.0.1:8888/v1 GB10_MODEL=qwen3.8-27b-sglang \
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-git clone --depth 1 https://github.com/kshetrajna12/sparkstation.git
-cd sparkstation && uv sync
+git clone https://github.com/kshetrajna12/sparkstation.git
+cd sparkstation && git checkout 6a19736    # see the pin note below
+uv sync
 cp .env.example .env      # TOTAL_UNIFIED_MEMORY_GB=128, MEMORY_HARD_LIMIT_GB=110
 ```
 
-One required `models.yaml` edit — the entry ships pinned to a second machine:
+**Pin SparkStation.** Its default branch moved on: from 2026-08-29 (`78f52e3`)
+the `generic` profile runs a different model (`qwen-flash-next`), and
+`qwen3.8-sglang` is kept only for rollback. `6a19736` is the last commit whose
+`generic` profile starts this recipe, and both files in [`patches/`](patches/)
+apply to it.
+
+Two required `models.yaml` edits in the `qwen3.8-sglang` entry. The entry ships
+pinned to a second machine, and it names the locally built image tag, which
+the registry does not have:
 
 ```diff
 -    host: worker1
 +    host: primary
+-    docker_image: "lmsysorg/sglang:qwen38-27b-dflash2"
++    docker_image: "lmsysorg/sglang:dev-cu13-qwen38-27b-dflash2"
 ```
+
+Keep the old tag only if you built the image with `BUILD_LOCAL=1`.
 
 ```bash
 uv run sparkstation start -d --profile generic
@@ -103,6 +117,15 @@ uv run sparkstation start -d --profile generic
 Gateway on **:8000**. The model container is bridge-networked, so its internal
 :8000 maps to host **:8001** — no collision despite both reporting 8000.
 Gateway overhead measured at zero.
+
+Through the gateway, benchmark with its key and read metrics from the model
+container:
+
+```bash
+GB10_BASE_URL=http://127.0.0.1:8000/v1 GB10_MODEL=default \
+  GB10_API_KEY=<LITELLM_MASTER_KEY from .env> \
+  GB10_METRICS_URL=http://127.0.0.1:8001/metrics python3 bench/perf.py
+```
 
 ## 5. Unlock concurrency
 
@@ -189,6 +212,102 @@ restarts the model) are reported as `REQUEST-ERR`, not counted as wrong answers.
 
 Default to thinking off for well-specified functions — 93.9% at a fifth of the
 tokens. Switch it on for hard cases.
+
+---
+
+## Updating an existing install
+
+For a Spark that already runs an earlier version of this recipe. The weight,
+draft, toolkit and image pins are unchanged, so nothing is re-downloaded or
+rebuilt, and step 2 does not need to be run again.
+
+### 1. Update this repo
+
+```bash
+cd /path/to/this/repo
+git status                 # commit or stash local edits first
+git pull
+```
+
+`separate/` is gone: its benchmarks now live in `bench/`. Anything you changed
+there is still in history, e.g. `git show 26273d1:separate/bench/perf.py`.
+`decode_bench.py`, `concurrency_bench.py` and `ppwatch.sh` were not ported.
+
+### 2. Adjust how you call the benchmarks
+
+The `GB10_*` variables work as before. If you used the `separate/` scripts,
+rename their variables:
+
+| was | now |
+|---|---|
+| `BASE=http://host:8000` | `GB10_BASE_URL=http://host:8000/v1` (note `/v1`) |
+| `MODEL` | `GB10_MODEL` (optional now: read from `/v1/models`) |
+| `API_KEY` | `GB10_API_KEY` |
+| `METRICS_PORT` | `GB10_METRICS_PORT` (off unless set) |
+| `VLLM_CUSTOM_METRICS_INTERVAL` | `GB10_METRICS_INTERVAL` |
+
+Before comparing new numbers with old runs:
+
+- Single-stream decode now streams and prints two rates. **`e2e` is the old
+  figure**. `decode` excludes the time to the first token, so it reads higher.
+- The concurrency peak now skips rows that queued or during which the engine
+  restarted. The rows are still printed, but "peak aggregate" can land at a
+  lower stream count than the old script reported.
+- Runs are saved to `results/runs/`, with the server's settings in the header.
+  Check `revision=554ebba9…` there before trusting a number.
+
+`run-humaneval.sh` now takes Python and `hf` from `~/spark/venv`, the venv step
+2 already created. Export `GB10_WORKDIR` if yours lives elsewhere.
+
+### 3. SparkStation
+
+```bash
+cd /path/to/sparkstation
+git log -1 --format='%h %ad' --date=short
+```
+
+- **At `6a19736` or earlier:** nothing to change. Apply the new `docker_image`
+  edit from step 4 if you pulled the official image.
+- **Newer than `6a19736`** (you pulled after 2026-08-29): `generic` no longer
+  runs this recipe. Move back to the pin. Save your local edits first
+  (`models.yaml`, a patched `cli.py` or launcher) — `.env` is untracked and
+  stays:
+
+  ```bash
+  git diff > ~/sparkstation-local.diff      # a record of your edits
+  git stash
+  git checkout 6a19736
+  git stash pop                             # resolve conflicts, if any
+  uv sync
+  cp cli.py .venv/lib/python3.12/site-packages/cli.py   # see Traps: uv copies it
+  sparkstation stop && sparkstation start -d --profile generic
+  ```
+
+  `git apply --check patches/<file>` tells you whether a patch is still needed:
+  one that is already applied fails the check, and `git apply -R --check`
+  confirms it.
+
+### 4. Cap the serving logs (new)
+
+Apply the `daemon.json` from the log-rotation trap below. It only affects
+containers created afterwards, so recreate the model container: `./stop.sh`
+and `./start-dflash.sh` for the standalone toolkit, or
+`sparkstation stop && sparkstation start` for SparkStation. Check:
+
+```bash
+docker inspect -f '{{.HostConfig.LogConfig}}' <container>   # {local map[max-file:5 max-size:50m]}
+```
+
+### 5. Smoke test
+
+```bash
+GB10_BASE_URL=http://127.0.0.1:8888/v1 python3 bench/perf.py --only ttft
+```
+
+The header should list the server settings, including the pinned revision. A
+`note: ... unreachable` line means the engine's `/metrics` is not reachable;
+set `GB10_METRICS_URL` (behind the gateway) or start SGLang with
+`--enable-metrics`.
 
 ---
 
@@ -293,6 +412,7 @@ scripts/   00-verify-gpu · 01-build-and-fetch · build-manifest · run-humaneva
 patches/   models.yaml edits · gateway-health fix
 results/   RESULTS.md — all measurements
            BUILD-MANIFEST.md — resolved build inputs for those numbers
+           runs/ — saved benchmark output (gitignored)
 docs/      cache-transfer.md — move the model cache to a new machine, offline
 ```
 
