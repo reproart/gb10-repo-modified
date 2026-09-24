@@ -301,6 +301,42 @@ Boot: FP8's first boot took 77 min (flashinfer autotune compiling the FP8 GEMM
 path); every later boot 5.5 min, the triton cache being mounted. NVFP4 boots
 in 3.4 min. The autotune cost is once per config.
 
+## Native build, first run (2026-09-24)
+
+Stock SGLang 0.5.20 from pip, no Docker (`serve.sh`, profile
+`qwen3.8-27b`). Target
+`orcarouter/Qwen3.8-27B-Uncensored-NVFP4` @ `69d21348`, the finetune in the
+FP8 section above, at the same max-aggregate config: draft 10, pool 160 /
+cap 32, `--mamba-ssm-dtype bfloat16`, fp8 KV, 8192-token chunks. One
+difference: `--mem-fraction-static 0.80` instead of 0.85 (KV pool 670,609
+tokens). One boot, one run.
+
+| | Docker build (above) | Native |
+|---|---:|---:|
+| Single-stream decode | ~60 (15% below RadixArk's 70.1) | **56.5** tok/s |
+| Peak aggregate @ 32 | 569 | **558.0** tok/s |
+| TTFT, short prompt | — | 239 ms |
+| Prefill, 32K prompt | — | 1,105 tok/s |
+| TTFT, 101K prompt | ~115–129 s at 121K (RadixArk's 91.9 s, 25–40% slower) | 117.6 s |
+| `spec_accept_length` | 7.32 | 7.7–8.6 |
+
+**Within the noise of one boot.** Single-stream is 5% and aggregate 2% below
+the Docker figures, against the ~8% boot-to-boot spread measured on this
+stack; long prefill lands inside the band the finetune's 25–40% prefill
+penalty predicts. A native-vs-Docker verdict needs several boots of each.
+The accept lengths come from different SGLang builds and are not compared.
+
+Two things to re-check:
+
+- **The 8K prefill point, 1,262 tok/s**, is lower than both the 2K (2,073)
+  and the trend. The warmup's longest prompt is ~3K tokens, so 8K was
+  probably the first extend at that size and paid a one-off kernel compile
+  inside its TTFT. `perf.py --only prefill` on the warm server settles it.
+- **83 °C at 101K prefill**, with no throttle reported and no suspend,
+  against 74 °C sustained prefill in the Docker-era measurements (at 121K).
+  Room temperature, the box, or the 80 °C suspend figure under "Thermals":
+  one run cannot tell which, but the 80 °C figure was not a hard limit here.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |

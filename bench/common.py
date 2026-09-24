@@ -494,7 +494,9 @@ class GpuWatch:
         s = f"GPU {self.max_temp}°C / {self.min_clock} MHz"
         if self.reasons:
             s += f"  !! throttled (0x{self.reasons:x})"
-        if self.max_temp >= GPU_TEMP_WARN:
+        if self.max_temp >= 80:
+            s += f"  !! {self.max_temp - 80}°C above the 80°C suspend threshold in RESULTS.md"
+        elif self.max_temp >= GPU_TEMP_WARN:
             s += f"  !! within {80 - self.max_temp}°C of the 80°C suspend threshold"
         return s
 
