@@ -1,41 +1,65 @@
 #!/usr/bin/env bash
-# Emit the resolved build configuration. Run it next to a benchmark so a later
-# comparison has the actual inputs rather than the intended ones.
+# Emit the resolved install. Run it next to a benchmark so a later comparison
+# has the actual inputs rather than the intended ones.
 #
-#   ./scripts/build-manifest.sh > results/BUILD-MANIFEST.md
+#   ./scripts/build-manifest.sh > results/BUILD-MANIFEST-native.md
 #
-# Tags and default branches move; digests and commits do not.
+# Branches and version ranges move; commits and exact versions do not.
 set -uo pipefail
 
-WORKDIR="${GB10_WORKDIR:-$HOME/spark}"
-TOOLKIT="$WORKDIR/Qwen3.8-27B-SGLang-DGX-Spark"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/config.sh"
 HF_HUB="${HF_HOME:-$HOME/.cache/huggingface}/hub"
-BASE_IMAGE=lmsysorg/sglang:qwen38-27b
-BUILT_IMAGE="${IMAGE:-lmsysorg/sglang:dev-cu13-qwen38-27b-dflash2}"
-LOCAL_IMAGE=lmsysorg/sglang:qwen38-27b-dflash2
 
 snap() {  # resolved snapshot(s) for a cached repo
   local d="$HF_HUB/models--${1//\//--}/snapshots"
   [ -d "$d" ] && ls "$d" 2>/dev/null | paste -sd, || echo "(not cached)"
 }
-img() { docker inspect "$1" --format "$2" 2>/dev/null || echo "(absent)"; }
 
 cat <<EOF
-# Build manifest
+# Build manifest (native)
 
-Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) on \`$(hostname)\`.
+Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) on \`$(hostname)\`, venv \`$VENV\`.
 
 | Input | Resolved value |
 |---|---|
-| Target revision | \`$(snap RadixArk/Qwen3.8-27B-NVFP4)\` |
-| Draft revision | \`$(snap z-lab/Qwen3.8-27B-DFlash2)\` |
-| Toolkit commit | \`$(git -C "$TOOLKIT" rev-parse HEAD 2>/dev/null || echo "(no clone)")\` |
-| SGLang commit (overlay) | \`$(grep -oE 'full_sha=[0-9a-f]+' "$TOOLKIT/patch/build-dflash2-image.sh" 2>/dev/null | cut -d= -f2 || echo "(unknown)")\` |
-| NVFP4 head patch sha256 | \`$(sha256sum "$TOOLKIT/patch/dflash2_nvfp4_head.patch" 2>/dev/null | cut -d' ' -f1 || echo "(absent)")\` |
-| Base image digest | \`$(img "$BASE_IMAGE" '{{index .RepoDigests 0}}')\` |
-| Image | \`$BUILT_IMAGE\` |
-| Image id | \`$(img "$BUILT_IMAGE" '{{.Id}}')\` |
-| Locally built image id (if used) | \`$(img "$LOCAL_IMAGE" '{{.Id}}')\` |
+| Target | \`$TARGET_PATH\` |
+| Target snapshots cached | \`$(snap "$TARGET_PATH")\` |
+| Draft | \`$DRAFT_PATH\` |
+| Draft snapshots cached | \`$(snap "$DRAFT_PATH")\` |
+EOF
+
+"$VENV/bin/python" - "$ROOT"/requirements/sglang-*-aarch64-py312.txt <<'EOF' 2>/dev/null || echo "| venv | (missing or broken: $VENV) |"
+import importlib.metadata as m
+import re
+import sys
+
+import torch
+
+def v(name):
+    try:
+        return m.version(name)
+    except m.PackageNotFoundError:
+        return "(absent)"
+
+for name in ("sglang", "sglang-kernel", "flashinfer-python", "flashinfer-cubin",
+             "transformers", "triton", "nvidia-cuda-nvcc"):
+    print(f"| {name} | `{v(name)}` |")
+print(f"| torch | `{torch.__version__}` (CUDA {torch.version.cuda}) |")
+
+# Compare the venv with the lock file for the installed SGLang version.
+lock = [p for p in sys.argv[1:] if f"sglang-{v('sglang')}-" in p]
+if lock:
+    pins = dict(re.match(r"([A-Za-z0-9_.-]+)==(\S+)", line).groups()
+                for line in open(lock[0]) if re.match(r"[A-Za-z0-9_.-]+==", line))
+    off = [f"{n} {v(n)} (lock {want})" for n, want in pins.items() if v(n) != want]
+    name = lock[0].rsplit("/", 1)[-1]
+    print(f"| matches `{name}` | " + ("yes |" if not off else f"no: {'; '.join(off)} |"))
+else:
+    print("| lock file | none for this SGLang version |")
+EOF
+
+pid="$(pgrep -f -o 'sglang.launch_server' || true)"
+cat <<EOF
 
 ## Host
 
@@ -43,18 +67,12 @@ Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) on \`$(hostname)\`.
 |---|---|
 | Kernel | \`$(uname -sr)\` |
 | Driver / CUDA | $(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1) / $(nvidia-smi 2>/dev/null | grep -oE 'CUDA Version: [0-9.]+' | cut -d' ' -f3) |
-| Docker | $(docker --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) |
-| nvidia-container-toolkit | $(nvidia-ctk --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1) |
+| System nvcc | $( { /usr/local/cuda/bin/nvcc --version 2>/dev/null || echo 'none'; } | grep -oE 'release [0-9.]+|none' | head -1) |
+| Python | $("$VENV/bin/python" -V 2>&1) |
 
 ## Serving flags
 
 \`\`\`
-$(docker inspect "$(docker ps -q --filter name=sglang --filter name=sparkstation-qwen | head -1)" \
-    --format '{{json .Config.Cmd}}' 2>/dev/null | tr ',' '\n' | tr -d '["]' | paste -sd' ' \
-  || echo "(no server running)")
+$([ -n "$pid" ] && tr '\0' ' ' < "/proc/$pid/cmdline" || echo "(no server running)")
 \`\`\`
-
-The base image is referenced by **tag**, not digest, by the toolkit build. The
-digest above is what it resolved to at build time; a republish changes the image
-without any warning during the build.
 EOF

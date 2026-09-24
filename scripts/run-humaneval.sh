@@ -5,11 +5,12 @@
 #   ./scripts/run-humaneval.sh think      # thinking on, xhigh (slow: ~20 min)
 #   ./scripts/run-humaneval.sh think-medium  # thinking at reasoning_effort=medium
 #
-# Python and the hf CLI come from the venv 01-build-and-fetch.sh creates
-# ($GB10_WORKDIR/venv, default ~/spark/venv: huggingface_hub, pandas, pyarrow).
-# Override with GB10_PYTHON / GB10_HF.
+# Python and the hf CLI come from the venv 01-install.sh creates
+# ($GB10_WORKDIR/venv, default ~/spark/venv, which has huggingface_hub, pandas
+# and pyarrow). Override with GB10_PYTHON / GB10_HF.
 #
-# Execution happens inside a `--network none` container because this runs
+# This is the one place the recipe still uses Docker, and it needs no GPU:
+# execution happens inside a `--network none` container because this runs
 # model-generated code. The repo is mounted read-only, and the container is
 # capped on memory, processes and CPU: GB10 memory is unified and the serving
 # engine already holds most of it, so a runaway candidate must hit its own
@@ -30,8 +31,12 @@ HF="${GB10_HF:-$DEFAULT_HF}"
 SANDBOX_MEM="${GB10_SANDBOX_MEMORY:-2g}"
 
 "$PY" -c "import pandas, pyarrow" 2>/dev/null || {
-  echo "$PY lacks pandas/pyarrow. Run ./scripts/01-build-and-fetch.sh (creates $VENV)" >&2
+  echo "$PY lacks pandas/pyarrow. Run ./scripts/01-install.sh (creates $VENV)" >&2
   echo "or point GB10_PYTHON at an interpreter that has them." >&2
+  exit 1; }
+
+command -v docker >/dev/null || {
+  echo "docker not found: it is needed to sandbox the generated code (no GPU required)" >&2
   exit 1; }
 
 mkdir -p "$ROOT/results" "$ROOT/data"
@@ -39,7 +44,7 @@ mkdir -p "$ROOT/results" "$ROOT/data"
 if ! find "$ROOT/data/humaneval" -name '*.parquet' 2>/dev/null | grep -q .; then
   echo "== fetching HumanEval =="
   command -v "$HF" >/dev/null || {
-    echo "hf CLI not found ($HF). Run ./scripts/01-build-and-fetch.sh or set GB10_HF." >&2
+    echo "hf CLI not found ($HF). Run ./scripts/01-install.sh or set GB10_HF." >&2
     exit 1; }
   "$HF" download openai/openai_humaneval --repo-type dataset \
     --local-dir "$ROOT/data/humaneval"

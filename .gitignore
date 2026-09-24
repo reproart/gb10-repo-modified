@@ -5,3 +5,5 @@ data/
 results/gen_*.json
 results/exec_*.json
 results/runs/
+# local serving config (see serve.env.sample)
+serve.env

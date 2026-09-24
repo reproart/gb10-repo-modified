@@ -1,0 +1,6 @@
+# Keep the pip-installed CUDA compiler stack on 13.0, matching the CUDA 13.0
+# driver (580.x) on DGX OS and the CUDA 13.0.3 toolkit inside the official
+# lmsysorg/sglang image. Without this, humming-kernels pulls nvcc / nvJitLink
+# 13.4, newer than the driver.
+nvidia-cuda-nvcc<13.1
+nvidia-nvjitlink<13.1
