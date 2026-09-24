@@ -3,7 +3,7 @@
 # and earlyoom. SGLang runs natively here (no Docker), so these are the only
 # preconditions.
 #
-# After ./scripts/01-install.sh, run it again: it then also checks that the
+# After ./serve.sh install, run it again: it then also checks that the
 # venv's torch sees the GPU.
 set -uo pipefail
 

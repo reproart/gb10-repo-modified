@@ -1,23 +1,10 @@
 # shellcheck shell=bash disable=SC2034  # variables are used by the scripts that source this
-# Shared settings for 01-install.sh and serve.sh. Source it, don't run it.
+# Shared defaults for the scripts in scripts/. Source it, don't run it.
 #
-# Precedence: variables already in the environment > serve.env in the repo
-# root > the defaults below. serve.env is plain KEY=VALUE lines (see
-# serve.env.sample); it is what the systemd unit picks up too.
+# Variables already in the environment win: ./serve.sh in the repo root
+# exports the settings, and anything it leaves unset gets the default here.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-
-if [ -f "$ROOT/serve.env" ]; then
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"; line="${line#"${line%%[![:space:]]*}"}"
-    case "$line" in ''|'#'*) continue ;; esac
-    key="${line%%=*}"; value="${line#*=}"
-    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
-    # Unset only: an explicitly empty variable (CPUSET= ./serve.sh) still wins.
-    [ -z "${!key+x}" ] && export "$key=$value"
-  done < "$ROOT/serve.env"
-fi
 
 GB10_WORKDIR="${GB10_WORKDIR:-$HOME/spark}"
 VENV="$GB10_WORKDIR/venv"
@@ -33,12 +20,12 @@ case "$TARGET" in
   *) echo "TARGET must be fp8, nvfp4 or custom, got '$TARGET'" >&2; exit 2 ;;
 esac
 TARGET_PATH="${TARGET_PATH:-$_path}"
-TARGET_REV="${TARGET_REV-$_rev}"
+TARGET_REV="${TARGET_REV:-$_rev}"
 [ -n "$TARGET_PATH" ] || { echo "TARGET=custom needs TARGET_PATH" >&2; exit 2; }
 [ -n "$TARGET_REV" ] || echo "note: no TARGET_REV - the repo's mutable default branch will load" >&2
 
 # DFlash2 draft. incoai/Qwen3.8-27B-DFlash2 (the SGLang cookbook's name) is
 # a mirror of the same weights.
 DRAFT_PATH="${DRAFT_PATH:-z-lab/Qwen3.8-27B-DFlash2}"
-DRAFT_REV="${DRAFT_REV-50307d4c4cde6860d4eee73e2547cd786fe8e8a4}"
+DRAFT_REV="${DRAFT_REV:-50307d4c4cde6860d4eee73e2547cd786fe8e8a4}"
 unset _path _rev

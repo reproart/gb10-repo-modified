@@ -7,7 +7,7 @@ them.
 > **Historical: the Docker build.** This describes the patched SGLang image
 > the published numbers came from. The recipe now installs stock SGLang
 > natively (README, steps 1–3); that install is not benchmarked yet. Record
-> it with `./scripts/build-manifest.sh > results/BUILD-MANIFEST-native.md`,
+> it with `./serve.sh manifest > results/BUILD-MANIFEST-native.md`,
 > which writes a different, native format. This file stays as the record of
 > what produced `RESULTS.md`.
 

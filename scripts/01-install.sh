@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Install stock SGLang natively (no Docker) and pre-download the weights.
 #
-#   ./scripts/01-install.sh                 # FP8 target (default)
-#   TARGET=nvfp4 ./scripts/01-install.sh    # NVFP4 target
+#   ./serve.sh install                      # the TARGET / DRAFT set in serve.sh
+#   TARGET=nvfp4 ./scripts/01-install.sh    # or directly
 #
 # Everything goes into one venv, $GB10_WORKDIR/venv (default ~/spark/venv):
 # SGLang, the hf CLI, and pandas/pyarrow for HumanEval. Re-running is safe;
@@ -54,8 +54,8 @@ fi
 
 # ---- weights ---------------------------------------------------------------
 # Both revisions pinned: without --revision you get the repo's mutable default,
-# which may not be the checkpoint the results were measured on. serve.sh
-# passes the same revisions to the server.
+# which may not be the checkpoint the results were measured on. The server is
+# started with the same revisions.
 echo
 echo "== downloading $TARGET_PATH${TARGET_REV:+ @ ${TARGET_REV:0:8}} =="
 "$VENV/bin/hf" download "$TARGET_PATH" ${TARGET_REV:+--revision "$TARGET_REV"}
@@ -79,11 +79,11 @@ cat <<EOF
 
 Installed. Start the server in the foreground:
 
-    ./scripts/serve.sh
+    ./serve.sh
 
 or as a service: ./scripts/install-service.sh
 
 Record what got installed next to your measurements:
 
-    ./scripts/build-manifest.sh > results/BUILD-MANIFEST-native.md
+    ./serve.sh manifest > results/BUILD-MANIFEST-native.md
 EOF

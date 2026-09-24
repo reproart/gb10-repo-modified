@@ -2,7 +2,9 @@
 # Emit the resolved install. Run it next to a benchmark so a later comparison
 # has the actual inputs rather than the intended ones.
 #
-#   ./scripts/build-manifest.sh > results/BUILD-MANIFEST-native.md
+#   ./serve.sh manifest > results/BUILD-MANIFEST-native.md
+#
+# Through ./serve.sh it reports the TARGET / DRAFT configured there.
 #
 # Branches and version ranges move; commits and exact versions do not.
 set -uo pipefail

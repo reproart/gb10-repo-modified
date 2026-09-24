@@ -12,9 +12,9 @@ silently downloaded again. That problem is gone.
 
 | Path | Contents | Carry it? |
 |---|---|---|
-| `~/.cache/huggingface` | the HF cache: `01-install.sh` downloads into it, and `serve.sh` reads from it | **yes**, this is the ~50 GB that matters |
+| `~/.cache/huggingface` | the HF cache: `./serve.sh install` downloads into it, and `./serve.sh` reads from it | **yes**, this is the ~50 GB that matters |
 | `~/.cache/flashinfer`, `~/.triton` | JIT-compiled kernels and autotune results | optional: they are keyed to the exact FlashInfer / Triton / CUDA versions, so they help only a machine with the same lock file |
-| `~/spark/venv` | SGLang and its dependencies | no: rebuild it with `01-install.sh`, which installs the exact versions from `requirements/` |
+| `~/spark/venv` | SGLang and its dependencies | no: rebuild it with `./serve.sh install`, which installs the exact versions from `requirements/` |
 
 Survey before packing. `-L` follows the snapshot symlinks, without it you
 measure the symlink stubs:
@@ -56,7 +56,7 @@ tar -C "$HOME" -cpf /media/root/2TB/gb10-caches.tar .cache/huggingface
 
 ```bash
 tar -C "$HOME" -xpf /media/root/2TB/gb10-caches.tar
-./scripts/01-install.sh      # venv; its downloads are no-ops when the cache is complete
+./serve.sh install      # venv; its downloads are no-ops when the cache is complete
 ```
 
 None of these checkpoints needs an `hf` token.
@@ -64,18 +64,18 @@ None of these checkpoints needs an `hf` token.
 ## Verify: cheap first, then full
 
 With network, an integrity check that downloads **nothing** when the copy is
-complete: `hf` prints the snapshot path and exits. `01-install.sh` does exactly
-this for the configured target and draft.
+complete: `hf` prints the snapshot path and exits. `./serve.sh install` does exactly
+this for the target and draft set in `serve.sh`.
 
 ```bash
 ~/spark/venv/bin/hf download Qwen/Qwen3.8-27B-FP8 \
   --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a
 ```
 
-Offline: `HF_HUB_OFFLINE=1 ./scripts/serve.sh`. The pinned revisions are what
+Offline: add `export HF_HUB_OFFLINE=1` to `serve.sh` and start it. The pinned revisions are what
 make offline resolution deterministic: `--revision <sha>` resolves straight to
 the local snapshot, while an unpinned load consults the repo's default branch.
-`serve.sh` pins both target and draft, so both must be in the cache.
+The server pins both target and draft, so both must be in the cache.
 
 While verifying, check provenance too: the revision you *served* is the one
 whose snapshot directory you *see*, which is not always the one you think.
@@ -94,7 +94,7 @@ ls ~/.cache/huggingface/hub/models--*/snapshots/
 | `RadixArk/Qwen3.8-27B-NVFP4` | `319f741c…` | upstream default since 2026-08-22; the 2026-08-27 FP8-comparison leg |
 | `orcarouter/Qwen3.8-27B-Uncensored-NVFP4` | `69d21348…` | side measurement |
 | `orcarouter/Qwen3.8-27B-Uncensored-FP8` | `0f3cdb83…` | not benchmarked here |
-| `z-lab/Qwen3.8-27B-DFlash2` (draft) | `50307d4c…` | pinned by `serve.sh`; `incoai/Qwen3.8-27B-DFlash2` mirrors the same weights |
+| `z-lab/Qwen3.8-27B-DFlash2` (draft) | `50307d4c…` | pinned in `serve.sh`; `incoai/Qwen3.8-27B-DFlash2` mirrors the same weights |
 
 Carry the snapshot you intend to pin. If the pinned sha has no local snapshot
 directory, the offline load will not find it, so download that revision first.

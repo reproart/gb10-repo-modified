@@ -7,7 +7,7 @@ one command shape measures any server:
 
 Env:
   GB10_BASE_URL  OpenAI-compatible API root INCLUDING /v1
-                 (default http://127.0.0.1:8888/v1, scripts/serve.sh)
+                 (default http://127.0.0.1:8888/v1, ./serve.sh)
   GB10_MODEL     served model name; unset -> read from GB10_BASE_URL/models
                  ("default" if the server lists it, else the first entry)
   GB10_API_KEY   bearer token (default none; serve.sh's API_KEY if set)

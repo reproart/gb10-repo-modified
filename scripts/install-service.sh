@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Install serve.sh as a systemd service, gb10-sglang.service. Needs sudo.
+# Install ./serve.sh as a systemd service, gb10-sglang.service. Needs sudo.
 #
 #   ./scripts/install-service.sh              # install, enable at boot, start
 #   ./scripts/install-service.sh --no-start   # install and enable only
 #
-# The service runs as you, from this checkout, with serve.env for settings:
-# edit serve.env, then `sudo systemctl restart gb10-sglang`. Logs go to the
-# journal, which rotates them: `journalctl -u gb10-sglang -f`.
+# The service runs ./serve.sh as you, from this checkout, so its settings are
+# that file's: edit it, then `sudo systemctl restart gb10-sglang`. Logs go to
+# the journal, which rotates them: `journalctl -u gb10-sglang -f`.
 #
 # MemoryMax is the cgroup limit docker --memory used to set (both write
 # memory.max), so a runaway process is killed before the host starves.
@@ -18,7 +18,6 @@ RUN_USER="${SUDO_USER:-$USER}"
 MEMORY_MAX="${SERVICE_MEMORY_MAX:-110G}"
 
 [ "$RUN_USER" != root ] || { echo "run this as your own user (it calls sudo itself)" >&2; exit 1; }
-[ -f "$ROOT/serve.env" ] || echo "note: no serve.env - the service will use serve.sh's defaults"
 
 sudo tee "/etc/systemd/system/$UNIT.service" >/dev/null <<EOF
 [Unit]
@@ -33,7 +32,7 @@ StartLimitBurst=3
 Type=simple
 User=$RUN_USER
 WorkingDirectory=$ROOT
-ExecStart=$ROOT/scripts/serve.sh
+ExecStart=$ROOT/serve.sh
 Restart=on-failure
 RestartSec=30
 TimeoutStopSec=90

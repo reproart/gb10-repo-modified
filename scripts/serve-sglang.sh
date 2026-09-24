@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # Run SGLang natively in the foreground: target + DFlash2 draft, tuned flags.
 #
-#   ./scripts/serve.sh                          # defaults below
-#   DRAFT_TOKENS=16 MAX_RUNNING=16 ./scripts/serve.sh   # single-stream tuning
-#   TARGET=nvfp4 ./scripts/serve.sh
-#
-# Settings come from the environment, then serve.env in the repo root (copy
-# serve.env.sample), then the defaults here. The systemd unit from
-# install-service.sh runs this same script.
+# Normally started through ./serve.sh in the repo root, which sets and
+# explains every knob; anything left unset gets the default below. Direct
+# calls work too:
+#   DRAFT_TOKENS=16 MAX_RUNNING=16 ./scripts/serve-sglang.sh
 #
 # Serves an OpenAI- and Anthropic-compatible API on :$PORT (default 8888).
 # Ctrl-C stops it. First boot takes a few minutes longer than later ones:
@@ -42,7 +39,7 @@ CPUSET="${CPUSET-5-9,15-19}"
 API_KEY="${API_KEY:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
-[ -x "$VENV/bin/python" ] || { echo "no venv at $VENV - run ./scripts/01-install.sh" >&2; exit 1; }
+[ -x "$VENV/bin/python" ] || { echo "no venv at $VENV - run ./serve.sh install" >&2; exit 1; }
 # Any HTTP answer (a 401 from a server with an API key too) means the port is taken.
 if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models" 2>/dev/null)" != 000 ]; then
   echo "something already serves :$PORT (systemctl status gb10-sglang?)" >&2

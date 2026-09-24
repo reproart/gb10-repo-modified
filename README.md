@@ -53,18 +53,43 @@ needed only to sandbox HumanEval's generated code, not to serve.
 ```
 
 Driver and CUDA version, Python 3.12 with `venv`, free memory, and whether
-earlyoom is running. Run it again after step 2: it then also checks that the
+earlyoom is running. Run it again after step 3: it then also checks that the
 venv's torch sees the GPU.
 
-## 2. Install SGLang and fetch the weights
+## 2. Configure: `serve.sh`
+
+[`serve.sh`](serve.sh) in the repo root is the one file you edit. It sets
+every knob as an exported variable, each with why it has the value it has,
+and hands over to `scripts/`. Keep your machine's settings as a local-only
+commit on top of it.
+
+| Knob | Default | |
+|---|---|---|
+| `TARGET` | `fp8` | `nvfp4`, or `custom` with `TARGET_PATH` / `TARGET_REV` |
+| `DRAFT_TOKENS` | `10` | 16 for single-stream (step 7) |
+| `MAX_RUNNING` | `32` | concurrent requests; sizes the GDN pool and CUDA graphs with it (step 6) |
+| `MEM_FRACTION` | `0.80` | see the earlyoom trap |
+| `CHUNKED_PREFILL` | `8192` | the cookbook uses 2048: smoother decode under mixed load |
+| `PREFILL_CUDA_GRAPH` | `0` | 1 turns prefill CUDA graphs on (untested here) |
+| `API_KEY` | none | `"$(cat ~/.qwen-api-key)"` keeps the secret out of git |
+| `CPUSET` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
+| `PORT`, `HOST`, `CONTEXT_LENGTH` | `8888`, `0.0.0.0`, `262144` | |
+| `EXTRA_ARGS` | | any SGLang flags, appended last so they win |
+
+A variable already set in the shell does not survive: `serve.sh` exports its
+own values. For a one-off experiment, run the script behind it directly:
+`DRAFT_TOKENS=16 ./scripts/serve-sglang.sh` (anything unset there gets the
+same defaults).
+
+## 3. Install SGLang and fetch the weights
 
 ```bash
-./scripts/01-install.sh                  # FP8 target
-TARGET=nvfp4 ./scripts/01-install.sh     # NVFP4 target
+./serve.sh install
 ```
 
-Creates `~/spark/venv`, installs SGLang, downloads target and draft at their
-pinned revisions. The same venv carries the `hf` CLI and what HumanEval needs.
+Creates `~/spark/venv`, installs SGLang, downloads the `TARGET` and draft set
+in `serve.sh` at their pinned revisions. Run it again after changing
+`TARGET`. The same venv carries the `hf` CLI and what HumanEval needs.
 
 On aarch64 + Python 3.12 it installs the exact versions in
 [`requirements/sglang-0.5.20-aarch64-py312.txt`](requirements/sglang-0.5.20-aarch64-py312.txt):
@@ -78,10 +103,10 @@ It also tries to install `flashinfer-cubin` (precompiled kernels, as the
 official image has) from FlashInfer's own index. If that fails, it says so,
 and FlashInfer compiles those kernels on the first boot instead.
 
-## 3. Serve
+## 4. Serve
 
 ```bash
-./scripts/serve.sh
+./serve.sh
 ```
 
 Serves on **:8888**, OpenAI- and Anthropic-compatible, model name
@@ -89,23 +114,9 @@ Serves on **:8888**, OpenAI- and Anthropic-compatible, model name
 The first boot compiles kernels and can take much longer than later ones
 (see Traps); they are cached under `~/.cache/flashinfer` and `~/.triton`.
 
-Everything is set by environment variables or by `serve.env`
-(`cp serve.env.sample serve.env`); the shell wins over the file:
-
-| Variable | Default | |
-|---|---|---|
-| `TARGET` | `fp8` | `nvfp4`, or `custom` with `TARGET_PATH` / `TARGET_REV` |
-| `DRAFT_TOKENS` | `10` | 16 for single-stream (step 6) |
-| `MAX_RUNNING` | `32` | concurrent requests; sizes the GDN pool and CUDA graphs with it (step 5) |
-| `MEM_FRACTION` | `0.80` | see the earlyoom trap |
-| `CHUNKED_PREFILL` | `8192` | the cookbook uses 2048: smoother decode under mixed load |
-| `PREFILL_CUDA_GRAPH` | `0` | 1 turns prefill CUDA graphs on (untested here) |
-| `CPUSET` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
-| `PORT`, `HOST`, `API_KEY`, `CONTEXT_LENGTH` | `8888`, `0.0.0.0`, none, `262144` | |
-| `EXTRA_ARGS` | | any SGLang flags, appended last so they win |
-
-`serve.sh` prints the resolved target, draft and caps, then `exec`s
-`python -m sglang.launch_server`; the full flag list is in the script.
+It prints the resolved target, draft and caps, then `exec`s
+`python -m sglang.launch_server`; the full flag list is in
+[`scripts/serve-sglang.sh`](scripts/serve-sglang.sh).
 
 Benchmark it:
 
@@ -113,16 +124,16 @@ Benchmark it:
 python3 bench/perf.py      # defaults to http://127.0.0.1:8888/v1
 ```
 
-## 4. Run it as a service
+## 5. Run it as a service
 
 ```bash
-cp serve.env.sample serve.env     # edit as needed
 ./scripts/install-service.sh      # asks for sudo
 journalctl -u gb10-sglang -f      # watch the boot
 ```
 
-Installs `gb10-sglang.service`, running `serve.sh` as you from this checkout,
-enabled at boot. After editing `serve.env`: `sudo systemctl restart gb10-sglang`.
+Installs `gb10-sglang.service`, running `./serve.sh` as you from this
+checkout, enabled at boot. After editing `serve.sh`:
+`sudo systemctl restart gb10-sglang`.
 
 - Restarts on failure, but gives up after 3 failed starts in 20 minutes, so a
   config that can't boot doesn't loop.
@@ -132,13 +143,13 @@ enabled at boot. After editing `serve.env`: `sudo systemctl restart gb10-sglang`
 - Logs go to the journal, which rotates them. The Docker setup needed a
   daemon-wide log cap for that; this doesn't.
 
-## 5. Concurrency: three flags, one knob
+## 6. Concurrency: three flags, one knob
 
 Concurrency on this hybrid (Gated DeltaNet) model is bought with **GDN state,
 not KV cache**, and three flags co-limit it. Raising only the obvious one
 measures nothing:
 
-| Flag | Set by `serve.sh` to |
+| Flag | Set to |
 |---|---|
 | `--max-running-requests` | `MAX_RUNNING` |
 | `--max-mamba-cache-size` | `5 × MAX_RUNNING` (5 state slots per request: 4, plus 1 for the DFlash2 verify) |
@@ -171,7 +182,7 @@ file for why.
 For a single interactive user, `MAX_RUNNING=4` gives the memory back to KV at
 ~5% better single-stream.
 
-## 6. Tune draft tokens: the largest single-stream lever
+## 7. Tune draft tokens: the largest single-stream lever
 
 `--speculative-num-draft-tokens` (`DRAFT_TOKENS`). Measured on NVFP4:
 
@@ -194,7 +205,7 @@ drafter can't sustain longer correct runs, so you pay draft compute for tokens
 that get rejected. Quality is unaffected at any value, since every draft token
 is verified against the target.
 
-## 7. Benchmark quality
+## 8. Benchmark quality
 
 ```bash
 ./scripts/run-humaneval.sh          # thinking off, ~5 min
@@ -232,11 +243,11 @@ draft are the same, so nothing needs downloading again.
    also holds :8888.
 3. **Merge the toolkit's model cache** into `~/.cache/huggingface` instead of
    downloading it again; see [`docs/cache-transfer.md`](docs/cache-transfer.md#coming-from-the-docker-toolkit).
-4. **Install and serve**: steps 2–4 above. `01-install.sh` reuses
+4. **Install and serve**: steps 2–5 above. `./serve.sh install` reuses
    `~/spark/venv` if you have one, and its downloads are no-ops once the cache
    is merged.
-5. **Carry your flags over.** Your `DF_EXTRA` maps to `serve.env`. For
-   example, this toolkit run
+5. **Carry your flags over.** Your `DF_EXTRA` maps to the knobs in
+   `serve.sh`. For example, this toolkit run
 
    ```bash
    DF_EXTRA="--model-path Qwen/Qwen3.8-27B-FP8 --revision 017b9c7a… \
@@ -245,7 +256,7 @@ draft are the same, so nothing needs downloading again.
      --speculative-num-draft-tokens 10" ./start-dflash.sh
    ```
 
-   is `serve.sh`'s default, except `MEM_FRACTION=0.80`. The toolkit's own
+   is `serve.sh` as committed, except `MEM_FRACTION=0.80`. The toolkit's own
    flags (flashinfer, 8192-token chunks, no prefill graphs, extra_buffer,
    parsers, metrics, CPU pinning) are all carried over.
 6. **Benchmarks.** `bench/` now defaults to `http://127.0.0.1:8888/v1` with no
@@ -265,7 +276,7 @@ Each of these cost real time.
 - **Pin the target revision, not just the draft.** `hf download` without
   `--revision` takes the repo's mutable default, and SGLang needs `--revision`
   separately: downloading the right checkpoint does not make the server load
-  it. `01-install.sh` and `serve.sh` pin both from the same settings.
+  it. `./serve.sh install` and `./serve.sh` pin both from the same settings.
 - **A fast boot proves a snapshot was cached, not which one.** Upstream moved
   the NVFP4 default off the pinned `554ebba9` on 2026-08-22, and an unpinned
   launch served the newer `319f741c` for days before anyone noticed; the boot
@@ -292,8 +303,8 @@ Each of these cost real time.
   them, or changing the FlashInfer/Triton version, pays it again.
 - **Keep the CUDA compiler at the driver's version.** The driver is CUDA 13.0,
   and one of SGLang's dependencies pulls nvcc 13.4 from pip, whose output a
-  13.0 driver may refuse. The lock pins 13.0, and `serve.sh` puts the host's
-  `/usr/local/cuda` (13.0 on DGX OS) first, as the official image does. A
+  13.0 driver may refuse. The lock pins 13.0, and the server starts with the host's
+  `/usr/local/cuda` (13.0 on DGX OS) first on PATH, as the official image does. A
   `CUDA_HOME is not set` error means neither was found.
 - **"DFLASH block size mismatch" at boot is expected.** The draft was trained
   with blocks of 8; any other `DRAFT_TOKENS` logs this warning and works.
@@ -303,7 +314,7 @@ Each of these cost real time.
   `HF_HUB_OFFLINE=1` before relying on it.
 - **5 GDN slots per request, not 4.** DFlash2's verify needs an extra under
   `--mamba-radix-cache-strategy extra_buffer`. Sized on 4, a pool meant for 16
-  lands at 12. `serve.sh` does the ×5.
+  lands at 12. `MAX_RUNNING` does the ×5 for you.
 - **Boot-to-boot variance is ~8% on single-stream**, against <2% run-to-run
   within one server instance. Size A/B deltas against 8%, and re-measure on a
   fresh boot before believing a small win.
@@ -322,10 +333,10 @@ Each of these cost real time.
 ## Layout
 
 ```
-scripts/       00-check-host · 01-install · serve · install-service
-               build-manifest · run-humaneval · lib/config.sh (shared settings)
+serve.sh       the launcher: every knob, explained; also `install` and `manifest`
+scripts/       00-check-host · 01-install · serve-sglang · install-service
+               build-manifest · run-humaneval · lib/config.sh (shared defaults)
 requirements/  sglang-0.5.20-aarch64-py312.txt (lock) · constraints-cuda130.txt
-serve.env.sample   settings for serve.sh and the service (copy to serve.env)
 bench/         common.py · perf.py · longctx.py · humaneval/{generate,execute,report}.py
 results/       RESULTS.md: all measurements (Docker build)
                BUILD-MANIFEST.md: the build behind them
@@ -346,7 +357,7 @@ GB10_BASE_URL=http://other-box:8000/v1 GB10_MODEL=default python3 bench/perf.py 
 
 Without `GB10_MODEL` the model is read from `/v1/models`. Engine metrics (queue
 time, KV usage, accept length, cached tokens) come from `GB10_METRICS_URL`,
-default `<server>/metrics`; `serve.sh` enables them. Behind a gateway, point it
+default `<server>/metrics`; the server is started with them enabled. Behind a gateway, point it
 at the engine.
 
 `perf.py` takes `--levels`, `--prefill`, `--only <section>` and `--no-warmup`;
@@ -370,7 +381,7 @@ Every run records what it measured:
   the peak.
 
 Record the install next to a run with
-`./scripts/build-manifest.sh > results/BUILD-MANIFEST-native.md`: installed
+`./serve.sh manifest > results/BUILD-MANIFEST-native.md`: installed
 versions, whether the venv still matches the lock, cached snapshots, driver,
 and the running server's command line.
 
