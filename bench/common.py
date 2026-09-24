@@ -1,28 +1,54 @@
 """Shared client helpers for the GB10 benchmark scripts.
 
-Endpoint and key come from the environment so nothing is baked in:
+Endpoint, model and key come from the environment so nothing is baked in, and
+one command shape measures any server:
 
-    export GB10_BASE_URL=http://127.0.0.1:8000/v1   # SparkStation gateway
-    export GB10_API_KEY=your-litellm-master-key
-    export GB10_MODEL=default
+    GB10_BASE_URL=http://127.0.0.1:8888/v1 GB10_MODEL=qwen3.8-27b-sglang \\
+      python3 bench/perf.py
 
-For the standalone SGLang server (no SparkStation), use port 8888 and the
-served model name instead:
+Env:
+  GB10_BASE_URL  OpenAI-compatible API root INCLUDING /v1
+                 (default http://127.0.0.1:8000/v1, the SparkStation gateway;
+                 the standalone SGLang server is :8888)
+  GB10_MODEL     served model name; unset -> read from GB10_BASE_URL/models
+                 ("default" if the server lists it, else the first entry)
+  GB10_API_KEY   bearer token (default dummy-key, SparkStation's default)
+  GB10_METRICS_URL  Prometheus endpoint of the ENGINE (default: GB10_BASE_URL
+                 without /v1, plus /metrics). Behind the SparkStation gateway
+                 point it at the model container, e.g.
+                 http://127.0.0.1:8001/metrics. SGLang needs --enable-metrics.
+                 Unreachable -> the metric columns just show n/a.
+  GB10_METRICS_PORT  optional engine-side metrics sidecar on the same host
+                 (PLE counters of a patched vLLM; default 0 = off)
+  GB10_METRICS_INTERVAL  the sidecar's refresh period (default 5 s); settled
+                 reads wait one period + 1 s
 
-    export GB10_BASE_URL=http://127.0.0.1:8888/v1
-    export GB10_MODEL=qwen3.8-27b-sglang
+Everything goes through /v1/chat/completions — the path real clients use, so
+the chat template and the reasoning parser are part of the measurement.
+Token counts always come from the server's `usage`, never from counting SSE
+events: DFlash2 emits ~3.75 tokens per event (MTP several too), so
+event-counting inflates the rate by roughly 4x.
 """
+import itertools
 import json
 import os
+import random
+import re
+import threading
 import time
+import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 
 BASE_URL = os.environ.get("GB10_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
 API_KEY = os.environ.get("GB10_API_KEY", "dummy-key")
-MODEL = os.environ.get("GB10_MODEL", "default")
 
 CHAT_URL = f"{BASE_URL}/chat/completions"
-HEADERS = {"Content-Type": "application/json", "Authorization": f"Bearer {API_KEY}"}
+SERVER_ROOT = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
+METRICS_URL = os.environ.get("GB10_METRICS_URL") or f"{SERVER_ROOT}/metrics"
+HEADERS = {"Content-Type": "application/json"}
+if API_KEY:
+    HEADERS["Authorization"] = f"Bearer {API_KEY}"
 
 # The canonical decode-throughput prompt used for every figure in the README.
 CODE_PROMPT = (
@@ -31,17 +57,94 @@ CODE_PROMPT = (
 )
 
 
-def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=None):
-    """One chat completion.
+def _get(url, timeout=30):
+    req = urllib.request.Request(url, headers=HEADERS)
+    return urllib.request.urlopen(req, timeout=timeout).read().decode()
 
-    Returns a dict with e2e seconds, completion/prompt token counts, and (when
-    streaming) ttft. Always count `completion_tokens` over wall time rather than
-    counting SSE events: DFlash2 emits ~3.75 tokens per event, so event-counting
-    inflates the rate by roughly 4x.
+
+def _model():
+    if os.environ.get("GB10_MODEL"):
+        return os.environ["GB10_MODEL"]
+    try:
+        ids = [m["id"] for m in json.loads(_get(f"{BASE_URL}/models"))["data"]]
+    except Exception as e:  # noqa: BLE001 - report the actual cause
+        raise SystemExit(f"cannot read {BASE_URL}/models ({e}); is the server up, "
+                         f"is GB10_API_KEY right? Or set GB10_MODEL explicitly.") from None
+    if not ids:
+        raise SystemExit(f"{BASE_URL}/models lists no models; set GB10_MODEL explicitly.")
+    return "default" if "default" in ids else ids[0]
+
+
+MODEL = _model()
+
+
+# ---- unique prompts ----------------------------------------------------------
+
+def _make_vocab(n=30000, seed=1234):
+    """A fixed synthetic vocabulary of n pronounceable pseudo-words."""
+    rng = random.Random(seed)
+    cons, vows = "bcdfghjklmnprstvwz", "aeiou"
+    words = set()
+    while len(words) < n:
+        k = rng.choice((1, 2, 2, 3, 3, 4))
+        words.add("".join(rng.choice(cons) + rng.choice(vows) for _ in range(k)))
+    return sorted(words)
+
+
+# Zipf-distributed word draws (weight 1/rank^1.07, like natural language): a
+# realistic spread of distinct n-grams. A few dozen fixed words have so few
+# distinct n-grams that anything keyed on them (n-gram tables, page cache)
+# looks cheaper than it is on real text.
+_VOCAB = _make_vocab()
+_ZIPF_CUM = list(itertools.accumulate(1.0 / (r + 1) ** 1.07 for r in range(len(_VOCAB))))
+_TOK_PER_WORD = [None]
+_TOK_LOCK = threading.Lock()
+
+
+def _tokens_per_word():
+    """Calibrate words -> tokens once from the server's own `usage`: the prompt
+    token difference between a 2000-word and a one-word request. Works on any
+    OpenAI-compatible server (no /tokenize needed); falls back to 2.0."""
+    with _TOK_LOCK:
+        if _TOK_PER_WORD[0] is None:
+            sample = " ".join(random.Random(7).choices(_VOCAB, cum_weights=_ZIPF_CUM, k=2000))
+            try:
+                big = chat(f"{sample}\n\nReply with only: OK", 1)["prompt_tokens"]
+                small = chat("x\n\nReply with only: OK", 1)["prompt_tokens"]
+                _TOK_PER_WORD[0] = max(0.5, (big - small) / 2000)
+            except Exception:  # noqa: BLE001 - calibration is best-effort
+                _TOK_PER_WORD[0] = 2.0
+    return _TOK_PER_WORD[0]
+
+
+def unique_prompt(seed, approx_tokens, tail="Reply with only: OK"):
+    """A prompt nothing else shares — not even its first block.
+
+    The seed is the very first text, so the prefix/radix cache cannot reuse a
+    single block across prompts; build prompts from shared filler instead and
+    you measure cache hits rather than prefill or KV capacity. The body is
+    Zipf-drawn words from a 30k-word vocabulary.
+    """
+    rng = random.Random(seed)
+    words = int(approx_tokens / _tokens_per_word())
+    body = " ".join(rng.choices(_VOCAB, cum_weights=_ZIPF_CUM, k=words))
+    return f"Document {seed}. Below is a log excerpt.\n\n{body}\n\n{tail}"
+
+
+# ---- chat --------------------------------------------------------------------
+
+def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=None,
+         ignore_eos=False):
+    """One chat completion -> dict(e2e, ttft, completion_tokens, prompt_tokens,
+    cached_tokens, finish_reason, content). ttft is None when not streaming;
+    content is only collected when not streaming.
 
     `effort` maps to the template's reasoning_effort kwarg (xhigh is the
     template default; medium and low also exist, "high" does not). Ignored by
     the template when thinking is off.
+
+    ignore_eos=True (vLLM / SGLang extension) forces exactly max_tokens tokens;
+    a gateway may drop it — check completion_tokens.
     """
     template_kwargs = {"enable_thinking": thinking}
     if effort:
@@ -56,49 +159,196 @@ def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=
     }
     if stream:
         body["stream_options"] = {"include_usage": True}
+    if ignore_eos:
+        body["ignore_eos"] = True
     req = urllib.request.Request(CHAT_URL, json.dumps(body).encode(), HEADERS)
-    t0 = time.time()
+    t0 = time.perf_counter()
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.code}: {e.read()[:300]!r}") from None
 
-    if not stream:
-        d = json.loads(urllib.request.urlopen(req, timeout=timeout).read())
-        usage = d["usage"]
-        return {
-            "e2e": time.time() - t0,
-            "ttft": None,
-            "completion_tokens": usage["completion_tokens"],
-            "prompt_tokens": usage["prompt_tokens"],
-            "finish_reason": d["choices"][0].get("finish_reason"),
-            "content": d["choices"][0]["message"].get("content") or "",
-        }
-
-    ttft = None
-    completion_tokens = 0
-    prompt_tokens = 0
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        for raw in resp:
-            line = raw.decode().strip()
-            if not line.startswith("data: "):
-                continue
-            payload = line[6:]
-            if payload == "[DONE]":
-                break
-            try:
-                d = json.loads(payload)
-            except ValueError:
-                continue
-            choices = d.get("choices") or []
-            if choices and ttft is None:
-                delta = choices[0].get("delta", {}) or {}
-                if delta.get("content") or delta.get("reasoning_content"):
-                    ttft = time.time() - t0
-            if d.get("usage"):
-                completion_tokens = d["usage"].get("completion_tokens", completion_tokens)
-                prompt_tokens = d["usage"].get("prompt_tokens", prompt_tokens)
+    ttft, usage, finish, content = None, {}, None, ""
+    with resp:
+        if not stream:
+            d = json.loads(resp.read())
+            usage = d.get("usage") or {}
+            finish = d["choices"][0].get("finish_reason")
+            content = d["choices"][0]["message"].get("content") or ""
+        else:
+            for raw in resp:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line.startswith("data: "):
+                    continue
+                payload = line[6:]
+                if payload == "[DONE]":
+                    break
+                try:
+                    d = json.loads(payload)
+                except ValueError:
+                    continue
+                for ch in d.get("choices") or []:
+                    delta = ch.get("delta") or {}
+                    if ttft is None and (delta.get("content") or delta.get("reasoning_content")
+                                         or delta.get("reasoning")):
+                        ttft = time.perf_counter() - t0
+                    finish = ch.get("finish_reason") or finish
+                if d.get("usage"):
+                    usage = d["usage"]
+    details = usage.get("prompt_tokens_details") or {}
     return {
-        "e2e": time.time() - t0,
+        "e2e": time.perf_counter() - t0,
         "ttft": ttft,
-        "completion_tokens": completion_tokens,
-        "prompt_tokens": prompt_tokens,
-        "finish_reason": None,
-        "content": "",
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        # Only reported when the server is asked to (vLLM
+        # --enable-prompt-tokens-details, SGLang --enable-cache-report);
+        # otherwise None and the prefix-cache counters from metrics() are used.
+        "cached_tokens": details.get("cached_tokens"),
+        "finish_reason": finish,
+        "content": content,
     }
+
+
+def decode_rate(r):
+    """Generation speed after the first token (tok/s), None if unknown."""
+    if r["ttft"] is None or r["e2e"] <= r["ttft"] or r["completion_tokens"] < 2:
+        return None
+    return (r["completion_tokens"] - 1) / (r["e2e"] - r["ttft"])
+
+
+# ---- engine metrics ----------------------------------------------------------
+
+# key -> candidate metric names (vLLM and SGLang); the first one present wins.
+_COUNTERS = {
+    "queue_sum": ("vllm:request_queue_time_seconds_sum", "sglang:queue_time_seconds_sum"),
+    "queue_count": ("vllm:request_queue_time_seconds_count", "sglang:queue_time_seconds_count"),
+    "pc_hits": ("vllm:prefix_cache_hits_total", "sglang:cached_tokens_total"),
+    "drafts": ("vllm:spec_decode_num_drafts_total",),
+    "draft_tokens": ("vllm:spec_decode_num_draft_tokens_total",),
+    "accepted": ("vllm:spec_decode_num_accepted_tokens_total",),
+    "preempted": ("vllm:num_preemptions_total",),
+}
+# Gauges (current value, not counters): max over label sets, not sum.
+_GAUGES = {
+    "kv_usage": ("vllm:kv_cache_usage_perc", "vllm:gpu_cache_usage_perc",
+                 "sglang:token_usage"),
+    "running": ("vllm:num_requests_running", "sglang:num_running_reqs"),
+    "waiting": ("vllm:num_requests_waiting", "sglang:num_queue_reqs"),
+    "accept_len": ("sglang:spec_accept_length",),
+}
+
+
+def _scrape(text, names, agg):
+    for name in names:
+        vals = re.findall(rf"^{re.escape(name)}(?:{{[^}}]*}})?\s+([0-9.eE+-]+)$", text, re.M)
+        if vals:
+            return agg(float(v) for v in vals)
+    return None
+
+
+def metrics():
+    """Selected engine counters and gauges from METRICS_URL; {} if unreachable
+    — the benches then just omit the derived columns."""
+    try:
+        text = _get(METRICS_URL, timeout=10)
+    except Exception:  # noqa: BLE001 - metrics are optional
+        return {}
+    out = {}
+    for table, agg in ((_COUNTERS, sum), (_GAUGES, max)):
+        for key, names in table.items():
+            v = _scrape(text, names, agg)
+            if v is not None:
+                out[key] = v
+    return out
+
+
+def delta(m0, m1, key):
+    if key in m0 and key in m1:
+        return m1[key] - m0[key]
+    return None
+
+
+def spec_summary(m0, m1):
+    """Speculative-decoding summary for a metrics() pair, '' when unavailable.
+
+    vLLM exposes counters (exact over the interval); SGLang only a gauge of the
+    recent average accept length, read at the end of the interval."""
+    d, a, dt = delta(m0, m1, "drafts"), delta(m0, m1, "accepted"), delta(m0, m1, "draft_tokens")
+    if d and a is not None and dt:
+        return f"spec {1 + a / d:.2f} tok/step, accept {100 * a / dt:.0f}%"
+    if m1.get("accept_len"):
+        return f"accept_len {m1['accept_len']:.2f}"
+    return ""
+
+
+class PeakWatch:
+    """Samples KV-pool usage, running and waiting requests every `every` s in
+    the background; `with PeakWatch() as p:` then read p.peak afterwards."""
+
+    def __init__(self, every=1.0):
+        self.every, self.peak = every, {}
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        while not self._stop.wait(self.every):
+            m = metrics()
+            for key in ("kv_usage", "running", "waiting"):
+                if m.get(key) is not None:
+                    self.peak[key] = max(self.peak.get(key, 0.0), m[key])
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join()
+
+
+# ---- optional PLE sidecar (patched vLLM only) --------------------------------
+
+_SIDECAR_PORT = int(os.environ.get("GB10_METRICS_PORT", "0") or 0)
+_SIDECAR = (f"http://{urlparse(BASE_URL).hostname}:{_SIDECAR_PORT}/metrics"
+            if _SIDECAR_PORT else None)
+_PLE = {"ple_ops": "vllm:ple_mmap_ops_total", "ple_op_ms": "vllm:ple_mmap_op_ms_total",
+        "ple_gather_ms": "vllm:ple_mmap_gather_ms_total"}
+_SIDECAR_LAG = float(os.environ.get("GB10_METRICS_INTERVAL", "5") or 5) + 1.0
+_SIDECAR_SEEN = [False]
+
+
+def sidecar(settle=False):
+    """PLE gather counters from the engine-side sidecar; {} when not configured
+    or unreachable.
+
+    The sidecar copies the engine's counters into Prometheus only every few
+    seconds, so a read right after a short request can miss its ops (they
+    then land in the NEXT measurement). settle=True waits one refresh period
+    first — use it for every read that closes (or opens, after other
+    traffic) a measured interval."""
+    if not _SIDECAR:
+        return {}
+    if settle and _SIDECAR_SEEN[0]:
+        time.sleep(_SIDECAR_LAG)
+    try:
+        text = urllib.request.urlopen(_SIDECAR, timeout=5).read().decode()
+    except Exception:  # noqa: BLE001 - optional
+        return {}
+    out = {}
+    for key, name in _PLE.items():
+        m = re.search(rf"^{re.escape(name)}\s+([0-9.eE+-]+)$", text, re.M)
+        if m:
+            out[key] = float(m.group(1))
+    _SIDECAR_SEEN[0] = _SIDECAR_SEEN[0] or bool(out)
+    return out
+
+
+def ple_summary(s0, s1):
+    """'PLE 3.1 ms/op (gather 1.2)' over a sidecar() pair — per-workload cost.
+    op = hash + gather + H2D, including the wait for the preceding layer."""
+    ops = delta(s0, s1, "ple_ops")
+    if not ops:
+        return ""
+    return (f"PLE {delta(s0, s1, 'ple_op_ms') / ops:.1f} ms/op "
+            f"(gather {delta(s0, s1, 'ple_gather_ms') / ops:.1f})")

@@ -1,1 +1,6 @@
 .DS_Store
+__pycache__/
+# run-humaneval.sh outputs
+data/
+results/gen_*.json
+results/exec_*.json

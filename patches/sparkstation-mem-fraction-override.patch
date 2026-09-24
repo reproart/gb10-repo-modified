@@ -20,6 +20,8 @@ concurrency is bound by mamba slots and long context by prefill, not by memory
 capacity. See results/RESULTS.md. The override exists for headroom and for
 co-hosting, not for speed.
 
+Generated against SparkStation 7b2e319 (2026-09-20).
+
 Apply from the sparkstation repo root:
 
     git apply /path/to/sparkstation-mem-fraction-override.patch
@@ -32,9 +34,11 @@ Then set it on a model in models.yaml:
 A full restart is required — the supervisor imports the launcher, so a
 model-only restart will not pick up the change.
 
+diff --git a/supervisor/launchers/sglang_launcher.py b/supervisor/launchers/sglang_launcher.py
+index ab4dd16..1f49a1a 100644
 --- a/supervisor/launchers/sglang_launcher.py
 +++ b/supervisor/launchers/sglang_launcher.py
-@@
+@@ -120,7 +120,18 @@ class SGLangLauncher(ModelLauncher):
                  # Calculate mem_fraction_static from allocated memory_gb, with a
                  # SAFETY CLAMP: never exceed 0.82 on unified memory (see the
                  # wedge note above; 0.88 hung the node, 0.78 booted clean).
