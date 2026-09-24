@@ -258,8 +258,24 @@ results/   RESULTS.md — all measurements
 docs/      cache-transfer.md — move the model cache to a new machine, offline
 ```
 
-Scripts read `GB10_BASE_URL`, `GB10_API_KEY`, `GB10_MODEL` from the environment
-(see [`.env.example`](.env.example)); nothing is baked in.
+Scripts read `GB10_BASE_URL` (API root including `/v1`), `GB10_MODEL` and
+`GB10_API_KEY` from the environment; nothing is baked in. The same command
+measures any OpenAI-compatible server, one model and endpoint per run:
+
+```bash
+GB10_BASE_URL=http://127.0.0.1:8888/v1 GB10_MODEL=qwen3.8-27b-sglang python3 bench/perf.py
+GB10_BASE_URL=http://127.0.0.1:8000/v1 GB10_MODEL=default python3 bench/perf.py --levels 1 8 16
+```
+
+Without `GB10_MODEL` the model is read from `/v1/models`. Optional engine
+metrics (queue time, KV usage, accept length, cached tokens) come from
+`GB10_METRICS_URL`, default `<server>/metrics`; behind the SparkStation gateway
+point it at the model container, `http://127.0.0.1:8001/metrics`, and start
+SGLang with `--enable-metrics`. Without it those columns show `n/a`.
+
+`perf.py` takes `--levels`, `--prefill`, `--only <section>` and `--no-warmup`;
+`longctx.py` takes `--ctx`, `--streams` and `--gen N` (forced generation, a KV
+capacity test). See each script's docstring.
 
 ## Caveats
 
