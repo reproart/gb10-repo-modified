@@ -31,16 +31,23 @@ while later ones prefill: a real capacity test. N ~ 1000 is enough — while
 another stream prefills, a resident stream only decodes a few hundred tokens.
 The "gen" column shows what was actually generated (a gateway may drop
 ignore_eos).
+
+This is the thermally heaviest workload in the suite (sustained prefill
+measured 74 °C against an 80 °C suspend threshold): with a local nvidia-smi
+every row reports its peak temperature and lowest SM clock, and throttling is
+flagged. The output is saved under results/runs/ like perf.py's.
 """
 import argparse
 import os
 import statistics
 import threading
+import sys
 import time
 import uuid
 
 import common
-from common import PeakWatch, chat, delta, metrics, unique_prompt
+from common import (GpuWatch, PeakWatch, cache_hit_significant, calibrate, chat, delta, metrics,
+                    restarted, unique_prompt)
 
 
 def run_level(n, ctx, gen):
@@ -57,14 +64,14 @@ def run_level(n, ctx, gen):
 
     m0 = metrics()
     t0 = time.perf_counter()
-    with PeakWatch(every=2.0) as watch:
+    with PeakWatch(every=2.0) as watch, GpuWatch() as gpu:
         threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
     wall = time.perf_counter() - t0
-    return [r for r in out if r], errors, wall, m0, metrics(), watch.peak
+    return [r for r in out if r], errors, wall, m0, metrics(), watch.peak, gpu
 
 
 def main():
@@ -79,8 +86,14 @@ def main():
                     help="concurrency levels (default: 4 8 12)")
     args = ap.parse_args()
 
-    print(f"endpoint {common.BASE_URL}  model {common.MODEL}  ctx ~{args.ctx} tok/stream")
+    saved = common.save_output("longctx")
+    common.print_header(f"  ctx ~{args.ctx} tok/stream")
     print("warmup...", flush=True)
+    try:
+        chat("hi", 8, stream=True)  # streamed: also proves usage comes back in streams
+    except Exception as e:  # noqa: BLE001
+        sys.exit(f"warmup request failed: {e}")
+    calibrate()
     chat(unique_prompt(uuid.uuid4().hex, 400), 16)
     print("ok\n")
     print(f"{'streams':>7} {'ctx each':>9} {'total ctx':>10} {'gen':>6} {'cached':>7} {'wall':>8} "
@@ -88,7 +101,10 @@ def main():
     print("-" * 99)
 
     for n in args.streams:
-        done, errors, wall, m0, m1, peak = run_level(n, args.ctx, args.gen)
+        done, errors, wall, m0, m1, peak, gpu = run_level(n, args.ctx, args.gen)
+        if restarted(m0, m1):
+            print(f"{n:>7}  !! the engine restarted during this row (OOM, or the supervisor's "
+                  "health probe?) — its numbers are not comparable")
         if errors:
             print(f"{n:>7}  {len(errors)} request(s) failed, e.g. {errors[0][:120]}"
                   " — check `docker logs` (OOM, or the supervisor restarted the model?)")
@@ -124,10 +140,14 @@ def main():
                 line += (f" -> the pool holds ~{running / peak['kv_usage']:.1f} streams of "
                          f"~{per / 1e3:.0f}k (~{running * per / peak['kv_usage'] / 1e6:.2f}M tokens)")
             print(line)
-        if hits:
+        if str(gpu):
+            print(f"        {gpu}")
+        if cache_hit_significant(hits, total):
             print(f"        !! {hits:.0f} prefix-cache hit tokens on unique prompts — "
                   "the numbers above are optimistic")
         time.sleep(4)
+    if saved:
+        print(f"\nsaved -> {saved}")
 
 
 if __name__ == "__main__":
