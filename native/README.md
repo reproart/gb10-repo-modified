@@ -289,6 +289,12 @@ For a single interactive user, `MAX_RUNNING=4` gives the memory back to KV at
 over 8; a second machine measured +41.6%), **10 for concurrent serving**, the
 default here. You cannot have both.
 
+Move `MAX_RUNNING` with it. The DFlash2 verify buffer
+(`intermediate_ssm_state_cache` in the boot log) costs ~70 MB per running
+request per draft token: 23.2 GB at 32 x 10 on the native build, ~37 GB at
+32 x 16, which the KV pool pays for. Single-stream is
+`DRAFT_TOKENS=16 MAX_RUNNING=16 ./serve.sh` (~18 GB).
+
 Past 16, `accept_len` *falls* even though more tokens are drafted: the
 drafter can't sustain longer correct runs, so you pay draft compute for tokens
 that get rejected. Quality is unaffected at any value, since every draft token
