@@ -372,6 +372,10 @@ Each of these cost real time.
   headers; the Docker image had them, DGX OS doesn't:
   `sudo apt install python3.12-dev`. `00-check-host.sh`, `install` and
   `serve.sh` now check for them (and for a C compiler) before anything else.
+- **`FileNotFoundError: 'ninja'` while capturing CUDA graphs.** FlashInfer's
+  JIT runs a bare `ninja`, which lives in the venv's `bin/`; the Docker image
+  had its venv active, a plain `python` from the venv does not. The server is
+  now started with the venv's `bin/` on `PATH`.
 - **Keep the CUDA compiler at the driver's version.** The driver is CUDA 13.0,
   and one of SGLang's dependencies pulls nvcc 13.4 from pip, whose output a
   13.0 driver may refuse. The lock pins 13.0, and the server starts with the host's
