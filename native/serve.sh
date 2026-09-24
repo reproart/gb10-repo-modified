@@ -12,9 +12,23 @@
 # an edit: sudo systemctl restart gb10-sglang
 cd "$(dirname "$0")" || exit 1
 
-# Where the venv lives: $GB10_WORKDIR/venv. `./serve.sh install` creates it;
-# it also carries the hf CLI.
+# Where the venvs live. `./serve.sh install` creates one per SGLang version,
+# $GB10_WORKDIR/venv-sglang-<version>, and points $GB10_WORKDIR/venv (with the
+# hf CLI in it) at the one installed last.
 export GB10_WORKDIR="$HOME/spark"
+
+# SGLang version. 0.5.20 is the one this recipe was built against: its lock is
+# in requirements/ and every flag the server gets exists there. To try a newer
+# one: set it, ./serve.sh install, ./serve.sh. Its own venv leaves the working
+# one untouched, so rolling back is setting this back. A version with no lock
+# yet is resolved on install and its lock written to requirements/; commit it
+# once that version has served and benchmarked well. If a newer SGLang renames
+# a flag, the boot fails with "unrecognized arguments": adjust
+# scripts/serve-sglang.sh. Releases: https://pypi.org/project/sglang/#history
+export SGLANG_VERSION=0.5.20
+# Extra package index, for nightly builds (then use the exact nightly version
+# string above): https://docs.sglang.ai/whl/cu130/  Empty = PyPI only.
+export SGLANG_INDEX=''
 
 # Required: the target checkpoint and the DFlash2 draft, downloaded once with
 # a pinned --revision (README, "Weights"). Targets measured here:

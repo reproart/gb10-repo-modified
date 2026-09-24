@@ -7,7 +7,11 @@
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 GB10_WORKDIR="${GB10_WORKDIR:-$HOME/spark}"
-VENV="$GB10_WORKDIR/venv"
+# One venv per SGLang version, so installing a new one never touches the one
+# that works. $GB10_WORKDIR/venv is a symlink to the last one installed.
+SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
+SGLANG_INDEX="${SGLANG_INDEX:-}"
+VENV="$GB10_WORKDIR/venv-sglang-$SGLANG_VERSION"
 
 # Local checkpoint directories (README, "Weights"): an `hf download
 # --local-dir` target, or a snapshot directory inside an HF cache.
