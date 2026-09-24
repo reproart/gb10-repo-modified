@@ -2,11 +2,12 @@
 # Install stock SGLang natively (no Docker). The weights are downloaded
 # separately, once (README, "Weights").
 #
-#   ./serve.sh install
+#   ./serve.sh install                # the SGLang version of the default profile
+#   ./serve.sh gemma4-31b install     # ... of another profile
 #
-# SGLANG_VERSION (set in serve.sh) picks the version; each one gets its own
-# venv, $GB10_WORKDIR/venv-sglang-<version>, and $GB10_WORKDIR/venv is pointed
-# at the one installed last. The venv also carries the hf CLI. Re-running is
+# SGLANG_VERSION (set in the profile, models/<name>.sh) picks the version;
+# each one gets its own venv, $GB10_WORKDIR/venv-sglang-<version>, and
+# $GB10_WORKDIR/venv is pointed at the one installed last. The venv also carries the hf CLI. Re-running is
 # safe: an existing venv is brought in line with the lock.
 #
 # Every install goes through a lock, requirements/sglang-<version>-<arch>-

@@ -1,10 +1,20 @@
 # shellcheck shell=bash disable=SC2034  # variables are used by the scripts that source this
 # Shared defaults for the scripts in scripts/. Source it, don't run it.
 #
-# Variables already in the environment win: ./serve.sh in the repo root
-# exports the settings, and anything it leaves unset gets the default here.
+# Precedence: variables already in the environment > the model profile
+# (models/$PROFILE.sh, whose values are all "${VAR:-default}") > the defaults
+# here. ./serve.sh in the repo root exports the machine settings and PROFILE.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# The model profile: its weights, SGLang version and flags (model_args).
+PROFILE="${PROFILE:-qwen3.8-27b}"
+if [ ! -f "$ROOT/models/$PROFILE.sh" ]; then
+  echo "no profile models/$PROFILE.sh; profiles: $(cd "$ROOT/models" && ls -- *.sh | sed 's/\.sh$//' | paste -sd' ')" >&2
+  exit 2
+fi
+# shellcheck source=/dev/null
+. "$ROOT/models/$PROFILE.sh"
 
 GB10_WORKDIR="${GB10_WORKDIR:-$HOME/spark}"
 # One venv per SGLang version, so installing a new one never touches the one
@@ -14,9 +24,10 @@ SGLANG_INDEX="${SGLANG_INDEX:-}"
 VENV="$GB10_WORKDIR/venv-sglang-$SGLANG_VERSION"
 
 # Local checkpoint directories (README, "Weights"): an `hf download
-# --local-dir` target, or a snapshot directory inside an HF cache.
-MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
-DRAFT_DIR="${DRAFT_DIR:-/models/Qwen3.8-27B-DFlash2}"
+# --local-dir` target, or a snapshot directory inside an HF cache. The
+# profile sets them; DRAFT_DIR is empty for a model served without a draft.
+MODEL_DIR="${MODEL_DIR:?the profile must set MODEL_DIR}"
+DRAFT_DIR="${DRAFT_DIR:-}"
 
 # The Hub commit a checkpoint directory holds, or "unknown". A cache snapshot
 # is named after it; `hf download --local-dir` records it per file in

@@ -4,7 +4,8 @@
 #
 #   ./serve.sh manifest > results/BUILD-MANIFEST-native.md
 #
-# Through ./serve.sh it reports the MODEL_DIR / DRAFT_DIR configured there.
+# Through ./serve.sh it reports the profile's MODEL_DIR / DRAFT_DIR:
+#   ./serve.sh gemma4-31b manifest
 #
 # Branches and version ranges move; commits and exact versions do not.
 set -uo pipefail
@@ -18,10 +19,11 @@ Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) on \`$(hostname)\`, venv \`$VENV\`.
 
 | Input | Resolved value |
 |---|---|
+| Profile | \`$PROFILE\` |
 | Target dir | \`$MODEL_DIR\` |
 | Target revision | \`$(revision_of "$MODEL_DIR")\` |
-| Draft dir | \`$DRAFT_DIR\` |
-| Draft revision | \`$(revision_of "$DRAFT_DIR")\` |
+| Draft dir | \`${DRAFT_DIR:-(none)}\` |
+| Draft revision | \`$([ -n "$DRAFT_DIR" ] && revision_of "$DRAFT_DIR" || echo -)\` |
 | SGLANG_VERSION (configured) | \`$SGLANG_VERSION\`${SGLANG_INDEX:+ from \`$SGLANG_INDEX\`} |
 EOF
 
