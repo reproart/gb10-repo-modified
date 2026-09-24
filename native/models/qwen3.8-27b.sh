@@ -43,6 +43,11 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.8-27b-sglang}"
 # 16 wins a single stream (78.6 vs 65.2 tok/s, +28% over the default 8).
 # Past 16 accept_len falls and both get worse. Any value other than the
 # draft's block size (8) logs "DFLASH block size mismatch" at boot; harmless.
+# Change it together with MAX_RUNNING: the verify buffer
+# (intermediate_ssm_state_cache in the boot log) holds ~70 MB per running
+# request per draft token. 32 x 10 measured 23.2 GB natively; 32 x 16 would be
+# ~37 GB, taken out of the KV pool, for less aggregate. For single-stream use:
+# DRAFT_TOKENS=16 MAX_RUNNING=16 (~18 GB).
 DRAFT_TOKENS="${DRAFT_TOKENS:-10}"
 
 # Concurrent requests. Concurrency on this hybrid model is bought with GDN
