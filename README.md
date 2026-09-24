@@ -230,7 +230,8 @@ Each of these cost real time.
   nothing — the console script imports from `.venv/bin`. Copy it across too.
 - **Gateway reports "not healthy" while working.** `_gateway_healthy()`
   hardcodes `Bearer dummy-key`, so a custom `LITELLM_MASTER_KEY` gets HTTP 400.
-  Patch in [`patches/`](patches/).
+  Fixed upstream in SparkStation `33be0f1` (2026-08-31); for older checkouts
+  the patch is in [`patches/`](patches/).
 - **Only the FLUX launcher forwards `HF_TOKEN`.** A gated model can't
   authenticate its own download; pre-pull on the host.
 - **Never `docker rm -f` a managed container.** The supervisor's state goes
