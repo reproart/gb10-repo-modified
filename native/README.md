@@ -36,6 +36,10 @@ to report numbers it can't trust.
 git clone https://github.com/reproart/gb10-repo-modified.git
 cd gb10-repo-modified/native      # this directory is the whole project
 
+# System packages: venv support, plus the headers and C compiler Triton needs at boot
+sudo apt install python3.12-venv python3.12-dev build-essential
+sudo mkdir -p /models && sudo chown $USER /models
+
 ./serve.sh install     # venv with stock SGLang 0.5.20 + the hf CLI, no Docker (~10 GB)
 
 # The weights (one-time, ~35 GB), at the revisions the results were measured on:
@@ -54,7 +58,6 @@ $HF download z-lab/Qwen3.8-27B-DFlash2 --revision 50307d4c4cde6860d4eee73e2547cd
 python3 bench/perf.py --only warmup  # optional: compile first-use kernels now
 ```
 
-`/models` needs to exist and be yours: `sudo mkdir -p /models && sudo chown $USER /models`.
 All model repos are public; no token needed.
 
 Built for Ubuntu 24.04 (DGX OS), kernel 6.17-nvidia, driver 580.x / CUDA 13.0,
@@ -84,7 +87,10 @@ venv carries the `hf` CLI too.
 
 It installs the exact versions in
 [`requirements/sglang-0.5.20-aarch64-py312.txt`](requirements/sglang-0.5.20-aarch64-py312.txt):
-all 206 packages have prebuilt aarch64 wheels, so nothing compiles. The lock
+all 206 packages have prebuilt aarch64 wheels, so nothing compiles at install
+time. (At first boot Triton compiles small C launchers, which is what
+`python3.12-dev` and `build-essential` are for; install checks they are
+there.) The lock
 holds the pip-installed CUDA compiler at 13.0 to match the driver
 ([`constraints-cuda130.txt`](requirements/constraints-cuda130.txt)); left
 alone, one dependency pulls nvcc 13.4.
@@ -361,6 +367,11 @@ Each of these cost real time.
   FP8 boot took 77 minutes, later boots 5.5 (NVFP4: 3.4). Don't kill a quiet
   first boot. The caches are `~/.cache/flashinfer` and `~/.triton`; deleting
   them, or changing the FlashInfer/Triton version, pays it again.
+- **`fatal error: Python.h` at boot, then "Triton is not supported on current
+  platform".** Triton builds a C launcher on first use and needs the Python
+  headers; the Docker image had them, DGX OS doesn't:
+  `sudo apt install python3.12-dev`. `00-check-host.sh`, `install` and
+  `serve.sh` now check for them (and for a C compiler) before anything else.
 - **Keep the CUDA compiler at the driver's version.** The driver is CUDA 13.0,
   and one of SGLang's dependencies pulls nvcc 13.4 from pip, whose output a
   13.0 driver may refuse. The lock pins 13.0, and the server starts with the host's

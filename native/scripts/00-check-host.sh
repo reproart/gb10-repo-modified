@@ -7,7 +7,9 @@
 # venv's torch sees the GPU.
 set -uo pipefail
 
-VENV="${GB10_WORKDIR:-$HOME/spark}/venv"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/config.sh"
+# The venv last installed (a link to venv-sglang-<version>).
+VENV="$GB10_WORKDIR/venv"
 fail=0
 
 echo "== driver / GPU =="
@@ -27,10 +29,15 @@ if command -v python3.12 >/dev/null; then
   python3.12 -c 'import venv, ensurepip' 2>/dev/null \
     && echo "python3.12 with venv: ok" \
     || { echo "!! python3.12 lacks venv/ensurepip: sudo apt install python3.12-venv"; fail=1; }
+  if missing="$(check_build_deps python3.12)"; then
+    echo "headers and C compiler for Triton: ok"
+  else
+    echo "!! missing:"; echo "$missing"; fail=1
+  fi
 else
   echo "!! python3.12 not found (the lock file in requirements/ is for 3.12)"; fail=1
 fi
-[ "$(uname -m)" = aarch64 ] || echo "note: $(uname -m), not aarch64 - the lock file will not apply"
+[ "$(uname -m)" = aarch64 ] || echo "note: $(uname -m), not aarch64 - no committed lock; install will resolve one"
 
 echo
 echo "== memory =="

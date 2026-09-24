@@ -40,6 +40,11 @@ if [ ! -x "$VENV/bin/python" ]; then
   new_venv=1
 fi
 pyver="$("$VENV/bin/python" -c 'import sys; print(f"{sys.version_info[0]}{sys.version_info[1]}")')"
+if ! missing="$(check_build_deps "$VENV/bin/python")"; then
+  echo "The server will not start without these (install them, then re-run):" >&2
+  echo "$missing" >&2
+  exit 1
+fi
 "$VENV/bin/python" -m pip install -q -U pip uv
 UV=("$VENV/bin/uv" pip install --python "$VENV/bin/python")
 index=() cons=()
