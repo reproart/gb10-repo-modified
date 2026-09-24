@@ -22,10 +22,12 @@ Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) on \`$(hostname)\`, venv \`$VENV\`.
 | Target revision | \`$(revision_of "$MODEL_DIR")\` |
 | Draft dir | \`$DRAFT_DIR\` |
 | Draft revision | \`$(revision_of "$DRAFT_DIR")\` |
+| SGLANG_VERSION (configured) | \`$SGLANG_VERSION\`${SGLANG_INDEX:+ from \`$SGLANG_INDEX\`} |
 EOF
 
-"$VENV/bin/python" - "$ROOT"/requirements/sglang-*-aarch64-py312.txt <<'EOF' 2>/dev/null || echo "| venv | (missing or broken: $VENV) |"
+"$VENV/bin/python" - "$ROOT"/requirements/sglang-*-py*.txt <<'EOF' 2>/dev/null || echo "| venv | (missing or broken: $VENV) |"
 import importlib.metadata as m
+import platform
 import re
 import sys
 
@@ -43,11 +45,12 @@ for name in ("sglang", "sglang-kernel", "flashinfer-python", "flashinfer-cubin",
 print(f"| torch | `{torch.__version__}` (CUDA {torch.version.cuda}) |")
 
 # Compare the venv with the lock file for the installed SGLang version.
-lock = [p for p in sys.argv[1:] if f"sglang-{v('sglang')}-" in p]
+want = f"sglang-{v('sglang')}-{platform.machine()}-py{sys.version_info[0]}{sys.version_info[1]}.txt"
+lock = [p for p in sys.argv[1:] if p.endswith("/" + want)]
 if lock:
     pins = dict(re.match(r"([A-Za-z0-9_.-]+)==(\S+)", line).groups()
                 for line in open(lock[0]) if re.match(r"[A-Za-z0-9_.-]+==", line))
-    off = [f"{n} {v(n)} (lock {want})" for n, want in pins.items() if v(n) != want]
+    off = [f"{n} {v(n)} (lock {pin})" for n, pin in pins.items() if v(n) != pin]
     name = lock[0].rsplit("/", 1)[-1]
     print(f"| matches `{name}` | " + ("yes |" if not off else f"no: {'; '.join(off)} |"))
 else:

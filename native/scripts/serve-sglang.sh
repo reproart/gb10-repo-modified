@@ -42,7 +42,8 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 # nobody expected fail loudly instead of quietly downloading.
 HF_OFFLINE="${HF_OFFLINE:-1}"
 
-[ -x "$VENV/bin/python" ] || { echo "no venv at $VENV - run ./serve.sh install" >&2; exit 1; }
+[ -x "$VENV/bin/python" ] || {
+  echo "no venv for SGLang $SGLANG_VERSION at $VENV - run ./serve.sh install" >&2; exit 1; }
 for d in "$MODEL_DIR" "$DRAFT_DIR"; do
   [ -f "$d/config.json" ] || {
     echo "no checkpoint at $d (config.json missing) - see README, \"Weights\"" >&2; exit 1; }
@@ -99,6 +100,7 @@ if [ -n "$CPUSET" ] && command -v taskset >/dev/null; then pin=(taskset -c "$CPU
 # The boot log does not say which revision a directory holds; this line does.
 echo "target  $MODEL_DIR (revision $(revision_of "$MODEL_DIR"))"
 echo "draft   $DRAFT_DIR (revision $(revision_of "$DRAFT_DIR")), $DRAFT_TOKENS draft tokens"
+echo "sglang  $SGLANG_VERSION ($VENV)"
 echo "cap     $MAX_RUNNING requests (GDN pool $MAMBA_CACHE), mem-fraction $MEM_FRACTION"
 echo "nvcc    $(command -v nvcc >/dev/null && nvcc --version | grep -oE 'release [0-9.]+' || echo 'not on PATH; set CUDA_HOME if kernel JIT fails')"
 echo "listen  http://$HOST:$PORT/v1   CPUs ${CPUSET:-all}"

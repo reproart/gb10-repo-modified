@@ -78,16 +78,44 @@ checks that the venv's torch sees the GPU.
 ./serve.sh install
 ```
 
-Creates `~/spark/venv` (`GB10_WORKDIR` in `serve.sh`) and installs SGLang
-into it. The same venv carries the `hf` CLI.
+Creates `~/spark/venv-sglang-0.5.20` (`GB10_WORKDIR` and `SGLANG_VERSION`
+in `serve.sh`), installs SGLang into it, and points `~/spark/venv` at it. The
+venv carries the `hf` CLI too.
 
-On aarch64 + Python 3.12 it installs the exact versions in
+It installs the exact versions in
 [`requirements/sglang-0.5.20-aarch64-py312.txt`](requirements/sglang-0.5.20-aarch64-py312.txt):
 all 206 packages have prebuilt aarch64 wheels, so nothing compiles. The lock
 holds the pip-installed CUDA compiler at 13.0 to match the driver
 ([`constraints-cuda130.txt`](requirements/constraints-cuda130.txt)); left
-alone, one dependency pulls nvcc 13.4. To move to another SGLang version,
-regenerate the lock with the command at its top.
+alone, one dependency pulls nvcc 13.4.
+
+### Trying a newer SGLang
+
+```bash
+# in serve.sh: export SGLANG_VERSION=0.5.21
+./serve.sh install     # new venv next to the old one, plus a new lock
+./serve.sh             # the startup lines name the version and venv in use
+```
+
+- **Each version has its own venv**, `~/spark/venv-sglang-<version>`, so
+  the one that works stays untouched. Rolling back is setting
+  `SGLANG_VERSION` back; its venv is still there. Delete the ones you're done
+  with (~8 GB each).
+- **Each version has its own lock.** With none in `requirements/` for this
+  version, machine and Python, `install` resolves `sglang==<version>` with the
+  same CUDA 13.0 hold and writes one, e.g.
+  `requirements/sglang-0.5.21-aarch64-py312.txt`. Commit it once that version
+  has served and benchmarked well; delete it to re-resolve. A version that
+  doesn't resolve leaves nothing behind.
+- **Nightly builds:** `SGLANG_INDEX=https://docs.sglang.ai/whl/cu130/` and
+  the exact nightly version string.
+- **What can break:** the server flags in
+  [`scripts/serve-sglang.sh`](scripts/serve-sglang.sh) were checked against
+  0.5.20. A newer version that renames one fails at boot with
+  `unrecognized arguments`. One that needs a newer CUDA than the 13.0 hold
+  fails to resolve: with a newer driver, empty `SGLANG_CONSTRAINTS` lifts it.
+  And no throughput or quality number here has been measured on it: run
+  `bench/perf.py` before trusting it.
 
 It also tries to install `flashinfer-cubin` (precompiled kernels, as the
 official image has) from FlashInfer's own index. If that fails, it says so,
@@ -278,7 +306,7 @@ draft are the same, so nothing needs downloading again.
    Nothing is copied or downloaded. To move them somewhere tidier later, see
    [`docs/cache-transfer.md`](docs/cache-transfer.md).
 3. **Install and serve**: steps 2, 5 and 6 above. `./serve.sh install` reuses
-   `~/spark/venv` if you have one.
+   the venv for `SGLANG_VERSION` if it exists.
 4. **Carry your flags over.** Your `DF_EXTRA` maps to the knobs in
    `serve.sh`. For example, this toolkit run
 
@@ -369,7 +397,7 @@ Each of these cost real time.
 serve.sh       the launcher: every knob, explained; also `install` and `manifest`
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
-requirements/  sglang-0.5.20-aarch64-py312.txt (lock) · constraints-cuda130.txt
+requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
 bench/         common.py · perf.py · longctx.py
 results/       RESULTS.md: all measurements (Docker build)
                BUILD-MANIFEST.md: the build behind them
