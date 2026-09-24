@@ -57,6 +57,9 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models
   exit 1
 fi
 
+# The venv's bin/ goes on PATH, as `activate` would do: FlashInfer's JIT runs
+# a bare `ninja`, which the venv carries (the Docker image had its venv active).
+export PATH="$VENV/bin:$PATH"
 # JIT kernels (FlashInfer, TileLang) need nvcc. Prefer the host's CUDA 13.0
 # toolkit, as the official image does (CUDA_HOME=/usr/local/cuda there too).
 if [ -z "${CUDA_HOME:-}" ] && [ -x /usr/local/cuda/bin/nvcc ]; then
