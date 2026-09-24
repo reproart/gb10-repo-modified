@@ -3,6 +3,7 @@
 A measured recipe for the fastest Qwen3.8-27B setup I could get on a DGX Spark:
 **stock SGLang + DFlash2 speculative decoding**, installed natively with pip
 (no Docker) and run as a systemd service.
+Other models plug in as profiles; [Gemma 4 31B](#gemma-4-31b) is the first.
 
 Throughput measured at the default configuration (draft 10, 32 concurrent
 requests); HumanEval does not depend on it:
@@ -53,7 +54,7 @@ $HF download z-lab/Qwen3.8-27B-DFlash2 --revision 50307d4c4cde6860d4eee73e2547cd
 #     --local-dir /models/Qwen3.8-27B-NVFP4
 # (already in an HF cache? skip this, see "Weights" below)
 
-# Point MODEL_DIR / DRAFT_DIR in serve.sh at those dirs, then:
+# Point MODEL_DIR / DRAFT_DIR in models/qwen3.8-27b.sh at those dirs, then:
 ./serve.sh                           # boots on :8888; ready when /v1/models answers
 python3 bench/perf.py --only warmup  # optional: compile first-use kernels now
 ```
@@ -81,8 +82,8 @@ checks that the venv's torch sees the GPU.
 ./serve.sh install
 ```
 
-Creates `~/spark/venv-sglang-0.5.20` (`GB10_WORKDIR` and `SGLANG_VERSION`
-in `serve.sh`), installs SGLang into it, and points `~/spark/venv` at it. The
+Creates `~/spark/venv-sglang-0.5.20` (`GB10_WORKDIR` in `serve.sh`,
+`SGLANG_VERSION` in the model profile), installs SGLang into it, and points `~/spark/venv` at it. The
 venv carries the `hf` CLI too.
 
 It installs the exact versions in
@@ -98,7 +99,7 @@ alone, one dependency pulls nvcc 13.4.
 ### Trying a newer SGLang
 
 ```bash
-# in serve.sh: export SGLANG_VERSION=0.5.21
+# in models/qwen3.8-27b.sh: SGLANG_VERSION="${SGLANG_VERSION:-0.5.21}"
 ./serve.sh install     # new venv next to the old one, plus a new lock
 ./serve.sh             # the startup lines name the version and venv in use
 ```
@@ -129,8 +130,8 @@ and FlashInfer compiles those kernels on the first boot instead.
 
 ## 3. Weights
 
-The server loads two local directories, `MODEL_DIR` and `DRAFT_DIR` in
-`serve.sh`, and never touches the Hub (`HF_OFFLINE=1`). Two ways to fill them:
+The server loads two local directories, `MODEL_DIR` and `DRAFT_DIR` in the
+model profile (`models/qwen3.8-27b.sh`), and never touches the Hub (`HF_OFFLINE=1`). Two ways to fill them:
 
 - **Download once** with `hf download --revision <sha> --local-dir <dir>`, as
   in the quick start. Always pass `--revision`: without it you get the repo's
@@ -154,32 +155,39 @@ At startup the server prints each directory with the revision it holds (the
 snapshot name, or the metadata `hf download --local-dir` leaves in
 `<dir>/.cache/huggingface/`), because the boot log itself doesn't say.
 
-## 4. Configure: `serve.sh`
+## 4. Configure: `serve.sh` and a model profile
 
-[`serve.sh`](serve.sh) in the repo root is the one file you edit. It sets
-every knob as an exported variable, each with why it has the value it has,
-and hands over to `scripts/`. Keep your machine's settings as a local-only
-commit on top of it.
+Two kinds of files, each knob with why it has the value it has. Keep your
+settings as a local-only commit on top of them.
 
-| Knob | Default | |
-|---|---|---|
-| `MODEL_DIR`, `DRAFT_DIR` | `/models/Qwen3.8-27B-FP8`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
-| `DRAFT_TOKENS` | `10` | 16 for single-stream (step 8) |
-| `MAX_RUNNING` | `32` | concurrent requests; sizes the GDN pool and CUDA graphs with it (step 7) |
-| `MEM_FRACTION` | `0.80` | see the earlyoom trap |
-| `CHUNKED_PREFILL` | `8192` | the cookbook uses 2048: smoother decode under mixed load |
-| `PREFILL_CUDA_GRAPH` | `0` | 1 turns prefill CUDA graphs on (untested here) |
-| `JIT_JOBS` | `2` | parallel compiles for kernels built on first boot; see the traps |
-| `API_KEY` | none | `"$(cat ~/.qwen-api-key)"` keeps the secret out of git |
-| `HF_OFFLINE` | `1` | no Hub access while serving |
-| `CPUSET` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
-| `PORT`, `HOST`, `CONTEXT_LENGTH` | `8888`, `0.0.0.0`, `262144` | |
-| `EXTRA_ARGS` | | any SGLang flags, appended last so they win |
+- [`serve.sh`](serve.sh) in the repo root: **the machine**, and which profile
+  to serve by default.
+- [`models/<profile>.sh`](models/): **one model**: its weights, the SGLang
+  version it runs on, and its own flags (a `model_args` function). The one
+  this README is about is [`models/qwen3.8-27b.sh`](models/qwen3.8-27b.sh);
+  see [Other models](#other-models-profiles) for the rest.
 
-A variable already set in the shell does not survive: `serve.sh` exports its
-own values. For a one-off experiment, run the script behind it directly:
-`DRAFT_TOKENS=16 ./scripts/serve-sglang.sh` (anything unset there gets the
-same defaults).
+| Knob | Where | Default | |
+|---|---|---|---|
+| `PROFILE` | `serve.sh` | `qwen3.8-27b` | served when `./serve.sh` names none |
+| `JIT_JOBS` | `serve.sh` | `2` | parallel compiles for kernels built on first boot; see the traps |
+| `API_KEY` | `serve.sh` | none | `"$(cat ~/.qwen-api-key)"` keeps the secret out of git |
+| `HF_OFFLINE` | `serve.sh` | `1` | no Hub access while serving |
+| `CPUSET` | `serve.sh` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
+| `PORT`, `HOST` | `serve.sh` | `8888`, `0.0.0.0` | |
+| `MODEL_DIR`, `DRAFT_DIR` | profile | `/models/Qwen3.8-27B-FP8`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
+| `SGLANG_VERSION` | profile | `0.5.20` | see "Trying a newer SGLang" |
+| `DRAFT_TOKENS` | profile | `10` | 16 for single-stream (step 8) |
+| `MAX_RUNNING` | profile | `32` | concurrent requests; sizes the GDN pool and CUDA graphs with it (step 7) |
+| `MEM_FRACTION` | profile | `0.80` | see the earlyoom trap |
+| `CHUNKED_PREFILL` | profile | `8192` | the cookbook uses 2048: smoother decode under mixed load |
+| `PREFILL_CUDA_GRAPH` | profile | `0` | 1 turns prefill CUDA graphs on (untested here) |
+| `CONTEXT_LENGTH` | profile | `262144` | |
+| `EXTRA_ARGS` | profile | | any SGLang flags, appended last so they win |
+
+Profile values are `${VAR:-default}`, so a one-off experiment needs no edit:
+`DRAFT_TOKENS=16 MAX_RUNNING=16 ./serve.sh`. The machine settings in
+`serve.sh` are exported as they stand, and win over the shell.
 
 ## 5. Serve
 
@@ -192,9 +200,10 @@ Serves on **:8888**, OpenAI- and Anthropic-compatible, model name
 The first boot compiles kernels and can take much longer than later ones
 (see Traps); they are cached under `~/.cache/flashinfer` and `~/.triton`.
 
-It prints the checkpoint directories with their revisions and the caps, then
-`exec`s `python -m sglang.launch_server`; the full flag list is in
-[`scripts/serve-sglang.sh`](scripts/serve-sglang.sh).
+It prints the profile, the checkpoint directories with their revisions and
+the caps, then `exec`s `python -m sglang.launch_server`. The flags every model
+gets are in [`scripts/serve-sglang.sh`](scripts/serve-sglang.sh); the model's
+own in its profile's `model_args`.
 
 Benchmark it:
 
@@ -205,13 +214,15 @@ python3 bench/perf.py      # defaults to http://127.0.0.1:8888/v1
 ## 6. Run it as a service
 
 ```bash
-./scripts/install-service.sh      # asks for sudo
-journalctl -u gb10-sglang -f      # watch the boot
+./scripts/install-service.sh               # the default profile; asks for sudo
+./scripts/install-service.sh gemma4-31b    # or another one
+journalctl -u gb10-sglang -f               # watch the boot
 ```
 
-Installs `gb10-sglang.service`, running `./serve.sh` as you from this
-checkout, enabled at boot. After editing `serve.sh`:
-`sudo systemctl restart gb10-sglang`.
+Installs `gb10-sglang.service`, running `./serve.sh <profile>` as you from
+this checkout, enabled at boot. After editing `serve.sh` or the profile:
+`sudo systemctl restart gb10-sglang`. It is one unit for one model: running
+the installer with another profile switches it.
 
 - Restarts on failure, but gives up after 3 failed starts in 20 minutes, so a
   config that can't boot doesn't loop.
@@ -299,6 +310,56 @@ FP8 with thinking off already matches NVFP4 with thinking on.
 
 ---
 
+## Other models: profiles
+
+A profile is one file in [`models/`](models/): where the model's weights
+are, the SGLang version it runs on, and a `model_args` function with the
+flags only that model takes. Everything else (checks, environment, the flags
+all models share, the service, the manifest) is common.
+
+```bash
+ls models/                        # gemma4-31b.sh  qwen3.8-27b.sh
+./serve.sh gemma4-31b             # serve it
+./serve.sh gemma4-31b install     # its SGLang version, if it differs
+./serve.sh gemma4-31b manifest
+```
+
+One model at a time: a second server on the same port refuses to start, and
+the service runs one profile. Profiles on the same SGLang version share a
+venv. To add a model, copy the profile closest to it and change the weights,
+`SERVED_MODEL_NAME` and `model_args`.
+
+### Gemma 4 31B
+
+[`models/gemma4-31b.sh`](models/gemma4-31b.sh), from the SGLang cookbook's
+Gemma 4 recipe: BF16 weights, the paired `-assistant` model for MTP (NEXTN,
+5 steps, 6 draft tokens), the `gemma4` reasoning and tool-call parsers.
+
+```bash
+HF=~/spark/venv/bin/hf
+$HF download google/gemma-4-31B-it --local-dir /models/gemma-4-31B-it
+$HF download google/gemma-4-31B-it-assistant --local-dir /models/gemma-4-31B-it-assistant
+./serve.sh gemma4-31b             # serves as "gemma-4-31b" on :8888
+```
+
+- **Not measured on GB10.** The cookbook has no DGX Spark cell for Gemma 4, so
+  every value in the profile is a starting point. Run `bench/perf.py` (and
+  `MTP=0 ./serve.sh gemma4-31b` for the baseline) before trusting it.
+- **Expect it to be slow.** 31B in BF16 is ~62 GB of weights, and decode on
+  GB10 is bound by memory bandwidth (~273 GB/s): roughly 4 tok/s per stream
+  before speculative decoding, which is why MTP is on. The QAT release keeps
+  BF16 weights, so it is no faster to serve.
+- **No revision pinned yet.** Add `--revision <sha>` when you download; the
+  server prints the revision it finds at startup.
+- **Gemma repos on the Hub have been gated.** A 401/403 from `hf download`
+  means accepting the license on the model page and `hf auth login`.
+- **Attention backend:** none is passed; SGLang picks `triton` for Gemma 4 on
+  this GPU, which image inputs need.
+- **Thinking is off by default** in Gemma 4's template, unlike Qwen's; turn it
+  on per request with `chat_template_kwargs: {"enable_thinking": true}`.
+
+---
+
 ## Moving from the Docker toolkit / SparkStation
 
 For a Spark that runs an earlier version of this recipe. The weights and the
@@ -307,7 +368,8 @@ draft are the same, so nothing needs downloading again.
 1. **Stop the old server**: `./stop.sh` in the toolkit checkout, or
    `sparkstation stop`. Either holds most of the GPU memory, and the toolkit
    also holds :8888.
-2. **Point `serve.sh` at the weights you have**: `MODEL_DIR` / `DRAFT_DIR`
+2. **Point the profile at the weights you have**: `MODEL_DIR` / `DRAFT_DIR`
+   in `models/qwen3.8-27b.sh`
    to the snapshot directories in the toolkit's cache (step 3), e.g.
    `~/spark/Qwen3.8-27B-SGLang-DGX-Spark/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7a…`.
    Nothing is copied or downloaded. To move them somewhere tidier later, see
@@ -315,7 +377,7 @@ draft are the same, so nothing needs downloading again.
 3. **Install and serve**: steps 2, 5 and 6 above. `./serve.sh install` reuses
    the venv for `SGLANG_VERSION` if it exists.
 4. **Carry your flags over.** Your `DF_EXTRA` maps to the knobs in
-   `serve.sh`. For example, this toolkit run
+   `models/qwen3.8-27b.sh`. For example, this toolkit run
 
    ```bash
    DF_EXTRA="--model-path Qwen/Qwen3.8-27B-FP8 --revision 017b9c7a… \
@@ -324,7 +386,7 @@ draft are the same, so nothing needs downloading again.
      --speculative-num-draft-tokens 10" ./start-dflash.sh
    ```
 
-   is `serve.sh` as committed, except `MEM_FRACTION=0.80`. The toolkit's own
+   is the profile as committed, except `MEM_FRACTION=0.80`. The toolkit's own
    flags (flashinfer, 8192-token chunks, no prefill graphs, extra_buffer,
    parsers, metrics, CPU pinning) are all carried over.
 5. **Benchmarks.** `bench/` now defaults to `http://127.0.0.1:8888/v1` with no
@@ -333,7 +395,7 @@ draft are the same, so nothing needs downloading again.
    are needed.
 
 Once the native server has booted, the toolkit's image and SparkStation can
-go. Keep the toolkit checkout for as long as `serve.sh` points into its
+go. Keep the toolkit checkout for as long as the profile points into its
 cache.
 
 ---
@@ -417,7 +479,8 @@ Each of these cost real time.
 ## Layout
 
 ```
-serve.sh       the launcher: every knob, explained; also `install` and `manifest`
+serve.sh       the launcher: machine knobs, profile choice; also `install` and `manifest`
+models/        one profile per model: qwen3.8-27b.sh (this README), gemma4-31b.sh
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt

@@ -1,109 +1,47 @@
 #!/usr/bin/env bash
-# Launcher for scripts/serve-sglang.sh: every knob of this recipe, with why it
-# is set the way it is. Edit the values for your machine (or keep your real
-# settings as a local-only commit on top of this). Anything commented out or
-# left unset falls back to the script's defaults.
+# Launcher: the machine's settings, and which model profile to serve. What
+# belongs to a model (weights, SGLang version, its flags) lives in
+# models/<profile>.sh; edit those for the model, this file for the machine
+# (or keep your real settings as a local-only commit on top of both).
 #
-#   ./serve.sh            start the server in the foreground (Ctrl-C stops it)
-#   ./serve.sh install    install SGLang into the venv below (not the weights)
-#   ./serve.sh manifest   print the resolved install (scripts/build-manifest.sh)
+#   ./serve.sh                        serve the default PROFILE below
+#   ./serve.sh gemma4-31b             serve another profile (models/gemma4-31b.sh)
+#   ./serve.sh [profile] install      install the SGLang version that profile uses
+#   ./serve.sh [profile] manifest     print the resolved install (scripts/build-manifest.sh)
 #
-# The systemd unit from scripts/install-service.sh runs this file, so after
-# an edit: sudo systemctl restart gb10-sglang
+# One model at a time: a second server on the same port refuses to start.
+# The systemd unit from scripts/install-service.sh runs this file with one
+# profile, so after an edit: sudo systemctl restart gb10-sglang
 cd "$(dirname "$0")" || exit 1
+
+# The profile ./serve.sh serves when none is named. Profiles: ls models/
+export PROFILE=qwen3.8-27b
 
 # Where the venvs live. `./serve.sh install` creates one per SGLang version,
 # $GB10_WORKDIR/venv-sglang-<version>, and points $GB10_WORKDIR/venv (with the
-# hf CLI in it) at the one installed last.
+# hf CLI in it) at the one installed last. Profiles on the same version share
+# one venv.
 export GB10_WORKDIR="$HOME/spark"
-
-# SGLang version. 0.5.20 is the one this recipe was built against: its lock is
-# in requirements/ and every flag the server gets exists there. To try a newer
-# one: set it, ./serve.sh install, ./serve.sh. Its own venv leaves the working
-# one untouched, so rolling back is setting this back. A version with no lock
-# yet is resolved on install and its lock written to requirements/; commit it
-# once that version has served and benchmarked well. If a newer SGLang renames
-# a flag, the boot fails with "unrecognized arguments": adjust
-# scripts/serve-sglang.sh. Releases: https://pypi.org/project/sglang/#history
-export SGLANG_VERSION=0.5.20
-# Extra package index, for nightly builds (then use the exact nightly version
-# string above): https://docs.sglang.ai/whl/cu130/  Empty = PyPI only.
-export SGLANG_INDEX=''
-
-# Required: the target checkpoint and the DFlash2 draft, downloaded once with
-# a pinned --revision (README, "Weights"). Targets measured here:
-#   Qwen/Qwen3.8-27B-FP8 @ 017b9c7a (default): Qwen's own checkpoint and the
-#     more accurate one (HumanEval 97.6% with thinking off, vs 93.9%).
-#   RadixArk/Qwen3.8-27B-NVFP4 @ 554ebba9: ~40% faster single-stream, 2.5x
-#     faster prefill (results/RESULTS.md, "FP8 target").
-# Draft: z-lab/Qwen3.8-27B-DFlash2 @ 50307d4c (incoai/Qwen3.8-27B-DFlash2, the
-# SGLang cookbook's name, mirrors the same weights).
-# Already in an HF cache? Point at the snapshot directory instead of copying,
-# e.g. ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7a...
-# Either way the server prints the revision it found at startup.
-export MODEL_DIR=/models/Qwen3.8-27B-FP8
-export DRAFT_DIR=/models/Qwen3.8-27B-DFlash2
 
 # Hub access while serving: 1 = offline (HF_HUB_OFFLINE=1). The weights are
 # local, so a lookup should never happen; offline makes one fail loudly
 # instead of quietly downloading. 0 if the boot fails asking for the network.
 export HF_OFFLINE=1
 
-# Draft tokens per step, the largest single-stream lever. The optima diverge:
-# 10 wins aggregate throughput (435 vs 385 tok/s at 16 streams on NVFP4),
-# 16 wins a single stream (78.6 vs 65.2 tok/s, +28% over the default 8).
-# Past 16 accept_len falls and both get worse. Any value other than the
-# draft's block size (8) logs "DFLASH block size mismatch" at boot; harmless.
-export DRAFT_TOKENS=10
-
-# Concurrent requests. Concurrency on this hybrid model is bought with GDN
-# state, not KV: the script sets --max-mamba-cache-size to 5 x this (4 slots
-# + 1 for the DFlash2 verify; SGLang clamps the cap to pool / 5 otherwise) and
-# captures decode CUDA graphs up to this batch size. Each slot costs 0.196 GB
-# (bf16 state), so 32 -> 160 slots -> ~31 GB. 32 took NVFP4 to 572 tok/s
-# aggregate; 48 (~47 GB of state) failed to boot on 128 GB. For one
-# interactive user, 4 gives that memory back to the KV pool.
-export MAX_RUNNING=32
-# Override the derived values only to experiment:
-#export MAMBA_CACHE=160
-#export CUDA_GRAPH_BS=32
-
-# Memory fraction of the unified 128 GB that SGLang may take for weights, GDN
-# state and KV. Not a speed lever: 0.82 / 0.85 / 0.90 measure the same. It is
-# a stability one: at 0.85 the host keeps ~8 GB, exactly DGX OS earlyoom's
-# threshold, and earlyoom SIGTERMs the scheduler during boot or a long
-# prefill (exit code -15, no traceback; journalctl -u earlyoom). The SGLang
-# cookbook lost 15 of 48 GB10 configs at 0.85, none at 0.80. 0.85 ran fine
-# here under Docker. Above 0.85 add --max-total-tokens 1048576 to EXTRA_ARGS:
-# a bigger KV pool goes unused and the lost headroom cost 18% at 32 streams.
-export MEM_FRACTION=0.80
-
-# Prefill chunk. 8192 is what everything in results/ was measured with and
-# favours prefill throughput; the cookbook's 2048 keeps decode smoother
-# while long prompts are being prefilled alongside it.
-export CHUNKED_PREFILL=8192
-# Prefill CUDA graphs: 0 = off, as measured here; 1 = on, as in the cookbook's
-# GB10 cell. Not benchmarked here.
-export PREFILL_CUDA_GRAPH=0
-
 # Parallel compiler jobs for kernels built on first use (FlashInfer JIT, e.g.
 # the CUTLASS FP4 GEMMs, while CUDA graphs are captured). They compile after
-# the server has taken MEM_FRACTION of memory, and each nvcc on those templates
+# the server has taken its memory fraction, and each nvcc on those templates
 # takes several GB: left unset, ninja runs one per core, ~22 at once, and the
 # kernel kills them (exit 137, "Capture cuda graph failed: Ninja build
 # failed"). 2 fits in what is left at 0.80; the first boot is slower, later
 # ones load the cached result (~/.cache/sglang/.cache/flashinfer).
 export JIT_JOBS=2
 
-# Context: 262144 is the model's native length.
-export CONTEXT_LENGTH=262144
-
-# API. Clients see the model as SERVED_MODEL_NAME; bench/ reads it from
-# /v1/models. HOST=127.0.0.1 keeps the port on this machine only (e.g.
-# behind a reverse proxy); 0.0.0.0 publishes it on every interface.
+# API. Clients see the model under the profile's SERVED_MODEL_NAME; bench/
+# reads it from /v1/models. HOST=127.0.0.1 keeps the port on this machine
+# only (e.g. behind a reverse proxy); 0.0.0.0 publishes it on every interface.
 export PORT=8888
 export HOST=0.0.0.0
-export SERVED_MODEL_NAME=qwen3.8-27b-sglang
 
 # API key (Bearer token) for the OpenAI- and Anthropic-compatible endpoints:
 #   non-empty -> clients must send "Authorization: Bearer <key>" (--api-key)
@@ -119,12 +57,21 @@ export API_KEY=''
 # Empty = no pinning.
 export CPUSET=5-9,15-19
 
-# Any other SGLang flags, appended last, so they override the script's own.
-export EXTRA_ARGS=''
+cmd=serve
+for arg in "$@"; do
+  case "$arg" in
+    install|manifest) cmd="$arg" ;;
+    -*|'') echo "usage: $0 [profile] [install | manifest]" >&2; exit 2 ;;
+    *) PROFILE="$arg" ;;
+  esac
+done
+if [ ! -f "models/$PROFILE.sh" ]; then
+  echo "no profile models/$PROFILE.sh; profiles: $(cd models && ls -- *.sh | sed 's/\.sh$//' | paste -sd' ')" >&2
+  exit 2
+fi
 
-case "${1:-}" in
-  '')       exec scripts/serve-sglang.sh ;;
+case "$cmd" in
+  serve)    exec scripts/serve-sglang.sh ;;
   install)  exec scripts/01-install.sh ;;
   manifest) exec scripts/build-manifest.sh ;;
-  *) echo "usage: $0 [install | manifest]" >&2; exit 2 ;;
 esac
