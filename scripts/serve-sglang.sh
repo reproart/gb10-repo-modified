@@ -38,8 +38,15 @@ PORT="${PORT:-8888}"
 CPUSET="${CPUSET-5-9,15-19}"
 API_KEY="${API_KEY:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+# The weights are local, so nothing should reach the Hub. 1 makes a lookup
+# nobody expected fail loudly instead of quietly downloading.
+HF_OFFLINE="${HF_OFFLINE:-1}"
 
 [ -x "$VENV/bin/python" ] || { echo "no venv at $VENV - run ./serve.sh install" >&2; exit 1; }
+for d in "$MODEL_DIR" "$DRAFT_DIR"; do
+  [ -f "$d/config.json" ] || {
+    echo "no checkpoint at $d (config.json missing) - see README, \"Weights\"" >&2; exit 1; }
+done
 # Any HTTP answer (a 401 from a server with an API key too) means the port is taken.
 if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models" 2>/dev/null)" != 000 ]; then
   echo "something already serves :$PORT (systemctl status gb10-sglang?)" >&2
@@ -53,13 +60,14 @@ if [ -z "${CUDA_HOME:-}" ] && [ -x /usr/local/cuda/bin/nvcc ]; then
 fi
 [ -n "${CUDA_HOME:-}" ] && export PATH="$CUDA_HOME/bin:$PATH"
 export PYTHONUNBUFFERED=1
+[ "$HF_OFFLINE" = 1 ] && export HF_HUB_OFFLINE=1
 
 args=(
-  --model-path "$TARGET_PATH" ${TARGET_REV:+--revision "$TARGET_REV"}
+  --model-path "$MODEL_DIR"
   --served-model-name "$SERVED_MODEL_NAME"
   --trust-remote-code
   --speculative-algorithm DFLASH
-  --speculative-draft-model-path "$DRAFT_PATH" ${DRAFT_REV:+--speculative-draft-model-revision "$DRAFT_REV"}
+  --speculative-draft-model-path "$DRAFT_DIR"
   --speculative-num-draft-tokens "$DRAFT_TOKENS"
   --mamba-radix-cache-strategy extra_buffer
   --mamba-ssm-dtype bfloat16
@@ -88,8 +96,9 @@ args+=("${extra[@]}")
 pin=()
 if [ -n "$CPUSET" ] && command -v taskset >/dev/null; then pin=(taskset -c "$CPUSET"); fi
 
-echo "target  $TARGET_PATH${TARGET_REV:+ @ ${TARGET_REV:0:8}}"
-echo "draft   $DRAFT_PATH${DRAFT_REV:+ @ ${DRAFT_REV:0:8}}, $DRAFT_TOKENS draft tokens"
+# The boot log does not say which revision a directory holds; this line does.
+echo "target  $MODEL_DIR (revision $(revision_of "$MODEL_DIR"))"
+echo "draft   $DRAFT_DIR (revision $(revision_of "$DRAFT_DIR")), $DRAFT_TOKENS draft tokens"
 echo "cap     $MAX_RUNNING requests (GDN pool $MAMBA_CACHE), mem-fraction $MEM_FRACTION"
 echo "nvcc    $(command -v nvcc >/dev/null && nvcc --version | grep -oE 'release [0-9.]+' || echo 'not on PATH; set CUDA_HOME if kernel JIT fails')"
 echo "listen  http://$HOST:$PORT/v1   CPUs ${CPUSET:-all}"

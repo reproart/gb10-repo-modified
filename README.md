@@ -30,19 +30,36 @@ whose optimum depends on the workload, the memory fraction that doesn't
 matter for speed but does for stability. Plus a benchmark suite that refuses
 to report numbers it can't trust.
 
-## Ingredients
+## Quick start
 
-| Component | Pin |
-|---|---|
-| SGLang | `0.5.20` from PyPI; every dependency pinned in [`requirements/`](requirements/) |
-| Target | `Qwen/Qwen3.8-27B-FP8` @ `017b9c7a`, or `RadixArk/Qwen3.8-27B-NVFP4` @ `554ebba9` |
-| Draft | `z-lab/Qwen3.8-27B-DFlash2` @ `50307d4c` |
-| Python | 3.12 venv at `~/spark/venv` |
-| Disk | ~50 GB |
+```bash
+git clone https://github.com/reproart/gb10-repo-modified.git
+cd gb10-repo-modified
 
-All model repos are public; no token needed. Built for Ubuntu 24.04 (DGX OS),
-kernel 6.17-nvidia, driver 580.x / CUDA 13.0, 128 GB unified. Docker is
-needed only to sandbox HumanEval's generated code, not to serve.
+./serve.sh install     # venv with stock SGLang 0.5.20 + the hf CLI, no Docker (~10 GB)
+
+# The weights (one-time, ~35 GB), at the revisions the results were measured on:
+HF=~/spark/venv/bin/hf
+$HF download Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
+  --local-dir /models/Qwen3.8-27B-FP8
+$HF download z-lab/Qwen3.8-27B-DFlash2 --revision 50307d4c4cde6860d4eee73e2547cd786fe8e8a4 \
+  --local-dir /models/Qwen3.8-27B-DFlash2
+# option: the NVFP4 target instead (~40% faster, less accurate; see the table above):
+#   $HF download RadixArk/Qwen3.8-27B-NVFP4 --revision 554ebba9b5f1b79dc11246341960360e6ef05ef4 \
+#     --local-dir /models/Qwen3.8-27B-NVFP4
+# (already in an HF cache? skip this, see "Weights" below)
+
+# Point MODEL_DIR / DRAFT_DIR in serve.sh at those dirs, then:
+./serve.sh                           # boots on :8888; ready when /v1/models answers
+python3 bench/perf.py --only warmup  # optional: compile first-use kernels now
+```
+
+`/models` needs to exist and be yours: `sudo mkdir -p /models && sudo chown $USER /models`.
+All model repos are public; no token needed.
+
+Built for Ubuntu 24.04 (DGX OS), kernel 6.17-nvidia, driver 580.x / CUDA 13.0,
+128 GB unified, Python 3.12. Docker is needed only to sandbox HumanEval's
+generated code, not to serve.
 
 ---
 
@@ -53,43 +70,17 @@ needed only to sandbox HumanEval's generated code, not to serve.
 ```
 
 Driver and CUDA version, Python 3.12 with `venv`, free memory, and whether
-earlyoom is running. Run it again after step 3: it then also checks that the
-venv's torch sees the GPU.
+earlyoom is running. Run it again after `./serve.sh install`: it then also
+checks that the venv's torch sees the GPU.
 
-## 2. Configure: `serve.sh`
-
-[`serve.sh`](serve.sh) in the repo root is the one file you edit. It sets
-every knob as an exported variable, each with why it has the value it has,
-and hands over to `scripts/`. Keep your machine's settings as a local-only
-commit on top of it.
-
-| Knob | Default | |
-|---|---|---|
-| `TARGET` | `fp8` | `nvfp4`, or `custom` with `TARGET_PATH` / `TARGET_REV` |
-| `DRAFT_TOKENS` | `10` | 16 for single-stream (step 7) |
-| `MAX_RUNNING` | `32` | concurrent requests; sizes the GDN pool and CUDA graphs with it (step 6) |
-| `MEM_FRACTION` | `0.80` | see the earlyoom trap |
-| `CHUNKED_PREFILL` | `8192` | the cookbook uses 2048: smoother decode under mixed load |
-| `PREFILL_CUDA_GRAPH` | `0` | 1 turns prefill CUDA graphs on (untested here) |
-| `API_KEY` | none | `"$(cat ~/.qwen-api-key)"` keeps the secret out of git |
-| `CPUSET` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
-| `PORT`, `HOST`, `CONTEXT_LENGTH` | `8888`, `0.0.0.0`, `262144` | |
-| `EXTRA_ARGS` | | any SGLang flags, appended last so they win |
-
-A variable already set in the shell does not survive: `serve.sh` exports its
-own values. For a one-off experiment, run the script behind it directly:
-`DRAFT_TOKENS=16 ./scripts/serve-sglang.sh` (anything unset there gets the
-same defaults).
-
-## 3. Install SGLang and fetch the weights
+## 2. Install SGLang
 
 ```bash
 ./serve.sh install
 ```
 
-Creates `~/spark/venv`, installs SGLang, downloads the `TARGET` and draft set
-in `serve.sh` at their pinned revisions. Run it again after changing
-`TARGET`. The same venv carries the `hf` CLI and what HumanEval needs.
+Creates `~/spark/venv` (`GB10_WORKDIR` in `serve.sh`) and installs SGLang
+into it. The same venv carries the `hf` CLI and what HumanEval needs.
 
 On aarch64 + Python 3.12 it installs the exact versions in
 [`requirements/sglang-0.5.20-aarch64-py312.txt`](requirements/sglang-0.5.20-aarch64-py312.txt):
@@ -103,7 +94,60 @@ It also tries to install `flashinfer-cubin` (precompiled kernels, as the
 official image has) from FlashInfer's own index. If that fails, it says so,
 and FlashInfer compiles those kernels on the first boot instead.
 
-## 4. Serve
+## 3. Weights
+
+The server loads two local directories, `MODEL_DIR` and `DRAFT_DIR` in
+`serve.sh`, and never touches the Hub (`HF_OFFLINE=1`). Two ways to fill them:
+
+- **Download once** with `hf download --revision <sha> --local-dir <dir>`, as
+  in the quick start. Always pass `--revision`: without it you get the repo's
+  mutable default, which is not necessarily what was measured here.
+- **Reuse an HF cache** you already have, without copying: point the variable
+  at the snapshot directory, whose name is the revision.
+
+  ```bash
+  ls -d ~/.cache/huggingface/hub/models--*/snapshots/*
+  # the old Docker toolkit kept its own cache:
+  ls -d ~/spark/Qwen3.8-27B-SGLang-DGX-Spark/.cache/huggingface/hub/models--*/snapshots/*
+  ```
+
+| Checkpoint | Revision | Size |
+|---|---|---:|
+| `Qwen/Qwen3.8-27B-FP8` (default target) | `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a` | ~29 GB |
+| `RadixArk/Qwen3.8-27B-NVFP4` | `554ebba9b5f1b79dc11246341960360e6ef05ef4` | ~22 GB |
+| `z-lab/Qwen3.8-27B-DFlash2` (draft) | `50307d4c4cde6860d4eee73e2547cd786fe8e8a4` | ~3 GB |
+
+At startup the server prints each directory with the revision it holds (the
+snapshot name, or the metadata `hf download --local-dir` leaves in
+`<dir>/.cache/huggingface/`), because the boot log itself doesn't say.
+
+## 4. Configure: `serve.sh`
+
+[`serve.sh`](serve.sh) in the repo root is the one file you edit. It sets
+every knob as an exported variable, each with why it has the value it has,
+and hands over to `scripts/`. Keep your machine's settings as a local-only
+commit on top of it.
+
+| Knob | Default | |
+|---|---|---|
+| `MODEL_DIR`, `DRAFT_DIR` | `/models/Qwen3.8-27B-FP8`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
+| `DRAFT_TOKENS` | `10` | 16 for single-stream (step 8) |
+| `MAX_RUNNING` | `32` | concurrent requests; sizes the GDN pool and CUDA graphs with it (step 7) |
+| `MEM_FRACTION` | `0.80` | see the earlyoom trap |
+| `CHUNKED_PREFILL` | `8192` | the cookbook uses 2048: smoother decode under mixed load |
+| `PREFILL_CUDA_GRAPH` | `0` | 1 turns prefill CUDA graphs on (untested here) |
+| `API_KEY` | none | `"$(cat ~/.qwen-api-key)"` keeps the secret out of git |
+| `HF_OFFLINE` | `1` | no Hub access while serving |
+| `CPUSET` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
+| `PORT`, `HOST`, `CONTEXT_LENGTH` | `8888`, `0.0.0.0`, `262144` | |
+| `EXTRA_ARGS` | | any SGLang flags, appended last so they win |
+
+A variable already set in the shell does not survive: `serve.sh` exports its
+own values. For a one-off experiment, run the script behind it directly:
+`DRAFT_TOKENS=16 ./scripts/serve-sglang.sh` (anything unset there gets the
+same defaults).
+
+## 5. Serve
 
 ```bash
 ./serve.sh
@@ -114,8 +158,8 @@ Serves on **:8888**, OpenAI- and Anthropic-compatible, model name
 The first boot compiles kernels and can take much longer than later ones
 (see Traps); they are cached under `~/.cache/flashinfer` and `~/.triton`.
 
-It prints the resolved target, draft and caps, then `exec`s
-`python -m sglang.launch_server`; the full flag list is in
+It prints the checkpoint directories with their revisions and the caps, then
+`exec`s `python -m sglang.launch_server`; the full flag list is in
 [`scripts/serve-sglang.sh`](scripts/serve-sglang.sh).
 
 Benchmark it:
@@ -124,7 +168,7 @@ Benchmark it:
 python3 bench/perf.py      # defaults to http://127.0.0.1:8888/v1
 ```
 
-## 5. Run it as a service
+## 6. Run it as a service
 
 ```bash
 ./scripts/install-service.sh      # asks for sudo
@@ -143,7 +187,7 @@ checkout, enabled at boot. After editing `serve.sh`:
 - Logs go to the journal, which rotates them. The Docker setup needed a
   daemon-wide log cap for that; this doesn't.
 
-## 6. Concurrency: three flags, one knob
+## 7. Concurrency: three flags, one knob
 
 Concurrency on this hybrid (Gated DeltaNet) model is bought with **GDN state,
 not KV cache**, and three flags co-limit it. Raising only the obvious one
@@ -182,7 +226,7 @@ file for why.
 For a single interactive user, `MAX_RUNNING=4` gives the memory back to KV at
 ~5% better single-stream.
 
-## 7. Tune draft tokens: the largest single-stream lever
+## 8. Tune draft tokens: the largest single-stream lever
 
 `--speculative-num-draft-tokens` (`DRAFT_TOKENS`). Measured on NVFP4:
 
@@ -205,7 +249,7 @@ drafter can't sustain longer correct runs, so you pay draft compute for tokens
 that get rejected. Quality is unaffected at any value, since every draft token
 is verified against the target.
 
-## 8. Benchmark quality
+## 9. Benchmark quality
 
 ```bash
 ./scripts/run-humaneval.sh          # thinking off, ~5 min
@@ -241,11 +285,13 @@ draft are the same, so nothing needs downloading again.
 2. **Stop the old server**: `./stop.sh` in the toolkit checkout, or
    `sparkstation stop`. Either holds most of the GPU memory, and the toolkit
    also holds :8888.
-3. **Merge the toolkit's model cache** into `~/.cache/huggingface` instead of
-   downloading it again; see [`docs/cache-transfer.md`](docs/cache-transfer.md#coming-from-the-docker-toolkit).
-4. **Install and serve**: steps 2–5 above. `./serve.sh install` reuses
-   `~/spark/venv` if you have one, and its downloads are no-ops once the cache
-   is merged.
+3. **Point `serve.sh` at the weights you have**: `MODEL_DIR` / `DRAFT_DIR`
+   to the snapshot directories in the toolkit's cache (step 3), e.g.
+   `~/spark/Qwen3.8-27B-SGLang-DGX-Spark/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7a…`.
+   Nothing is copied or downloaded. To move them somewhere tidier later, see
+   [`docs/cache-transfer.md`](docs/cache-transfer.md).
+4. **Install and serve**: steps 2, 5 and 6 above. `./serve.sh install` reuses
+   `~/spark/venv` if you have one.
 5. **Carry your flags over.** Your `DF_EXTRA` maps to the knobs in
    `serve.sh`. For example, this toolkit run
 
@@ -264,8 +310,9 @@ draft are the same, so nothing needs downloading again.
    `GB10_BASE_URL`/`GB10_API_KEY`/`GB10_METRICS_URL`; natively none of them
    are needed.
 
-Once the native server has booted from the merged cache, the toolkit checkout,
-its image and SparkStation can go.
+Once the native server has booted, the toolkit's image and SparkStation can
+go. Keep the toolkit checkout for as long as `serve.sh` points into its
+cache.
 
 ---
 
@@ -273,15 +320,13 @@ its image and SparkStation can go.
 
 Each of these cost real time.
 
-- **Pin the target revision, not just the draft.** `hf download` without
-  `--revision` takes the repo's mutable default, and SGLang needs `--revision`
-  separately: downloading the right checkpoint does not make the server load
-  it. `./serve.sh install` and `./serve.sh` pin both from the same settings.
-- **A fast boot proves a snapshot was cached, not which one.** Upstream moved
-  the NVFP4 default off the pinned `554ebba9` on 2026-08-22, and an unpinned
-  launch served the newer `319f741c` for days before anyone noticed; the boot
-  log does not say which revision loaded. `ls ~/.cache/huggingface/hub/models--*/snapshots/`
-  is the check, and every `bench/` run header prints the loaded revision.
+- **Pin the revision when you download, not just the draft.** `hf download`
+  without `--revision` takes the repo's mutable default. Upstream moved the
+  NVFP4 default off the pinned `554ebba9` on 2026-08-22, and an unpinned
+  launch served the newer `319f741c` for days before anyone noticed: the boot
+  log does not say which revision loaded. `serve.sh` loads local directories
+  only, and prints the revision each one holds at startup; `unknown` means a
+  directory it cannot vouch for.
 - **earlyoom kills the server at 0.85.** Memory is unified, so
   `--mem-fraction-static` prices the host's memory too. 0.85 of 128 GB leaves
   ~8 GB, which is exactly DGX OS earlyoom's SIGTERM threshold, and the first
@@ -308,10 +353,11 @@ Each of these cost real time.
   `CUDA_HOME is not set` error means neither was found.
 - **"DFLASH block size mismatch" at boot is expected.** The draft was trained
   with blocks of 8; any other `DRAFT_TOKENS` logs this warning and works.
-- **Fully-offline first start may still touch the network.** On the Docker
-  build, SGLang's early speculative-algorithm probe resolved the draft config
-  without a revision. Prime the cache while online, or check with
-  `HF_HUB_OFFLINE=1` before relying on it.
+- **Offline by default.** `HF_OFFLINE=1` sets `HF_HUB_OFFLINE=1` for the
+  server: with local directories nothing should reach the Hub, and on the
+  Docker build SGLang's early speculative-algorithm probe did look the draft
+  up there. If a boot fails asking for the network, that lookup is back; set
+  `HF_OFFLINE=0` to let it through.
 - **5 GDN slots per request, not 4.** DFlash2's verify needs an extra under
   `--mamba-radix-cache-strategy extra_buffer`. Sized on 4, a pool meant for 16
   lands at 12. `MAX_RUNNING` does the ×5 for you.
@@ -342,7 +388,7 @@ results/       RESULTS.md: all measurements (Docker build)
                BUILD-MANIFEST.md: the build behind them
                REPRODUCTION.md: an independent run
                runs/: saved benchmark output (gitignored)
-docs/          cache-transfer.md: move the model cache to a new machine, offline
+docs/          cache-transfer.md: move the weights to a new machine, offline
 ```
 
 The benchmarks read `GB10_BASE_URL` (API root including `/v1`, default
@@ -367,9 +413,10 @@ capacity test). See each script's docstring.
 Every run records what it measured:
 
 - **Server settings.** The header lists the engine's effective settings from
-  SGLang's `/get_server_info` (model path, revision, draft tokens, request
-  cap, ...). That catches the "which snapshot loaded" and "which draft count"
-  traps above from the output alone.
+  SGLang's `/get_server_info` (model and draft paths, draft tokens, request
+  cap, ...). That catches the "which draft count" trap from the output alone,
+  and "which checkpoint" by path; the revision a local directory holds is in
+  the server's startup lines and in `./serve.sh manifest`.
 - **Saved output.** The full output is saved under `results/runs/`
   (`GB10_RUN_DIR`; set it empty to skip saving).
 - **GPU.** When the server is local, peak temperature, lowest SM clock and

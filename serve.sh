@@ -5,34 +5,35 @@
 # left unset falls back to the script's defaults.
 #
 #   ./serve.sh            start the server in the foreground (Ctrl-C stops it)
-#   ./serve.sh install    install SGLang and download the TARGET / DRAFT below
+#   ./serve.sh install    install SGLang into the venv below (not the weights)
 #   ./serve.sh manifest   print the resolved install (scripts/build-manifest.sh)
 #
 # The systemd unit from scripts/install-service.sh runs this file, so after
 # an edit: sudo systemctl restart gb10-sglang
 cd "$(dirname "$0")" || exit 1
 
-# Where the venv lives: $GB10_WORKDIR/venv. 01-install.sh creates it; it also
-# carries the hf CLI and what HumanEval needs.
+# Where the venv lives: $GB10_WORKDIR/venv. `./serve.sh install` creates it;
+# it also carries the hf CLI and what HumanEval needs.
 export GB10_WORKDIR="$HOME/spark"
 
-# Target checkpoint:
-#   fp8   = Qwen/Qwen3.8-27B-FP8 @ 017b9c7a. Qwen's own checkpoint and the more
-#           accurate one (HumanEval 97.6% with thinking off, vs 93.9%).
-#   nvfp4 = RadixArk/Qwen3.8-27B-NVFP4 @ 554ebba9. ~40% faster single-stream,
-#           2.5x faster prefill (results/RESULTS.md, "FP8 target").
-#   custom = any repo; set TARGET_PATH and TARGET_REV (a commit sha, never a
-#           branch: an unpinned repo's default moves, and the boot log does not
-#           say which snapshot loaded).
-# After changing it: ./serve.sh install, to fetch the new weights.
-export TARGET=fp8
-#export TARGET_PATH=
-#export TARGET_REV=
+# Required: the target checkpoint and the DFlash2 draft, downloaded once with
+# a pinned --revision (README, "Weights"). Targets measured here:
+#   Qwen/Qwen3.8-27B-FP8 @ 017b9c7a (default): Qwen's own checkpoint and the
+#     more accurate one (HumanEval 97.6% with thinking off, vs 93.9%).
+#   RadixArk/Qwen3.8-27B-NVFP4 @ 554ebba9: ~40% faster single-stream, 2.5x
+#     faster prefill (results/RESULTS.md, "FP8 target").
+# Draft: z-lab/Qwen3.8-27B-DFlash2 @ 50307d4c (incoai/Qwen3.8-27B-DFlash2, the
+# SGLang cookbook's name, mirrors the same weights).
+# Already in an HF cache? Point at the snapshot directory instead of copying,
+# e.g. ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7a...
+# Either way the server prints the revision it found at startup.
+export MODEL_DIR=/models/Qwen3.8-27B-FP8
+export DRAFT_DIR=/models/Qwen3.8-27B-DFlash2
 
-# DFlash2 draft, pinned. incoai/Qwen3.8-27B-DFlash2 (the SGLang cookbook's
-# name) mirrors the same weights.
-export DRAFT_PATH=z-lab/Qwen3.8-27B-DFlash2
-export DRAFT_REV=50307d4c4cde6860d4eee73e2547cd786fe8e8a4
+# Hub access while serving: 1 = offline (HF_HUB_OFFLINE=1). The weights are
+# local, so a lookup should never happen; offline makes one fail loudly
+# instead of quietly downloading. 0 if the boot fails asking for the network.
+export HF_OFFLINE=1
 
 # Draft tokens per step, the largest single-stream lever. The optima diverge:
 # 10 wins aggregate throughput (435 vs 385 tok/s at 16 streams on NVFP4),

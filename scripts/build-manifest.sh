@@ -4,18 +4,12 @@
 #
 #   ./serve.sh manifest > results/BUILD-MANIFEST-native.md
 #
-# Through ./serve.sh it reports the TARGET / DRAFT configured there.
+# Through ./serve.sh it reports the MODEL_DIR / DRAFT_DIR configured there.
 #
 # Branches and version ranges move; commits and exact versions do not.
 set -uo pipefail
 
 . "$(dirname "${BASH_SOURCE[0]}")/lib/config.sh"
-HF_HUB="${HF_HOME:-$HOME/.cache/huggingface}/hub"
-
-snap() {  # resolved snapshot(s) for a cached repo
-  local d="$HF_HUB/models--${1//\//--}/snapshots"
-  [ -d "$d" ] && ls "$d" 2>/dev/null | paste -sd, || echo "(not cached)"
-}
 
 cat <<EOF
 # Build manifest (native)
@@ -24,10 +18,10 @@ Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) on \`$(hostname)\`, venv \`$VENV\`.
 
 | Input | Resolved value |
 |---|---|
-| Target | \`$TARGET_PATH\` |
-| Target snapshots cached | \`$(snap "$TARGET_PATH")\` |
-| Draft | \`$DRAFT_PATH\` |
-| Draft snapshots cached | \`$(snap "$DRAFT_PATH")\` |
+| Target dir | \`$MODEL_DIR\` |
+| Target revision | \`$(revision_of "$MODEL_DIR")\` |
+| Draft dir | \`$DRAFT_DIR\` |
+| Draft revision | \`$(revision_of "$DRAFT_DIR")\` |
 EOF
 
 "$VENV/bin/python" - "$ROOT"/requirements/sglang-*-aarch64-py312.txt <<'EOF' 2>/dev/null || echo "| venv | (missing or broken: $VENV) |"

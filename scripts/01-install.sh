@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Install stock SGLang natively (no Docker) and pre-download the weights.
+# Install stock SGLang natively (no Docker). The weights are downloaded
+# separately, once (README, "Weights").
 #
-#   ./serve.sh install                      # the TARGET / DRAFT set in serve.sh
-#   TARGET=nvfp4 ./scripts/01-install.sh    # or directly
+#   ./serve.sh install
 #
 # Everything goes into one venv, $GB10_WORKDIR/venv (default ~/spark/venv):
 # SGLang, the hf CLI, and pandas/pyarrow for HumanEval. Re-running is safe;
@@ -12,9 +12,7 @@
 # requirements/sglang-<ver>-aarch64-py312.txt. Elsewhere it resolves
 # sglang==$SGLANG_VERSION fresh, with the same CUDA 13.0 constraint.
 #
-# Budget ~50 GB of disk: ~4 GB of wheels (the venv unpacks to roughly twice
-# that, plus uv's download cache), ~29 GB FP8 or ~22 GB NVFP4 target, and the
-# draft.
+# ~4 GB of wheels; the venv unpacks to roughly twice that, plus uv's cache.
 set -euo pipefail
 
 . "$(dirname "${BASH_SOURCE[0]}")/lib/config.sh"
@@ -52,16 +50,6 @@ if ! "${UV[@]}" --no-deps --index-url https://flashinfer.ai/whl "flashinfer-cubi
   echo "WARNING: flashinfer-cubin $fi_ver not installed; FlashInfer will JIT-compile on first boot" >&2
 fi
 
-# ---- weights ---------------------------------------------------------------
-# Both revisions pinned: without --revision you get the repo's mutable default,
-# which may not be the checkpoint the results were measured on. The server is
-# started with the same revisions.
-echo
-echo "== downloading $TARGET_PATH${TARGET_REV:+ @ ${TARGET_REV:0:8}} =="
-"$VENV/bin/hf" download "$TARGET_PATH" ${TARGET_REV:+--revision "$TARGET_REV"}
-echo "== downloading $DRAFT_PATH${DRAFT_REV:+ @ ${DRAFT_REV:0:8}} =="
-"$VENV/bin/hf" download "$DRAFT_PATH" ${DRAFT_REV:+--revision "$DRAFT_REV"}
-
 # ---- check -----------------------------------------------------------------
 echo
 "$VENV/bin/python" - <<'EOF'
@@ -77,7 +65,8 @@ EOF
 
 cat <<EOF
 
-Installed. Start the server in the foreground:
+Installed. The hf CLI is $VENV/bin/hf, for the weights (README, "Weights").
+Point MODEL_DIR / DRAFT_DIR in serve.sh at them, then start the server:
 
     ./serve.sh
 
