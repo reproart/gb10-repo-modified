@@ -271,6 +271,42 @@ file for why.
 For a single interactive user, `MAX_RUNNING=4` gives the memory back to KV at
 ~5% better single-stream.
 
+### Long sessions: how many 262K contexts fit
+
+The other end of the trade: a few requests, each with the full 262K context.
+From the native boot logs:
+
+| Per token of context | Per GDN slot | Pools get |
+|---|---|---|
+| 42 KiB of KV: 32 target + 10 draft (fp8) | ~0.0735 GiB; a request holds 5, plus `DRAFT_TOKENS` in the verify buffer | free at start − weights − (1 − `MEM_FRACTION`) × 121.6 GiB |
+
+So one 262K session is 10.5 GiB of KV plus ~1.1 GiB of GDN state (draft
+10). With the FP4-head RadixArk checkpoint (~25.9 GiB with the draft) and
+~115 GiB free at start:
+
+| `MEM_FRACTION` | Pools | 262K sessions, draft 10 | draft 16 |
+|---:|---:|---:|---:|
+| 0.80 | 65.2 GiB | 5 | 5 |
+| 0.85 | 71.3 GiB | **6** | 5 |
+| 0.90 | 77.3 GiB | 6 | 6 |
+
+Six is the ceiling; a seventh would need ~0.94. The lever is `MAX_RUNNING`
+more than `MEM_FRACTION`: the throughput profile's cap of 32 spends ~35 GiB on
+GDN state, six requests need ~7. `./serve.sh qwen3.8-27b-longctx` is that
+setting (cap 6, draft 10, a GDN slot per session to keep its state cached
+between turns, 0.85). Untested as a whole; check it:
+
+```bash
+./serve.sh qwen3.8-27b-longctx      # boot log: "KV Cache is allocated ... #tokens: N"; N / 262144 = sessions
+python3 bench/longctx.py --ctx 250000 --streams 2 4 6 --gen 1000   # holds each KV resident; ~40 min
+```
+
+At 0.85 watch earlyoom (`journalctl -u earlyoom`): if it kills the scheduler
+(exit code -15) during a long prefill, lower its `-m` threshold
+(`systemctl cat earlyoom`) or use `MEM_FRACTION=0.82`. And budget time as well
+as memory: prefill runs one sequence at a time at ~1,200 tok/s, so filling a
+262K context takes ~3.5 minutes, six of them over 20.
+
 ## 8. Tune draft tokens: the largest single-stream lever
 
 `--speculative-num-draft-tokens` (`DRAFT_TOKENS`). Measured on NVFP4:
@@ -334,7 +370,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b.sh  qwen3.8-27b.sh  qwen3.8-27b-single.sh
+ls models/                        # gemma4-31b.sh  qwen3.8-27b.sh  qwen3.8-27b-{single,longctx}.sh
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest
@@ -497,7 +533,7 @@ Each of these cost real time.
 ```
 serve.sh       the launcher: machine knobs, profile choice; also `install` and `manifest`
 models/        one profile per model: qwen3.8-27b.sh (this README), its
-               single-stream variant qwen3.8-27b-single.sh, gemma4-31b.sh
+               variants qwen3.8-27b-single.sh and -longctx.sh, gemma4-31b.sh
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
