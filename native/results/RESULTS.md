@@ -422,6 +422,37 @@ problem short of perfect at ~22% fewer tokens than xhigh, and one runaway
 instead of four. xhigh was not re-run natively, so this is a cross-build,
 one-run comparison. HumanEval/145 failed in every mode.
 
+### Request cap 12 against 32 (2026-09-25)
+
+`nvidia/Qwen3.8-27B-NVFP4` (revision not recorded), draft 10, 0.80, same
+server and bench, only `--max-running-requests` / `--max-mamba-cache-size`
+changed: 32 / 160 against 12 / 72, the new default. Aggregate tok/s,
+300 tokens per stream, current `perf.py`; the cap-12 column is two runs.
+
+| Streams | Cap 32 | Cap 12 |
+|---:|---:|---:|
+| 1 | 59.0 | 58.1 / 63.4 |
+| 2 | 119.4 | 117.3 / 107.4 |
+| 4 | 187.2 | 187.5 / 183.5 |
+| 8 | 264.2 | 273.1 / 245.3 |
+| 12 | — | **404.4** (36.9 per stream, TTFT 0.35 s) |
+| 16 | 454.4 | queued (12 run, 4 wait: 306.0) |
+| 18 | — | queued (TTFT max 9.1 s: 348.5) |
+| 32 | 577.7 | queued (372.4) |
+
+Single-stream decode 69.7 / 69.9 tok/s at cap 12, TTFT 200 ms.
+
+**Up to the cap nothing is lost**: 1-8 streams agree within the
+run-to-run spread (the 8-stream row varies by ~10% between runs of the
+same config). What cap 12 gives up is only the throughput above 12
+concurrent requests; a burst above the cap waits for a free slot (the 18
+row: p50 TTFT unchanged, the last 6 requests wait ~9 s). The freed GDN
+state goes to the KV pool.
+
+The 8-stream row has the highest TTFT of the sweep in all three runs
+(0.51 s, against 0.35 s at 12 and 0.42 s at 16 with cap 32). Not
+investigated; it costs ~0.15 s once per request.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
