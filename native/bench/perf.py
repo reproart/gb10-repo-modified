@@ -206,10 +206,28 @@ def prefill(targets):
     print()
 
 
+LEVELS = (1, 2, 4, 8, 16, 24, 32)
+
+
+def default_levels():
+    """Levels up to the server's request cap, the cap itself, and one burst row.
+
+    A sweep past the cap measures admission, not the model, and one that stops
+    short of it never shows the full-load aggregate (a cap of 12 with the fixed
+    1..32 levels peaked "at 8 streams", then queued). The burst row (1.5x the
+    cap) is kept to show what a spike costs in TTFT; it is flagged and left out
+    of the peak. Unknown cap (not SGLang): the fixed levels."""
+    cap = common.server_info().get("max_running_requests")
+    if not isinstance(cap, int) or cap < 1:
+        return list(LEVELS)
+    return sorted({n for n in LEVELS if n < cap} | {cap, cap + (cap + 1) // 2})
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--levels", nargs="+", type=int, default=[1, 2, 4, 8, 16, 24, 32],
-                    help="concurrency levels (default: 1 2 4 8 16 24 32)")
+    ap.add_argument("--levels", nargs="+", type=int,
+                    help="concurrency levels (default: 1 2 4 8 16 24 32 up to the server's "
+                         "request cap, the cap, and 1.5x the cap; 1 2 4 8 16 24 32 if unknown)")
     ap.add_argument("--prefill", nargs="+", type=int, default=[2000, 8000, 32000, 100000],
                     help="approx. prompt sizes for the prefill section")
     ap.add_argument("--only", choices=["warmup", "ttft", "decode", "concurrency", "prefill"],
@@ -217,6 +235,8 @@ def main():
     ap.add_argument("--no-warmup", action="store_true",
                     help="skip the warmup pass (measure first-use JIT stalls on purpose)")
     args = ap.parse_args()
+    if not args.levels:
+        args.levels = default_levels()
 
     saved = common.save_output("perf")
     common.print_header()

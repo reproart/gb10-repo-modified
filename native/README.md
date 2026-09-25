@@ -584,7 +584,10 @@ time, KV usage, accept length, cached tokens) come from `GB10_METRICS_URL`,
 default `<server>/metrics`; the server is started with them enabled. Behind a gateway, point it
 at the engine.
 
-`perf.py` takes `--levels`, `--prefill`, `--only <section>` and `--no-warmup`;
+`perf.py` takes `--levels`, `--prefill`, `--only <section>` and `--no-warmup`.
+Without `--levels` the concurrency sweep follows the server's request cap:
+1 2 4 8 16 24 32 up to it, the cap itself, and one burst row at 1.5x the cap
+(flagged as queued, left out of the peak). Cap 12 gives 1 2 4 8 12 18.
 `longctx.py` takes `--ctx`, `--streams` and `--gen N` (forced generation, a KV
 capacity test). See each script's docstring.
 
