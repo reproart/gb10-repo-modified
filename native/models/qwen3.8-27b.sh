@@ -50,15 +50,21 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.8-27b-sglang}"
 # DRAFT_TOKENS=16 MAX_RUNNING=16 (~18 GB).
 DRAFT_TOKENS="${DRAFT_TOKENS:-10}"
 
-# Concurrent requests. Concurrency on this hybrid model is bought with GDN
-# state, not KV: --max-mamba-cache-size is 5 x this (4 slots + 1 for the
-# DFlash2 verify; SGLang clamps the cap to pool / 5 otherwise), and decode
-# CUDA graphs are captured up to this batch size. A slot costs ~0.2 GB (bf16
-# state): 32 -> 160 slots -> ~31-35 GB. 32 took NVFP4 to 572 tok/s aggregate;
-# 48 (~47 GB of state) failed to boot on 128 GB. For one interactive user, 4
-# gives that memory back to the KV pool.
-MAX_RUNNING="${MAX_RUNNING:-32}"
-MAMBA_CACHE="${MAMBA_CACHE:-$((MAX_RUNNING * 5))}"
+# Concurrent requests: set it to the most you actually run at once. Concurrency
+# on this hybrid model is bought with GDN state, not KV, and the cap reserves
+# that state up front whether or not it is used: ~0.0735 GiB per slot, 5 slots
+# per request (4, plus 1 for the DFlash2 verify; SGLang clamps the cap to
+# pool / 5), plus the verify buffer (requests x draft tokens). Cap 32 holds
+# ~35 GiB of it, cap 12 ~14 GiB; the difference goes to the KV pool (~+520K
+# tokens, room for about five 262K sessions at 0.85). Below the cap, speed does
+# not depend on it; the cap only limits how many requests run at once.
+# 12 fits "up to ~12 concurrent requests"; qwen3.8-27b-throughput keeps 32
+# (578 tok/s peak natively), qwen3.8-27b-longctx trades down to 6 x 262K.
+# 48 (~47 GB of state) failed to boot on 128 GB.
+MAX_RUNNING="${MAX_RUNNING:-12}"
+# 5 slots per running request, plus one per request so a finished turn's GDN
+# state can stay cached for the next turn of the same conversation.
+MAMBA_CACHE="${MAMBA_CACHE:-$((MAX_RUNNING * 6))}"
 CUDA_GRAPH_BS="${CUDA_GRAPH_BS:-$MAX_RUNNING}"
 
 # Memory fraction of the unified 128 GB that SGLang may take for weights, GDN

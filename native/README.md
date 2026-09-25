@@ -5,8 +5,9 @@ A measured recipe for the fastest Qwen3.8-27B setup I could get on a DGX Spark:
 (no Docker) and run as a systemd service.
 Other models plug in as profiles; [Gemma 4 31B](#gemma-4-31b) is the first.
 
-Throughput measured at the default configuration (draft 10, 32 concurrent
-requests); HumanEval does not depend on it:
+Throughput measured at the max-aggregate configuration (draft 10, 32
+concurrent requests: the `qwen3.8-27b-throughput` profile); HumanEval does
+not depend on it:
 
 | Target | Single-stream | Peak aggregate | TTFT | HumanEval, thinking off |
 |---|---:|---:|---:|---:|
@@ -178,7 +179,7 @@ settings as a local-only commit on top of them.
 | `MODEL_DIR`, `DRAFT_DIR` | profile | `/models/Qwen3.8-27B-FP8`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
 | `SGLANG_VERSION` | profile | `0.5.20` | see "Trying a newer SGLang" |
 | `DRAFT_TOKENS` | profile | `10` | 16 for single-stream (step 8) |
-| `MAX_RUNNING` | profile | `32` | concurrent requests; sizes the GDN pool and CUDA graphs with it (step 7) |
+| `MAX_RUNNING` | profile | `12` | the most requests you run at once; sizes the GDN pool and CUDA graphs with it (step 7) |
 | `MEM_FRACTION` | profile | `0.80` | see the earlyoom trap |
 | `CHUNKED_PREFILL` | profile | `8192` | the cookbook uses 2048: smoother decode under mixed load |
 | `PREFILL_CUDA_GRAPH` | profile | `0` | 1 turns prefill CUDA graphs on (untested here) |
@@ -271,6 +272,19 @@ file for why.
 For a single interactive user, `MAX_RUNNING=4` gives the memory back to KV at
 ~5% better single-stream.
 
+### Which cap: set it to the load you actually have
+
+The cap reserves GDN state up front, used or not, and does nothing for speed
+below it. So the default profile uses **cap 12**: ~14 GiB of GDN state
+instead of cap 32's ~35, with the difference (~520K tokens) in the KV pool.
+
+| Profile | For | Cap / draft | What it gives |
+|---|---|---|---|
+| `qwen3.8-27b` (default) | up to ~12 concurrent requests | 12 / 10 | ~5 full-length sessions' worth of KV at 0.85 |
+| `qwen3.8-27b-single` | 1–2 users | 16 / 16 | 70.9 tok/s single-stream (Uncensored finetune) |
+| `qwen3.8-27b-longctx` | six 262K sessions | 6 / 10, 0.85 | see below |
+| `qwen3.8-27b-throughput` | many short requests | 32 / 10 | 597.8 tok/s peak (RadixArk NVFP4) |
+
 ### Long sessions: how many 262K contexts fit
 
 The other end of the trade: a few requests, each with the full 262K context.
@@ -330,6 +344,16 @@ tok/s** single-stream going from 10 / 32 to 16 / 16, peak aggregate 558 → 375
 ([RESULTS](results/RESULTS.md#draft-16--cap-16-on-the-native-build)). The
 `qwen3.8-27b-single` profile is that setting: `./serve.sh qwen3.8-27b-single`.
 
+Where the two cross, from two native runs of the Uncensored finetune
+(aggregate tok/s, 300-token answers):
+
+| Streams | 1 | 2 | 4 | 8 | 16 |
+|---|---:|---:|---:|---:|---:|
+| draft 10 (cap 32) | 55.4 | 100.5 | **186.8** | **288.5** | **439.6** |
+| draft 16 (cap 16) | **62.2** | **115.5** | 179.1 | 254.2 | 375.4 |
+
+**Around 3 concurrent streams.** Below it draft 16 wins, above it draft 10.
+
 Move `MAX_RUNNING` with it. The DFlash2 verify buffer
 (`intermediate_ssm_state_cache` in the boot log) costs ~70 MB per running
 request per draft token: 23.2 GB at 32 x 10 on the native build, ~37 GB at
@@ -370,7 +394,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b.sh  qwen3.8-27b.sh  qwen3.8-27b-{single,longctx}.sh
+ls models/                        # gemma4-31b.sh  qwen3.8-27b.sh  qwen3.8-27b-{single,longctx,throughput}.sh
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest
@@ -533,7 +557,7 @@ Each of these cost real time.
 ```
 serve.sh       the launcher: machine knobs, profile choice; also `install` and `manifest`
 models/        one profile per model: qwen3.8-27b.sh (this README), its
-               variants qwen3.8-27b-single.sh and -longctx.sh, gemma4-31b.sh
+               variants -single, -longctx and -throughput, gemma4-31b.sh
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
