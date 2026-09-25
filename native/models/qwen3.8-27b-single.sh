@@ -12,7 +12,10 @@
 # Measured natively on the Uncensored NVFP4 finetune (results/RESULTS.md,
 # "Native build"): 70.9 tok/s single-stream against 56.4 for the default
 # 10 / 32 profile, +26%; peak aggregate 375 tok/s at 16 streams against 558 at
-# 32. More than a few concurrent requests: use qwen3.8-27b.
+# 32 (measured with a GDN pool of 80; the base profile now adds a slot per
+# request for cached turns, so this runs with 96, which holds only cached
+# state). The draft 16 / draft 10 crossover is ~3 concurrent streams: above
+# that, use qwen3.8-27b.
 
 DRAFT_TOKENS="${DRAFT_TOKENS:-16}"
 MAX_RUNNING="${MAX_RUNNING:-16}"
