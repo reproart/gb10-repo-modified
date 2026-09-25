@@ -316,6 +316,11 @@ this Docker-free project. Details in [`results/RESULTS.md`](results/RESULTS.md#q
 |---|---:|---:|---:|
 | FP8 | **97.6%** | 157/157 answered correctly, 7 ran out of budget | ~200 / ~1,569 |
 | NVFP4 | 93.9% | **97.0%** | ~200 / ~945 |
+| NVFP4, **native build** | 95.1% | **98.8%** (`reasoning_effort` medium) | ~206 / ~737 |
+
+The native build scores within the ±2-problem noise of the Docker build
+([RESULTS](results/RESULTS.md#humaneval-on-the-native-build)); `medium`
+thinking effort beat `xhigh` there with fewer tokens and fewer runaways.
 
 FP8 with thinking off already matches NVFP4 with thinking on.
 
