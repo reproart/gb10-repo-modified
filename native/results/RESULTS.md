@@ -397,6 +397,31 @@ under "Long-context concurrency". Until the server log's `#cached-token`
 confirms or clears it, read every prefill figure above this section as
 optimistic, and the current benchmark's curve as the honest one.
 
+### HumanEval on the native build
+
+Against the RadixArk server above (`319f741c`, draft 10 / cap 32), with the
+Docker-sandboxed harness from the parent project (`scripts/run-humaneval.sh`
+there; it is not part of this Docker-free project). 164 problems,
+temperature 0.
+
+| Mode | Docker build (`554ebba9`, draft 8) | Native build |
+|---|---:|---:|
+| Thinking off | 93.9% (154/164) | **95.1% (156/164)**, 8 wrong answers |
+| Thinking on, `reasoning_effort` xhigh | 97.0% (159/164), ~945 tok/problem, 4 truncated | — |
+| Thinking on, `reasoning_effort` medium | — | **98.8% (162/164)**, ~737 tok/problem, 1 truncated, 1 wrong |
+
+**No quality regression.** Thinking off is +2 problems, inside the ±2 band
+greedy decoding gives on this stack, and the set of failures shuffled the way
+that band predicts (77, 103, 116 now pass; 101, 108, 145 now fail). The
+checkpoint revision also differs from the Docker leg's, so a small true
+difference could hide in there; the draft settings cannot, since every draft
+token is verified.
+
+**`medium` effort looks like the better thinking mode for code**: one
+problem short of perfect at ~22% fewer tokens than xhigh, and one runaway
+instead of four. xhigh was not re-run natively, so this is a cross-build,
+one-run comparison. HumanEval/145 failed in every mode.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
