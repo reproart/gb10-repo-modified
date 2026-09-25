@@ -455,24 +455,29 @@ investigated; it costs ~0.15 s once per request.
 
 ### Draft 12 at cap 12 (2026-09-25)
 
-Same server as above, `DRAFT_TOKENS=12`, one run.
+Same server as above, `DRAFT_TOKENS=12`. Aggregate tok/s; draft 10 two
+runs, draft 12 three.
 
-| Streams | Draft 10 (two runs) | Draft 12 |
-|---:|---:|---:|
-| single-stream decode | 69.7 / 69.9 | **74.1** |
-| 1 | 58.1 / 63.4 | **72.1** |
-| 2 | 117.3 / 107.4 | **129.3** |
-| 4 | 187.5 / 183.5 | 160.8 |
-| 8 | 273.1 / 245.3 | **316.7** |
-| 12 | 404.4 | 387.8 |
+| Streams | Draft 10 | Draft 12 | Draft 12 vs 10 (means) |
+|---:|---:|---:|---:|
+| single-stream decode | 69.7 / 69.9 | 74.1 | +6% |
+| 1 | 58.1 / 63.4 | 72.1 / 73.2 / 59.1 | noisy |
+| 2 | 117.3 / 107.4 | 129.3 / 120.5 / 126.1 | +11% |
+| 4 | 187.5 / 183.5 | 160.8 / 166.4 / 161.1 | **-12%** |
+| 8 | 273.1 / 245.3 | 316.7 / 312.7 / 304.5 | **+20%** |
+| 12 | 404.4 | 387.8 / 399.4 / 388.1 | -3% |
 
-accept_len 8.5-9.4 single-stream, against 7.4-8.6 at draft 10. +6% on
-single-stream decode, +10-20% at 1-2 streams, -4% at the cap. The 4 and 8
-rows contradict each other (4 streams ran as slowly per stream as 8: 46.5
-against 46.1 tok/s, in the same wall time), so they need a repeat before
-anything is read into them. Prefill (unique prompts): 2,751 / 1,795 / 1,593 /
-1,132 tok/s at 2K / 8K / 32K / 101K, 84 °C at the end of the 101K prompt,
-no suspend.
+accept_len 8.5-9.4 single-stream, against 7.4-8.6 at draft 10. Summed over
+the five levels draft 12 is ~4% ahead, but not uniformly: the 4-stream dip
+reproduces in all three runs (4 streams take about as long as 8: 7.2-7.5 s
+against 7.7-7.9 s of wall time), and so does the 8-stream gain. The curve is
+not smooth in draft tokens x streams, which points at kernel shapes (the
+verify batch is streams x draft tokens: 48 rows at 4 x 12, 96 at 8 x 12)
+rather than at acceptance. Not verified; a per-level draft choice would need
+a sweep of draft 10-13 at 4 and 8 streams.
+
+Prefill (unique prompts): 2,751 / 1,795 / 1,593 / 1,132 tok/s at 2K / 8K /
+32K / 101K, 84 °C at the end of the 101K prompt, no suspend.
 
 ## Reference comparison
 
