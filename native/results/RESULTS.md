@@ -453,6 +453,27 @@ The 8-stream row has the highest TTFT of the sweep in all three runs
 (0.51 s, against 0.35 s at 12 and 0.42 s at 16 with cap 32). Not
 investigated; it costs ~0.15 s once per request.
 
+### Draft 12 at cap 12 (2026-09-25)
+
+Same server as above, `DRAFT_TOKENS=12`, one run.
+
+| Streams | Draft 10 (two runs) | Draft 12 |
+|---:|---:|---:|
+| single-stream decode | 69.7 / 69.9 | **74.1** |
+| 1 | 58.1 / 63.4 | **72.1** |
+| 2 | 117.3 / 107.4 | **129.3** |
+| 4 | 187.5 / 183.5 | 160.8 |
+| 8 | 273.1 / 245.3 | **316.7** |
+| 12 | 404.4 | 387.8 |
+
+accept_len 8.5-9.4 single-stream, against 7.4-8.6 at draft 10. +6% on
+single-stream decode, +10-20% at 1-2 streams, -4% at the cap. The 4 and 8
+rows contradict each other (4 streams ran as slowly per stream as 8: 46.5
+against 46.1 tok/s, in the same wall time), so they need a repeat before
+anything is read into them. Prefill (unique prompts): 2,751 / 1,795 / 1,593 /
+1,132 tok/s at 2K / 8K / 32K / 101K, 84 °C at the end of the 101K prompt,
+no suspend.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
