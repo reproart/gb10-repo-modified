@@ -358,6 +358,45 @@ single-stream, −11.5% aggregate at 16 streams), and +26% is well outside the
 a later run of the same boot. At 24 and 32 streams the 16 / 16 config queues
 against its cap of 16, as expected.
 
+### RadixArk NVFP4 on the native build: same checkpoint as the Docker leg
+
+`RadixArk/Qwen3.8-27B-NVFP4` @ `319f741c`, the revision of the FP8 section's
+NVFP4 leg, at its config (draft 10, pool 160 / cap 32), on a second GB10
+host. The only flag that differs is `--mem-fraction-static` 0.80 vs 0.85.
+This is the like-for-like native-vs-Docker comparison.
+
+| | Docker (FP8 section) | Native |
+|---|---:|---:|
+| Single-stream decode | 70.1–70.2 | **70.5** tok/s |
+| Peak aggregate @ 32 | 571.1–572.7 | **597.8** tok/s |
+| TTFT, short prompt | 197–198 ms | **191 ms** |
+
+**Decode and concurrency: the native build is at least as fast.** Against
+the Uncensored finetune on the native build (above), the FP4 head is +25%
+single-stream, +7% aggregate, −20% TTFT and +35–50% prefill, which confirms
+that finetune's BF16 `lm_head` as the cost (two hosts, so host-to-host
+spread is in there too).
+
+**Prefill: the Docker-era figures came from a different benchmark.** The
+same native server, measured by both:
+
+| Prompt | Older benchmark (behind every prefill figure above) | Current `bench/perf.py` |
+|---|---:|---:|
+| ~2K | 2,448 tok: 2,679 tok/s | 2,063 tok: 2,501 tok/s |
+| ~10K | 9,698 tok: 2,406 tok/s | 8,092 tok: 1,594 tok/s |
+| ~35K | 38,698 tok: 2,162 tok/s | 32,382 tok: 1,714 tok/s |
+| 100K+ | 120,865 tok: 89.37 s (1,352 tok/s) | 101,120 tok: 83.70 s (1,208 tok/s) |
+
+Through the older benchmark, the native build lands where Docker did (9.7K:
+2,406 vs 2,658; 121K: 89.4 s vs 91.9 s), so there is no native prefill
+regression. But the older benchmark reports a 121K prompt as cheaper per
+token than a 101K one, which quadratic attention does not allow, and its
+prompt sizes have not moved by a token in a month: fixed text, very likely
+sharing prefixes that the radix cache serves. That is the trap described
+under "Long-context concurrency". Until the server log's `#cached-token`
+confirms or clears it, read every prefill figure above this section as
+optimistic, and the current benchmark's curve as the honest one.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
