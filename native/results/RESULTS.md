@@ -453,31 +453,35 @@ The 8-stream row has the highest TTFT of the sweep in all three runs
 (0.51 s, against 0.35 s at 12 and 0.42 s at 16 with cap 32). Not
 investigated; it costs ~0.15 s once per request.
 
-### Draft 12 at cap 12 (2026-09-25)
+### Draft 10 / 11 / 12 at cap 12 (2026-09-25/26)
 
-Same server as above, `DRAFT_TOKENS=12`. Aggregate tok/s; draft 10 two
-runs, draft 12 three.
+Same server as above (`nvidia/Qwen3.8-27B-NVFP4`, cap 12, 0.80), only
+`DRAFT_TOKENS` changed. Aggregate tok/s, 300 tokens per stream; draft 10 two
+runs (one at 12 streams), draft 11 and 12 three each.
 
-| Streams | Draft 10 | Draft 12 | Draft 12 vs 10 (means) |
+| Streams | Draft 10 | Draft 11 | Draft 12 |
 |---:|---:|---:|---:|
-| single-stream decode | 69.7 / 69.9 | 74.1 | +6% |
-| 1 | 58.1 / 63.4 | 72.1 / 73.2 / 59.1 | noisy |
-| 2 | 117.3 / 107.4 | 129.3 / 120.5 / 126.1 | +11% |
-| 4 | 187.5 / 183.5 | 160.8 / 166.4 / 161.1 | **-12%** |
-| 8 | 273.1 / 245.3 | 316.7 / 312.7 / 304.5 | **+20%** |
-| 12 | 404.4 | 387.8 / 399.4 / 388.1 | -3% |
+| 2 | 117.3 / 107.4 | **124.0 / 123.3 / 124.0** | 129.3 / 120.5 / 126.1 |
+| 4 | **187.5 / 183.5** | 169.3 / 167.7 / 170.2 | 160.8 / 166.4 / 161.1 |
+| 8 | 273.1 / 245.3 | **320.7 / 312.0 / 324.5** | 316.7 / 312.7 / 304.5 |
+| 12 | **404.4** | 402.6 / 392.3 / 408.0 | 387.8 / 399.4 / 388.1 |
+| mean of the four levels | 240 | **253** | 248 |
 
-accept_len 8.5-9.4 single-stream, against 7.4-8.6 at draft 10. Summed over
-the five levels draft 12 is ~4% ahead, but not uniformly: the 4-stream dip
-reproduces in all three runs (4 streams take about as long as 8: 7.2-7.5 s
-against 7.7-7.9 s of wall time), and so does the 8-stream gain. The curve is
-not smooth in draft tokens x streams, which points at kernel shapes (the
-verify batch is streams x draft tokens: 48 rows at 4 x 12, 96 at 8 x 12)
-rather than at acceptance. Not verified; a per-level draft choice would need
-a sweep of draft 10-13 at 4 and 8 streams.
+Against draft 10 (means): draft 11 is +10% at 2, -9% at 4, +23% at 8 and
+-1% at 12; draft 12 is +11%, -12%, +20% and -3%. Draft 11 matches draft 12
+at 2 streams and beats it at 4, 8 and 12. Single-stream decode (the separate
+section, 700 tokens): 69.7 / 69.9 at draft 10, 74.1 at draft 12; draft 11
+not measured. accept_len single-stream: 7.4-8.6 at draft 10, 8.5-9.4 at 12.
 
-Prefill (unique prompts): 2,751 / 1,795 / 1,593 / 1,132 tok/s at 2K / 8K /
-32K / 101K, 84 °C at the end of the 101K prompt, no suspend.
+The 4-stream dip reproduces at draft 11 and 12 in every run (4 streams take
+as long as 8), and so does the 8-stream gain. It is not CUDA-graph padding:
+with speculative decoding SGLang 0.5.20 captures every batch size from 1 to
+8. The verify batch is streams x draft tokens (40 rows at 4 x 10, 44 at
+4 x 11, 48 at 4 x 12, 80 / 88 / 96 at 8), so a kernel-shape effect is the
+likely cause; not profiled.
+
+Prefill at draft 12 (unique prompts): 2,751 / 1,795 / 1,593 / 1,132 tok/s at
+2K / 8K / 32K / 101K, 84 °C at the end of the 101K prompt, no suspend.
 
 ## Reference comparison
 
