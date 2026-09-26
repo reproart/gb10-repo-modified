@@ -484,29 +484,37 @@ likely cause; not profiled.
 Prefill at draft 12 (unique prompts): 2,751 / 1,795 / 1,593 / 1,132 tok/s at
 2K / 8K / 32K / 101K, 84 °C at the end of the 101K prompt, no suspend.
 
-### RadixArk NVFP4, draft 15, cap 12 (2026-09-26)
+### RadixArk NVFP4 at cap 12: draft 11 vs 15 (2026-09-26)
 
 `RadixArk/Qwen3.8-27B-NVFP4` (FP4 `lm_head`; revision not recorded) in place
-of `nvidia/Qwen3.8-27B-NVFP4`, `DRAFT_TOKENS=15`; every other value is the
-base profile's (cap 12, pool 72, 0.80, bf16 GDN state, fp8 KV). Two runs.
+of `nvidia/Qwen3.8-27B-NVFP4`; every other value is the base profile's (cap
+12, pool 72, 0.80, bf16 GDN state, fp8 KV). Aggregate tok/s.
 
-| | |
-|---|---|
-| Single-stream decode | **90.6 / 89.6 tok/s** (accept_len 9.3-10.9), TTFT 203 ms |
-| Aggregate at 1 / 2 / 4 / 8 / 12 streams | 67.0 / 121.2 / **188.5** / 302.5 / 381.0 tok/s |
-| 18 streams (6 queued) | 328.5 tok/s, TTFT max 9.6 s |
-| Prefill, 2K / 8K unique tokens | 2,721 / 2,054 tok/s |
+| | nvidia, draft 11 (3 runs, mean) | RadixArk, draft 11 | RadixArk, draft 15 (2 runs) |
+|---|---:|---:|---:|
+| Single-stream decode (700-token code answer) | 73.6 | 74.1 | **90.6 / 89.6 / 89.5** |
+| accept_len there | 8.0-8.5 | 8.1-9.1 | 8.7-11.1 |
+| Sweep, 1 stream (300 tokens) | — | **71.2** | 67.0 / 65.7 |
+| 2 streams | 123.8 | 120.5 | 121.2 / 118.7 |
+| 4 | 169.1 | 197.3 | 188.5 / 201.7 |
+| 8 | **319.1** | 294.6 | 302.5 / 308.8 |
+| 12 | **401.0** | 394.3 | 381.0 / 321.3 |
+| Prefill 2K / 8K | — | — | 2,721 / 2,054 tok/s |
 
-The fastest single-stream figure in this file, from parameters alone (the
-profile differed from the repo's only in MODEL_DIR and DRAFT_TOKENS). Two
-changes at once, so the split is an estimate: the FP4 head measured +25%
-single-stream against a BF16 head earlier (RadixArk vs the Uncensored
-finetune, above), which puts most of the step from 73.6 (nvidia NVFP4,
-draft 11) here; the rest is draft 15. Unlike draft 11 and 12 on the nvidia
-checkpoint, 4 streams show no dip (188.5, 60 verify rows). Against nvidia
-NVFP4 at draft 11 (means): +22% single-stream, -2% at 2 streams, +11% at 4,
--5% at 8, -5% at 12. RadixArk NVFP4 scored 95.1% on HumanEval (thinking off)
-on this build, vs 97.6% for Qwen's FP8.
+**The target makes no difference at draft 11:** 74.1 against 73.6
+single-stream, within a few % at 2, 8 and 12 streams. (So the FP4 head is
+not what separates these two NVFP4 exports; nvidia's is either FP4 too or
+does not cost decode here.) The one exception: RadixArk has **no dip at 4
+streams** (197 vs 169), so the dip seen at draft 11 and 12 is specific to the
+nvidia checkpoint's kernel shapes.
+
+**Draft 15's gain depends on the text.** On the 700-token code answer it is
++21% (89.5-90.6 vs 74.1). On the sweep's 300-token answers to varied prompts
+it is gone: 66-67 vs 71 at one stream, even at 2-8 streams, and the 12-stream
+row is lower in both runs (the 321 one had a slow wave: 11.2 s wall). A
+longer draft pays only while acceptance stays high, which long, predictable
+code gives and short or varied answers do not. The base profile keeps 11;
+draft 15 suits long code generation for one user (`DRAFT_TOKENS=15`).
 
 ## Reference comparison
 
