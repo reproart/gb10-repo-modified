@@ -40,7 +40,11 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.8-27b-sglang}"
 
 # Draft tokens per step, the largest single-stream lever. The optima diverge:
 # 10 wins aggregate throughput (435 vs 385 tok/s at 16 streams on NVFP4),
-# 16 wins a single stream (78.6 vs 65.2 tok/s, +28% over the default 8).
+# 16 wins a single stream (78.6 vs 65.2 tok/s, +28% over the draft's 8).
+# 11 is the default for this cap: at cap 12, against 10, it measured +5%
+# single-stream (73.6 vs 69.8 tok/s), +10% at 2 streams, -9% at 4, +23% at 8
+# and -1% at 12, and it beat 12 at 4-12 streams (results/RESULTS.md,
+# "Draft 10 / 11 / 12 at cap 12").
 # Past 16 accept_len falls and both get worse. Any value other than the
 # draft's block size (8) logs "DFLASH block size mismatch" at boot; harmless.
 # Change it together with MAX_RUNNING: the verify buffer
@@ -48,7 +52,7 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.8-27b-sglang}"
 # request per draft token. 32 x 10 measured 23.2 GB natively; 32 x 16 would be
 # ~37 GB, taken out of the KV pool, for less aggregate. For single-stream use:
 # DRAFT_TOKENS=16 MAX_RUNNING=16 (~18 GB).
-DRAFT_TOKENS="${DRAFT_TOKENS:-10}"
+DRAFT_TOKENS="${DRAFT_TOKENS:-11}"
 
 # Concurrent requests: set it to the most you actually run at once. Concurrency
 # on this hybrid model is bought with GDN state, not KV, and the cap reserves

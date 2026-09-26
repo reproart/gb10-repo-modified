@@ -470,8 +470,9 @@ runs (one at 12 streams), draft 11 and 12 three each.
 Against draft 10 (means): draft 11 is +10% at 2, -9% at 4, +23% at 8 and
 -1% at 12; draft 12 is +11%, -12%, +20% and -3%. Draft 11 matches draft 12
 at 2 streams and beats it at 4, 8 and 12. Single-stream decode (the separate
-section, 700 tokens): 69.7 / 69.9 at draft 10, 74.1 at draft 12; draft 11
-not measured. accept_len single-stream: 7.4-8.6 at draft 10, 8.5-9.4 at 12.
+section, 700 tokens): 69.7 / 69.9 at draft 10, **73.6** at draft 11, 74.1 at
+draft 12. accept_len single-stream: 7.4-8.6 at draft 10, 8.0-8.5 at 11,
+8.5-9.4 at 12. Draft 11 became the base profile's default.
 
 The 4-stream dip reproduces at draft 11 and 12 in every run (4 streams take
 as long as 8), and so does the 8-stream gain. It is not CUDA-graph padding:

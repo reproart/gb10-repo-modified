@@ -5,7 +5,7 @@
 #
 # Everything comes from qwen3.8-27b.sh (weights, SGLang version, flags; edit
 # MODEL_DIR there and all profiles follow) except the cap. This was the
-# default before the base profile moved to 12: the max-aggregate config every
+# default before the base profile moved to 12 (and draft 11): the max-aggregate config every
 # "@ 32" figure in results/ was measured at. Natively, RadixArk NVFP4:
 # 70.5 tok/s single-stream, 597.8 tok/s peak at 32 streams.
 #
@@ -14,6 +14,8 @@
 # Only worth it if more than ~16 requests really run at once.
 
 MAX_RUNNING="${MAX_RUNNING:-32}"
+# 10, as measured at this cap (the base profile's 11 was tuned at cap 12).
+DRAFT_TOKENS="${DRAFT_TOKENS:-10}"
 # 5 per request, as measured (no extra cached-state slot at this size).
 MAMBA_CACHE="${MAMBA_CACHE:-$((MAX_RUNNING * 5))}"
 

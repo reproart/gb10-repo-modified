@@ -179,7 +179,7 @@ settings as a local-only commit on top of them.
 | `PORT`, `HOST` | `serve.sh` | `8888`, `0.0.0.0` | |
 | `MODEL_DIR`, `DRAFT_DIR` | profile | `/models/Qwen3.8-27B-FP8`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
 | `SGLANG_VERSION` | profile | `0.5.20` | see "Trying a newer SGLang" |
-| `DRAFT_TOKENS` | profile | `10` | 16 for single-stream (step 8) |
+| `DRAFT_TOKENS` | profile | `11` | 16 for single-stream, 10 for cap 32 (step 8) |
 | `MAX_RUNNING` | profile | `12` | the most requests you run at once; sizes the GDN pool and CUDA graphs with it (step 7) |
 | `MEM_FRACTION` | profile | `0.80` | see the earlyoom trap |
 | `CHUNKED_PREFILL` | profile | `8192` | the cookbook uses 2048: smoother decode under mixed load |
@@ -281,7 +281,7 @@ instead of cap 32's ~35, with the difference (~520K tokens) in the KV pool.
 
 | Profile | For | Cap / draft | What it gives |
 |---|---|---|---|
-| `qwen3.8-27b` (default) | up to ~12 concurrent requests | 12 / 10 | ~5 full-length sessions' worth of KV at 0.85 |
+| `qwen3.8-27b` (default) | up to ~12 concurrent requests | 12 / 11 | ~5 full-length sessions' worth of KV at 0.85; 73.6 tok/s single-stream, 401 tok/s at 12 (nvidia NVFP4) |
 | `qwen3.8-27b-single` | 1–2 users | 16 / 16 | 70.9 tok/s single-stream (Uncensored finetune) |
 | `qwen3.8-27b-longctx` | six 262K sessions | 6 / 10, 0.85 | see below |
 | `qwen3.8-27b-throughput` | many short requests | 32 / 10 | 597.8 tok/s peak (RadixArk NVFP4) |
@@ -337,8 +337,23 @@ as memory: prefill runs one sequence at a time at ~1,200 tok/s, so filling a
 | 24 | 69.0 | 284.5 | 8.40 | 0.32 |
 
 **The optima diverge, so pick one:** 16 for interactive/single-stream (+28%
-over 8; a second machine measured +41.6%), **10 for concurrent serving**, the
-default here. You cannot have both.
+over 8; a second machine measured +41.6%), 10 for concurrent serving at cap
+32 (the throughput profile). You cannot have both.
+
+**At cap 12, the default, 11 is the middle that wins most.** Three runs each
+on `nvidia/Qwen3.8-27B-NVFP4`, aggregate tok/s
+([RESULTS](results/RESULTS.md#draft-10--11--12-at-cap-12-2026-092526)):
+
+| Draft | single-stream | 2 streams | 4 | 8 | 12 |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 69.8 | 112 | **186** | 259 | **404** |
+| **11** (default) | 73.6 | 124 | 169 | **319** | 401 |
+| 12 | **74.1** | **125** | 163 | 311 | 392 |
+
+The dip at 4 streams reproduces at 11 and 12 and is not CUDA-graph padding
+(every batch size up to 8 is captured); the verify batch then has 44-48 rows
+instead of 40, so likely a kernel shape. If your load sits at 3-5 streams,
+`DRAFT_TOKENS=10`.
 
 On the native build, with the Uncensored NVFP4 finetune: **56.4 → 70.9
 tok/s** single-stream going from 10 / 32 to 16 / 16, peak aggregate 558 → 375
