@@ -17,8 +17,10 @@ not depend on it:
 
 Tuned for one stream (draft 16), NVFP4 reaches **78.6 tok/s**, and 97.0% on
 HumanEval with thinking on. **Pick by what you need:** FP8 is Qwen's own
-checkpoint and the more accurate one, NVFP4 is ~40% faster on single-stream
-and 2.5× faster on prefill. On single-stream alone both are 1.5–2.5× the
+checkpoint and the more accurate one with thinking off, NVFP4 is ~40% faster
+on single-stream and 2.5× faster on prefill. With thinking on (medium effort)
+both make at most one HumanEval error, so there the faster one wins
+([Quality](#quality)). On single-stream alone both are 1.5–2.5× the
 widely-shared "FP8 on vLLM at ~32 tok/s" recipe.
 
 **These numbers come from the earlier Docker build** (a patched SGLang
@@ -408,6 +410,15 @@ The native build scores within the ±2-problem noise of the Docker build
 thinking effort beat `xhigh` there with fewer tokens and fewer runaways.
 
 FP8 with thinking off already matches NVFP4 with thinking on.
+
+**With thinking on, the quantization gap closes.** At `reasoning_effort`
+medium every target run here, FP8 and the NVFP4 exports alike, made at most
+one error on HumanEval; with thinking off they make 7-9. Thinking makes up
+for what the 4-bit weights lose on this set, so for thinking workloads the
+faster checkpoint costs nothing measurable here. Two limits: HumanEval is at
+its ceiling there, so it cannot rank the targets any more (a harder set
+could), and thinking costs tokens (~737 per problem against ~206), which the
+speed of the NVFP4 target pays back.
 
 ---
 
