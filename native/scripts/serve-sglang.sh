@@ -54,6 +54,8 @@ export PYTHONUNBUFFERED=1
 # FlashInfer's JIT passes MAX_JOBS to ninja as -j (see JIT_JOBS in serve.sh).
 export MAX_JOBS="${JIT_JOBS:-${MAX_JOBS:-2}}"
 [ "$HF_OFFLINE" = 1 ] && export HF_HUB_OFFLINE=1
+# The profile's own environment for the server (e.g. patches/ on PYTHONPATH).
+if declare -F model_env >/dev/null; then model_env; fi
 
 # Flags every model gets; the profile's model_args adds its own.
 args=(

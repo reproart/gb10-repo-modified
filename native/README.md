@@ -3,7 +3,8 @@
 A measured recipe for the fastest Qwen3.8-27B setup I could get on a DGX Spark:
 **stock SGLang + DFlash2 speculative decoding**, installed natively with pip
 (no Docker) and run as a systemd service.
-Other models plug in as profiles; [Gemma 4 31B](#gemma-4-31b) is the first.
+Other models plug in as profiles: [Gemma 4 31B](#gemma-4-31b) and
+[Qwen3.8-Flash-Next](#qwen38-flash-next) so far.
 
 Throughput measured at the max-aggregate configuration (draft 10, 32
 concurrent requests: the `qwen3.8-27b-throughput` profile); HumanEval does
@@ -394,7 +395,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b.sh  qwen3.8-27b.sh  qwen3.8-27b-{single,longctx,throughput}.sh
+ls models/                        # gemma4-31b  qwen3.8-27b(-single,-longctx,-throughput)  qwen3.8-flash-next
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest
@@ -433,6 +434,67 @@ $HF download google/gemma-4-31B-it-assistant --local-dir /models/gemma-4-31B-it-
   this GPU, which image inputs need.
 - **Thinking is off by default** in Gemma 4's template, unlike Qwen's; turn it
   on per request with `chat_template_kwargs: {"enable_thinking": true}`.
+
+### Qwen3.8-Flash-Next
+
+[`models/qwen3.8-flash-next.sh`](models/qwen3.8-flash-next.sh): the 176B MoE
+(125B + a 51B n-gram table, 6B active) on one Spark, NVFP4, with its own MTP
+head. Flags from the SGLang cookbook's single-Spark cell; the n-gram table is
+read in place from the checkpoint (below).
+
+```bash
+HF=~/spark/venv/bin/hf
+$HF download RadixArk/Qwen3.8-Flash-Next-NVFP4 --revision <sha> \
+  --local-dir /models/Qwen3.8-Flash-Next-NVFP4   # 126 GiB, table and MTP head inside
+./serve.sh qwen3.8-flash-next                    # serves as "qwen3.8-flash-next" on :8888
+python3 patches/test_gb10_ple_mmap.py            # optional, CPU only: the patch below
+```
+
+**Where the n-gram table lives.** The checkpoint is 126 GiB on 121.6 GiB of
+usable memory; it fits because the 47.7 GiB FP8 table stays on the NVMe and
+the GPU reads its rows through the host page tables (16 rows per token).
+Stock SGLang does that from a *copy*: `--ple-offload-backend file` creates a
+sparse 47.7 GiB file under `$SGLANG_CACHE_DIR/ple` and the weight loader
+writes the whole table into it on every boot, ~10 minutes into a fresh file
+and ~55 into a filled one (the cookbook's advice: delete it before each
+start). This profile skips the copy: `patches/gb10_ple_mmap.py` maps the
+checkpoint's own shard tensors (`...ngram_embedding.shard_<k>.weight`)
+read-only and points the gather kernel at them. Nothing is written and no
+second 47.7 GiB exists; the rest of the file backend stays stock (the device
+check, `MADV_RANDOM`, page-cache hints before prefill, the 8 GiB cap on the
+table's resident set). `PLE_TABLE=file` switches back to stock for a
+comparison. The patch loads through `patches/sitecustomize.py`, only into
+this profile's server (`PYTHONPATH`, `GB10_PLE_MMAP=1`), and refuses to run
+on an SGLang whose code no longer matches 0.5.20.
+
+**What to check at the first boot:**
+
+- `PLE table: layer <n> read in place from /models/...: <rows> of <rows>
+  rows in <k> shards (47.7 GiB F8_E4M3) ..., nothing written`, and later
+  `... shard tensors left in place`. No `file-backed mmap` line and nothing new under
+  `~/.cache/sglang/ple`.
+- The first answer is coherent. Garbage output means the rows are read
+  wrong: `PLE_TABLE=file` gives the stock reference to compare with.
+- A CUDA fault or `illegal memory access` on the first request: retry with
+  `GB10_PLE_MMAP_WRITABLE=1`, which maps copy-on-write instead of read-only
+  (in case the GPU needs writable page-table entries; the file is still never
+  written). Note which of the two booted: it is the one to keep.
+
+**The plan, and what decides it.** The cookbook measured 27.5 tok/s
+single-stream with MTP on this cell; the int4 AutoRound recipe on vLLM does
+~66. The difference is the expert kernel (cutlass W4A4 vs Marlin W4A16), not
+the engine, so:
+
+1. `./serve.sh qwen3.8-flash-next`, then `bench/perf.py`: boots without the
+   copy, and the baseline on this box.
+2. `MOE_RUNNER_BACKEND=marlin ./serve.sh qwen3.8-flash-next` (and
+   `FP4_GEMM_BACKEND=marlin` for the dense NVFP4 layers): the same weights on
+   W4A16 kernels. Near 60 tok/s makes one engine for everything worth it.
+3. Only if 2 does not get there: port the AutoRound checkpoint.
+
+**Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
+slot), 24 without; a ~93K-token KV pool at 0.85. `MAMBA_SSM_DTYPE=bfloat16`
+halves the slots. Every knob is commented in the profile.
 
 ---
 
@@ -557,7 +619,10 @@ Each of these cost real time.
 ```
 serve.sh       the launcher: machine knobs, profile choice; also `install` and `manifest`
 models/        one profile per model: qwen3.8-27b.sh (this README), its
-               variants -single, -longctx and -throughput, gemma4-31b.sh
+               variants -single, -longctx and -throughput, gemma4-31b.sh,
+               qwen3.8-flash-next.sh
+patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
+               in place · sitecustomize.py (loads it) · test_gb10_ple_mmap.py
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
