@@ -285,6 +285,7 @@ instead of cap 32's ~35, with the difference (~520K tokens) in the KV pool.
 | `qwen3.8-27b-single` | 1–2 users | 16 / 16 | 70.9 tok/s single-stream (Uncensored finetune) |
 | `qwen3.8-27b-longctx` | six 262K sessions | 6 / 10, 0.85 | see below |
 | `qwen3.8-27b-throughput` | many short requests | 32 / 10 | 597.8 tok/s peak (RadixArk NVFP4) |
+| `qwen3.8-27b-dspark` | A/B against DFlash2 | 12 / DSpark gamma 7 (verify 8) | RadixArk's DSpark draft instead of DFlash2; unmeasured here |
 
 ### Long sessions: how many 262K contexts fit
 
@@ -355,6 +356,14 @@ The dip at 4 streams reproduces at 11 and 12 and is not CUDA-graph padding
 instead of 40, so likely a kernel shape. If your load sits at 3-5 streams,
 `DRAFT_TOKENS=10`.
 
+**Another draft: DSpark.** `qwen3.8-27b-dspark` swaps DFlash2 for
+[RadixArk/Qwen3.8-27B-DSpark](https://huggingface.co/RadixArk/Qwen3.8-27B-DSpark)
+(1.86B, `--speculative-algorithm DSPARK`, in SGLang 0.5.20) with everything
+else from the base profile, so `bench/perf.py` against each is a
+like-for-like comparison. It verifies 8 tokens per step (gamma 7, the card's
+value; `DSPARK_GAMMA` to sweep), against DFlash2's 11, so its verify buffer
+is smaller. Download and details in the profile.
+
 On the native build, with the Uncensored NVFP4 finetune: **56.4 → 70.9
 tok/s** single-stream going from 10 / 32 to 16 / 16, peak aggregate 558 → 375
 ([RESULTS](results/RESULTS.md#draft-16--cap-16-on-the-native-build)). The
@@ -410,7 +419,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b  qwen3.8-27b(-single,-longctx,-throughput)  qwen3.8-flash-next
+ls models/                        # gemma4-31b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest

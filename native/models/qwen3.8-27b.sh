@@ -97,10 +97,8 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 # This model's flags, appended to the common ones in scripts/serve-sglang.sh.
 model_args() {
+  spec_args
   args+=(
-    --speculative-algorithm DFLASH
-    --speculative-draft-model-path "$DRAFT_DIR"
-    --speculative-num-draft-tokens "$DRAFT_TOKENS"
     --mamba-radix-cache-strategy extra_buffer
     --mamba-ssm-dtype bfloat16
     --kv-cache-dtype fp8_e4m3
@@ -113,6 +111,16 @@ model_args() {
     --tool-call-parser qwen3_coder
   )
   [ "$PREFILL_CUDA_GRAPH" = 1 ] || args+=(--disable-prefill-cuda-graph)
+}
+
+# The speculative-decoding flags, on their own so that a variant with another
+# draft (qwen3.8-27b-dspark.sh) replaces only these.
+spec_args() {
+  args+=(
+    --speculative-algorithm DFLASH
+    --speculative-draft-model-path "$DRAFT_DIR"
+    --speculative-num-draft-tokens "$DRAFT_TOKENS"
+  )
 }
 
 # One line for the startup summary.
