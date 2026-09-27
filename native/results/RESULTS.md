@@ -534,7 +534,18 @@ The cookbook's figure is TPOT on random prompts, so the protocols differ;
 the vLLM int4 AutoRound recipe on the same box does ~66 tok/s.
 `--moe-runner-backend marlin` did not boot on stock 0.5.20: the load-time
 NVFP4 -> Marlin repack ran out of memory at 114.65 GiB allocated, about half
-way through the MoE layers (patches/gb10_marlin_lean.py is the response).
+way through the MoE layers. With patches/gb10_marlin_lean.py (one copy less
+per layer, gc between layers) it boots:
+
+| MoE kernels | Single-stream decode | accept_len |
+|---|---:|---:|
+| cutlass (default, W4A4) | 39.5 tok/s | 3.55-3.73 |
+| Marlin (W4A16) | 40.2 tok/s (37.9-40.4) | 3.55-3.70 |
+
+**Marlin changes nothing (+2%)**, so the expert GEMMs are not what holds a
+step at ~90 ms (40 tok/s at ~3.6 tokens per step), against ~53 ms for the
+int4 vLLM recipe on this box. bench/profile_decode.py breaks a step down by
+kernel group to find what does.
 
 ## Reference comparison
 

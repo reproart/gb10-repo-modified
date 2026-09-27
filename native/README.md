@@ -667,7 +667,7 @@ patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
-bench/         common.py · perf.py · longctx.py
+bench/         common.py · perf.py · longctx.py · profile_decode.py (GPU time per kernel group)
 results/       RESULTS.md: all measurements (Docker build)
                BUILD-MANIFEST.md: the build behind them
                REPRODUCTION.md: an independent run
