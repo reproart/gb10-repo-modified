@@ -36,11 +36,15 @@ from collections import defaultdict
 # name regex -> group, first match wins
 GROUPS = [
     ("ple gather", r"gather_ple|ple_rows|qwen4_ple|ngram"),
-    ("GDN (linear attn)", r"chunk_gated|gated_delta|fused_recurrent|fla_|deltanet|causal_conv|conv1d|gdn|mamba|ssm"),
+    ("norm / elementwise", r"rmsnorm|layer_norm|layernorm"),
+    ("hyper-connections", r"hc_mix|hc_combine|hyper_conn"),
+    ("GDN (linear attn)", r"delta_rule|chunk_gated|gated_delta|fused_recurrent|fla_|deltanet|causal_conv|conv1d|gdn|mamba|ssm"),
     ("QSA / attention", r"qsa|indexer|persistent_topk|flash|attn|attention|xqa|paged|merge_state"),
     ("MoE routing", r"moe_fused_gate|topk|router|route_radix|gating"),
-    ("MoE experts", r"marlin|moe|expert|grouped|fused_experts"),
-    ("dense GEMM", r"gemm|cutlass|cublas|sm\d+_xmma|nvjet|matmul|mm_"),
+    ("MoE experts", r"marlin_moe|moe|expert|groupproblemshape|fused_experts"),
+    ("dense GEMM, FP8/FP4 Marlin", r"marlin"),
+    ("dense GEMM, BF16", r"wmma|gemvx|gemv|bf16.*gemm|gemm.*bf16|cublas|nvjet|sm\d+_xmma"),
+    ("dense GEMM, other", r"gemm|cutlass|matmul|mm_"),
     ("norm / elementwise", r"norm|rms|silu|gelu|act_and_mul|elementwise|vectorized|add_|mul_|copy_kernel|cat|index"),
     ("sampling / spec", r"sample|argmax|verify|accept|eagle|spec|logits|tree"),
     ("memcpy", r"memcpy|memset|copy"),
