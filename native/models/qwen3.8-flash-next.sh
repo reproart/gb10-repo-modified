@@ -63,6 +63,8 @@ FP4_GEMM_BACKEND="${FP4_GEMM_BACKEND:-flashinfer_cutlass}"
 # on vLLM, against cutlass's W4A4. Unmeasured on GB10; that is step 2 of the
 # plan (README, "Qwen3.8-Flash-Next"). FP4_GEMM_BACKEND=marlin does the same
 # for the dense NVFP4 layers.
+# marlin also turns on patches/gb10_marlin_lean.py (see model_env): the stock
+# load-time repack ran out of memory half way through the layers here.
 MOE_RUNNER_BACKEND="${MOE_RUNNER_BACKEND:-}"
 
 # Speculative decoding with the checkpoint's MTP head (NEXTN): 1 = on,
@@ -119,14 +121,24 @@ model_env() {
         echo "no *.safetensors in PLE_TABLE_DIR=$PLE_TABLE_DIR - see models/$PROFILE.sh" >&2
         exit 1
       fi
-      # patches/sitecustomize.py installs the patch in every Python process
-      # the server starts (SGLang spawns its scheduler).
       export GB10_PLE_MMAP=1 GB10_PLE_TABLE_DIR="$PLE_TABLE_DIR"
-      export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
       ;;
     file) unset GB10_PLE_MMAP ;;
     *) echo "PLE_TABLE must be mmap or file, not '$PLE_TABLE'" >&2; exit 1 ;;
   esac
+  # Marlin repacks all 48 MoE layers after loading; stock SGLang ran out of
+  # memory half way on this box. patches/gb10_marlin_lean.py repacks with one
+  # copy less and logs memory per layer ("Marlin repack, MoE layer N").
+  if [ "$MOE_RUNNER_BACKEND" = marlin ]; then
+    export GB10_MARLIN_LEAN=1
+  else
+    unset GB10_MARLIN_LEAN
+  fi
+  # patches/sitecustomize.py installs the enabled patches in every Python
+  # process the server starts (SGLang spawns its scheduler).
+  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}" ]; then
+    export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
+  fi
 }
 
 # This model's flags, appended to the common ones in scripts/serve-sglang.sh.

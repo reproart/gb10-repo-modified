@@ -525,6 +525,11 @@ the engine, so:
 2. `MOE_RUNNER_BACKEND=marlin ./serve.sh qwen3.8-flash-next` (and
    `FP4_GEMM_BACKEND=marlin` for the dense NVFP4 layers): the same weights on
    W4A16 kernels. Near 60 tok/s makes one engine for everything worth it.
+   Stock SGLang's load-time repack to Marlin ran out of memory half way
+   through the layers here; with marlin the profile adds
+   `patches/gb10_marlin_lean.py`, which repacks with one copy less and logs
+   `Marlin repack, MoE layer N: allocated ...` per layer (and, if a layer's
+   original weights survive the repack, what holds them).
 3. Only if 2 does not get there: port the AutoRound checkpoint.
 
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
@@ -657,7 +662,8 @@ models/        one profile per model: qwen3.8-27b.sh (this README), its
                variants -single, -longctx and -throughput, gemma4-31b.sh,
                qwen3.8-flash-next.sh
 patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
-               in place · sitecustomize.py (loads it) · test_gb10_ple_mmap.py
+               in place · gb10_marlin_lean.py: leaner Marlin repack at load ·
+               sitecustomize.py (loads them) · test_*.py (CPU)
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
