@@ -614,5 +614,5 @@ def install_import_hook(target: str = TARGET_MODULE, hook=apply) -> None:
     if target in sys.modules:
         hook(sys.modules[target])
         return
-    if not any(isinstance(f, _Finder) for f in sys.meta_path):
+    if not any(isinstance(f, _Finder) and f._target == target for f in sys.meta_path):
         sys.meta_path.insert(0, _Finder(target, hook))

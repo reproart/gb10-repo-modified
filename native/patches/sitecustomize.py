@@ -15,3 +15,9 @@ if os.environ.get("GB10_PLE_MMAP") == "1":
     import gb10_ple_mmap
 
     gb10_ple_mmap.install_import_hook()
+
+if os.environ.get("GB10_MARLIN_LEAN") == "1":
+    import gb10_marlin_lean
+    import gb10_ple_mmap
+
+    gb10_ple_mmap.install_import_hook(gb10_marlin_lean.TARGET_MODULE, gb10_marlin_lean.apply)

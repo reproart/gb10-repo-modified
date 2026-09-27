@@ -516,6 +516,26 @@ longer draft pays only while acceptance stays high, which long, predictable
 code gives and short or varied answers do not. The base profile keeps 11;
 draft 15 suits long code generation for one user (`DRAFT_TOKENS=15`).
 
+## Qwen3.8-Flash-Next, one Spark (2026-09-27)
+
+`RadixArk/Qwen3.8-Flash-Next-NVFP4`, `models/qwen3.8-flash-next.sh` as
+shipped: SGLang 0.5.20, TP 1, NEXTN MTP 3/1/4, cap 8, GDN pool 40 (fp32
+state), 0.85, bf16 KV, the n-gram table read in place from the checkpoint
+(patches/gb10_ple_mmap.py: "128 shard tensors left in place", nothing
+written). Weight load ~7 minutes.
+
+| | Here | Cookbook, same cell |
+|---|---:|---:|
+| Single-stream decode (code, thinking off, 700 tokens) | **39.5 tok/s** (37.6-39.8) | 27.5 tok/s |
+| MTP accept_len | 3.55-3.73 of 4 | 2.9-3.5 |
+| TTFT, same requests | 0.23 s | — |
+
+The cookbook's figure is TPOT on random prompts, so the protocols differ;
+the vLLM int4 AutoRound recipe on the same box does ~66 tok/s.
+`--moe-runner-backend marlin` did not boot on stock 0.5.20: the load-time
+NVFP4 -> Marlin repack ran out of memory at 114.65 GiB allocated, about half
+way through the MoE layers (patches/gb10_marlin_lean.py is the response).
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
