@@ -607,6 +607,19 @@ SGLang's FP8 Marlin GEMM.
 The cookbook's cell reported 71.7 tok/s output at 8; the vLLM recipe on this
 box 259 tok/s at 8.
 
+**`FP8_SIDE=1`** (the BF16 side layers to FP8 weight-only on Marlin at load,
+draft vocabulary on):
+
+| | Draft vocab only | + FP8_SIDE |
+|---|---:|---:|
+| Single-stream decode (700-token code answer) | 46.9 | **56.7 tok/s** (53.9-57.6) |
+| accept_len | 3.58-3.80 | 3.55-3.65 |
+| Aggregate at 1 / 2 / 4 / 8 streams | 46.3 / 76.5 / 121.1 / 188.2 | 48.3 / 85.5 / 129.7 / **206.5** |
+
++21% single-stream, +4-12% across the sweep; from the cookbook's 39.5 to
+56.7 so far (+44%). Tool calling with thinking on passed the owner's own
+harder tests on this build; HumanEval pending.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
