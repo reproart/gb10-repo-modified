@@ -634,7 +634,28 @@ vLLM on a second GB10:
 
 Same score; 32, 140 and 145 fail on both, the rest shuffles within the
 +-2-problem band greedy decoding shows on this set. FP8_SIDE is now the
-profile default. Thinking on: pending.
+profile default.
+
+Thinking on, `reasoning_effort` medium: **98.8% (162/164)**, one runtime
+error (67) and one wrong answer (145, after 11K tokens); ~630 tokens per
+problem, 97.3 tok/s aggregate at 4 streams. The same as the 27B builds with
+medium thinking: at most one real miss, 145 failing everywhere.
+
+**Profile with FP8_SIDE** (40 steps, ~68 ms per step under the profiler, from
+~81):
+
+| Kernels | ms/step |
+|---|---:|
+| MoE experts, flashinfer CUTLASS NVFP4 grouped GEMM | ~18.6 |
+| FP8 Marlin GEMMs (the converted side layers) | ~15.8 (was ~39 in BF16) |
+| BF16 GEMMs still on sm80 WMMA (~100 calls per step: layers left in BF16) | ~11.8 |
+| `_hc_mix` + grouped RMSNorm | ~12.8 |
+| PLE gather | 5.7 |
+| `gemvx` (draft head, 65K rows) | 5.7 |
+| MTP BF16 experts (`Fused_Moe_Kernel_sm80`, `MoeFCGemm`) | 2.2 |
+
+The next item is the ~12 ms of BF16 GEMMs the patch left alone; the boot
+log's "FP8 side ... left in BF16" lines name them.
 
 ## Reference comparison
 
