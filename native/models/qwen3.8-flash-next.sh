@@ -93,8 +93,10 @@ BLAS="${BLAS:-}"
 # per output channel at load and run on SGLang's FP8 Marlin GEMM
 # (patches/gb10_fp8_side.py). The decode profile puts ~40-48% of a step in
 # those BF16 GEMMs on sm80 WMMA kernels; the vLLM recipe carries them in FP8.
-# Lossy like any FP8 weight quantization; unmeasured here. 1 = on.
-FP8_SIDE="${FP8_SIDE:-0}"
+# Measured: 56.7 tok/s single-stream against 46.9, and HumanEval (thinking
+# off) 96.3% (158/164), the same as the int4 AutoRound recipe on vLLM. Lossy
+# like any FP8 weight quantization. 0 = keep them in BF16.
+FP8_SIDE="${FP8_SIDE:-1}"
 
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),
 # out of the ~12-18 GB the weights leave. The cookbook's pins: with MTP,

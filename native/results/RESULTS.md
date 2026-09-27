@@ -618,7 +618,23 @@ draft vocabulary on):
 
 +21% single-stream, +4-12% across the sweep; from the cookbook's 39.5 to
 56.7 so far (+44%). Tool calling with thinking on passed the owner's own
-harder tests on this build; HumanEval pending.
+harder tests on this build.
+
+**HumanEval, thinking off** (164 problems, temperature 0, the parent
+project's sandboxed harness, 4 streams), against the int4 AutoRound recipe on
+vLLM on a second GB10:
+
+| | This build (NVFP4 + FP8_SIDE, SGLang) | Intel AutoRound int4 (vLLM) |
+|---|---:|---:|
+| pass@1 | **96.3%** (158/164) | **96.3%** (158/164) |
+| Excluding truncated | 96.9% | 96.9% |
+| Wrong answers | 32, 89, 132, 140, 145 | 32, 101, 140, 145, 163 |
+| Truncated at 2048 tokens | 113 | 132 |
+| Harness throughput at 4 streams | 102.7 tok/s | 132.1 tok/s |
+
+Same score; 32, 140 and 145 fail on both, the rest shuffles within the
++-2-problem band greedy decoding shows on this set. FP8_SIDE is now the
+profile default. Thinking on: pending.
 
 ## Reference comparison
 
