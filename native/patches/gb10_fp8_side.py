@@ -17,9 +17,11 @@ freed BF16 memory goes to the KV pool.
 
 Enabled by GB10_FP8_SIDE=1 (models/qwen3.8-flash-next.sh: FP8_SIDE=1). Only
 layers named in GB10_FP8_SIDE_LAYERS (a regex on the module name; default
-below) are converted, and only if their shape fits Marlin (N % 64, K % 128);
-every conversion and skip is logged. GDN's fused BF16 in_proj buffer is
-dropped for converted layers, so both projections go through the FP8 path.
+below) are converted, and only if K fits Marlin's tile (K % 128); every
+conversion and skip is logged. An output width off Marlin's 64-column tile
+(GDN's in_proj_ba is 96) is zero-padded to it and sliced back after the GEMM.
+GDN's fused BF16 in_proj buffer is dropped for converted layers, so both
+projections go through the FP8 path.
 The target and, unless GB10_FP8_SIDE_MTP=0, the MTP draft are converted.
 
 Lossy, like any FP8 quantization (per-channel FP8 of BF16 weights typically
@@ -65,7 +67,11 @@ def quantize_per_channel(weight):
 
 
 class Fp8MarlinSideMethod:
-    """quant_method for a converted layer: FP8 Marlin weight-only GEMM."""
+    """quant_method for a converted layer: FP8 Marlin weight-only GEMM.
+
+    A layer whose output width was padded up to Marlin's tile (see
+    convert_module) computes the padded width and returns the first
+    `layer._gb10_n` columns."""
 
     def __init__(self, apply_fn):
         self._apply_fn = apply_fn
@@ -74,31 +80,47 @@ class Fp8MarlinSideMethod:
         return
 
     def apply(self, layer, x, bias=None):
-        return self._apply_fn(
+        out = self._apply_fn(
             input=x,
             weight=layer.weight,
             weight_scale=layer.weight_scale,
             workspace=layer.workspace,
-            size_n=layer.output_size_per_partition,
+            size_n=layer._gb10_marlin_n,
             size_k=layer.input_size_per_partition,
             bias=bias,
         )
+        if layer._gb10_marlin_n != layer._gb10_n:
+            out = out[..., : layer._gb10_n].contiguous()
+        return out
 
 
 def convert_module(module, prepare_fn, apply_fn) -> None:
-    """Quantize `module.weight` in place and route the layer through Marlin FP8."""
+    """Quantize `module.weight` in place and route the layer through Marlin FP8.
+
+    An output width that is not a multiple of Marlin's 64-column tile (GDN's
+    in_proj_ba is 96 wide) is padded with zero rows; the extra outputs are
+    sliced off in apply. Left alone, such a small layer ran on a cuBLAS BF16
+    kernel at ~245 us a call on GB10, 36 calls per decode step."""
     import torch
 
     n, k = module.weight.shape
+    n_pad = -(-n // MIN_N) * MIN_N
     q, scale = quantize_per_channel(module.weight.data)
+    if n_pad != n:
+        q = torch.cat([q, torch.zeros(n_pad - n, k, dtype=q.dtype, device=q.device)])
+        scale = torch.cat([scale, torch.ones(n_pad - n, dtype=scale.dtype, device=scale.device)])
     module.weight = torch.nn.Parameter(q, requires_grad=False)
     module.weight_scale = torch.nn.Parameter(scale.to(torch.bfloat16), requires_grad=False)
     module.orig_dtype = torch.bfloat16
-    module.output_size_per_partition = n
+    logical_n = getattr(module, "output_size_per_partition", n)
+    module.output_size_per_partition = n_pad  # what the Marlin prepare checks
     module.input_size_per_partition = k
     if getattr(module, "weight_block_size", None) is not None:
         module.weight_block_size = None
     prepare_fn(module, size_k_first=False)
+    module.output_size_per_partition = logical_n  # what the model sees
+    module._gb10_n = n
+    module._gb10_marlin_n = n_pad
     module.quant_method = Fp8MarlinSideMethod(apply_fn)
 
 
@@ -108,7 +130,7 @@ def convert_model(model, *, is_linear, is_unquantized, prepare_fn, apply_fn,
     import torch
 
     pattern = pattern or layer_pattern()
-    stats = {"converted": 0, "skipped": 0, "bytes_before": 0, "bytes_after": 0}
+    stats = {"converted": 0, "padded": 0, "skipped": 0, "bytes_before": 0, "bytes_after": 0}
     touched_gdn = []
     for name, module in model.named_modules():
         if not (is_linear(module) and pattern.search(name)):
@@ -120,11 +142,13 @@ def convert_model(model, *, is_linear, is_unquantized, prepare_fn, apply_fn,
         if getattr(module, "bias", None) is not None and module.bias.dtype != torch.bfloat16:
             continue
         n, k = w.shape
-        if n % MIN_N or k % MIN_K:
+        if k % MIN_K or (n % MIN_N and getattr(module, "bias", None) is not None):
             stats["skipped"] += 1
-            logger.info("FP8 side (%s): %s [%d x %d] left in BF16 (Marlin needs N%%%d, K%%%d)",
-                        label, name, n, k, MIN_N, MIN_K)
+            logger.info("FP8 side (%s): %s [%d x %d] left in BF16 (Marlin needs K%%%d; "
+                        "N is padded to %d only without a bias)", label, name, n, k, MIN_K, MIN_N)
             continue
+        if n % MIN_N:
+            stats["padded"] += 1
         before = w.numel() * w.element_size()
         convert_module(module, prepare_fn, apply_fn)
         stats["converted"] += 1
@@ -148,8 +172,9 @@ def convert_model(model, *, is_linear, is_unquantized, prepare_fn, apply_fn,
                 lin.weight.data = lin.weight.data.clone()
     torch.cuda.empty_cache()
     logger.info(
-        "FP8 side (%s): %d linear layers to FP8 weight-only (Marlin), %d left in BF16; "
-        "%.2f GiB -> %.2f GiB", label, stats["converted"], stats["skipped"],
+        "FP8 side (%s): %d linear layers to FP8 weight-only (Marlin; %d with N padded to "
+        "the %d-column tile), %d left in BF16; %.2f GiB -> %.2f GiB", label,
+        stats["converted"], stats["padded"], MIN_N, stats["skipped"],
         stats["bytes_before"] / 2**30, stats["bytes_after"] / 2**30,
     )
     return stats
