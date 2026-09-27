@@ -535,7 +535,9 @@ the engine, so:
 **Measured so far** ([RESULTS](results/RESULTS.md#qwen38-flash-next-one-spark-2026-09-27)):
 39.5 tok/s single-stream as in the cookbook's cell, the same on Marlin
 (`MOE_RUNNER_BACKEND=marlin`), **46.9 tok/s with the 65K draft vocabulary**,
-now the default (`DRAFT_VOCAB`). A decode profile (`bench/profile_decode.py`)
+now the default (`DRAFT_VOCAB`), and **56.7 tok/s with the BF16 side layers
+on FP8** (`FP8_SIDE`, default too; HumanEval without thinking 96.3%, the same
+as the int4 AutoRound recipe on vLLM). A decode profile (`bench/profile_decode.py`)
 puts ~40% of a step in the BF16 dense layers and ~20% in the lm_head, not in
 the MoE.
 
