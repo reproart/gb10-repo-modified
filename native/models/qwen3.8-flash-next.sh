@@ -76,10 +76,10 @@ MTP_DRAFT_TOKENS="${MTP_DRAFT_TOKENS:-4}"
 # The drafter's vocabulary (--speculative-token-map). Empty = the full
 # 248,320-row lm_head, read on every draft step: a decode profile on this box
 # put ~20 ms of a ~94 ms step in BF16 GEMVs that look like exactly that. The
-# 65,536-token set of the vLLM Flash-Next recipe (models/data/README.md) cuts
+# 65,536-token set of the vLLM Flash-Next recipe (models/vocab/README.md) cuts
 # the draft head to a quarter; outputs cannot change (the target verifies),
 # acceptance can, on CJK text especially. Unmeasured here:
-#   DRAFT_VOCAB=$ROOT/models/data/qwen3.8-flash-next-draft-vocab-65536.pt
+#   DRAFT_VOCAB=$ROOT/models/vocab/qwen3.8-flash-next-draft-vocab-65536.pt
 DRAFT_VOCAB="${DRAFT_VOCAB:-}"
 
 # BF16 GEMM library for the dense layers left in BF16 (attention, GDN and
@@ -137,7 +137,7 @@ model_env() {
     *) echo "BLAS must be empty or cublaslt, not '$BLAS'" >&2; exit 1 ;;
   esac
   if [ -n "$DRAFT_VOCAB" ] && [ ! -f "$DRAFT_VOCAB" ]; then
-    echo "DRAFT_VOCAB=$DRAFT_VOCAB: no such file - see models/data/README.md" >&2
+    echo "DRAFT_VOCAB=$DRAFT_VOCAB: no such file - see models/vocab/README.md" >&2
     exit 1
   fi
   case "$PLE_TABLE" in
