@@ -16,8 +16,12 @@
 # Each value is "${VAR:-default}", so a one-off override from the shell works:
 #   MOE_RUNNER_BACKEND=marlin ./serve.sh qwen3.8-flash-next
 
-# SGLang 0.5.20 ships the model, the file-backed table and the NVFP4 loaders
-# (the cookbook's Spark cells ran a qwen4-main-squashed build of the same code).
+# SGLang 0.5.20 ships the model, the file-backed table and the NVFP4 loaders.
+# The cookbook's Spark cells ran a qwen4-main-squashed build (4ccff141db) for
+# three fixes; all are in 0.5.20: the file backend (#37068), the ModelOpt
+# MIXED_PRECISION loader (#38121), and the router PDL ordering behind the "GB10
+# NEXTN collapse" (NaN routing, output stuck on token 0: #36811, and #38290 in
+# both moe_fused_gate and route_radix; checked in the 0.5.20 wheel).
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
 
@@ -84,7 +88,10 @@ fi
 # kept GSM8K there): room for twice the requests, or a bigger KV pool.
 MAMBA_SSM_DTYPE="${MAMBA_SSM_DTYPE:-}"
 
-# 0.85, as in the cookbook's cells (host memory never went below 10 GiB there).
+# 0.85, as in the cookbook's cells (host memory never went below 10 GiB there;
+# they also advise a watchdog on MemAvailable, which DGX OS's earlyoom is).
+# The scheduler clamps the cap to what the GDN pool admits: the effective cap
+# is in the boot log ("max_running_requests"), not always /get_server_info.
 # That is DGX OS earlyoom's default margin: if the scheduler dies with exit
 # code -15, see the Qwen 27B profile's note, or go to 0.82.
 MEM_FRACTION="${MEM_FRACTION:-0.85}"
