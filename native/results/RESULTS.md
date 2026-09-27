@@ -654,8 +654,14 @@ medium thinking: at most one real miss, 145 failing everywhere.
 | `gemvx` (draft head, 65K rows) | 5.7 |
 | MTP BF16 experts (`Fused_Moe_Kernel_sm80`, `MoeFCGemm`) | 2.2 |
 
-The next item is the ~12 ms of BF16 GEMMs the patch left alone; the boot
-log's "FP8 side ... left in BF16" lines name them.
+The next item is the ~12 ms of BF16 GEMMs the patch left alone. The boot log
+named them: 221 layers converted (5.68 -> 2.84 GiB), 36 left in BF16, all
+GDN `in_proj_ba` [96 x 2560], whose width is off Marlin's 64-column tile.
+Tiny (0.5 MB each), but alone on cuBLAS they take ~245 us a call, 36 calls
+per step: ~8.8 ms. (Before the conversion they rode in one fused GEMM with
+in_proj_qkvz.) The patch now zero-pads such a layer to the tile (96 -> 128)
+and slices the output back. The MTP draft: 4 layers converted, 0.10 -> 0.05
+GiB.
 
 ## Reference comparison
 

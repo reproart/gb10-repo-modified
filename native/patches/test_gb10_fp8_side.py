@@ -133,8 +133,10 @@ class ConvertTest(unittest.TestCase):
         self.assertEqual((calls[0]["size_n"], calls[0]["size_k"]), (384, 256))
 
     def test_fused_buffer_kept_when_a_half_stays_bf16(self):
-        m = self.model(ba_rows=32)                              # in_proj_ba N=32 -> skipped
+        m = self.model()
         gdn = m.layers[0].linear_attn
+        os.environ["GB10_FP8_SIDE_LAYERS"] = r"\.in_proj_qkvz$"   # in_proj_ba stays BF16
+        self.addCleanup(os.environ.pop, "GB10_FP8_SIDE_LAYERS")
         # as finalize_fused_in_proj leaves it: both halves are views of the buffer
         gdn.in_proj_qkvz.weight.data = gdn._fused_in_proj_weight[:256]
         gdn.in_proj_ba.weight.data = gdn._fused_in_proj_weight[256:]
@@ -145,6 +147,53 @@ class ConvertTest(unittest.TestCase):
         self.assertIsNone(gdn._fused_in_proj_weight)
         self.assertEqual(gdn.in_proj_ba.weight.dtype, torch.bfloat16)
         self.assertNotEqual(gdn.in_proj_ba.weight.untyped_storage().data_ptr(), fused_ptr)
+
+    def test_narrow_output_is_padded_and_sliced(self):
+        import gb10_fp8_side as f
+
+        m = self.model(ba_rows=96)                              # GDN in_proj_ba on the real model
+        gdn = m.layers[0].linear_attn
+        ba_bf16 = gdn.in_proj_ba.weight.detach().float().clone()
+
+        def prepare(module, size_k_first):
+            if module is gdn.in_proj_ba:
+                self.assertEqual(module.output_size_per_partition, 128)  # the padded width
+                self.assertEqual(module.weight.shape, (128, 256))
+            module.workspace = "ws"
+
+        seen = {}
+
+        def apply(*, input, weight, weight_scale, workspace, size_n, size_k, bias):
+            seen["size_n"] = size_n
+            # dequantize and multiply, like the kernel: [.., K] x [N_pad, K]^T
+            w = weight.float() * weight_scale.float()[:, None]
+            return (input.float() @ w.T).to(torch.bfloat16)
+
+        stats = f.convert_model(m, is_linear=lambda mod: isinstance(mod, Linear),
+                                is_unquantized=lambda qm: isinstance(qm, Unquant),
+                                prepare_fn=prepare, apply_fn=apply)
+        self.assertEqual(stats["padded"], 1)
+        ba = gdn.in_proj_ba
+        self.assertEqual(ba.output_size_per_partition, 96)      # what the model reads
+        x = torch.randn(4, 256, dtype=torch.bfloat16)
+        out = ba.quant_method.apply(ba, x)
+        self.assertEqual(seen["size_n"], 128)
+        self.assertEqual(tuple(out.shape), (4, 96))
+        self.assertTrue(out.is_contiguous())
+        ref = x.float() @ ba_bf16.T
+        rel = ((out.float() - ref).norm() / ref.norm()).item()
+        self.assertLess(rel, 0.05)
+
+    def test_padding_needs_no_bias(self):
+        import gb10_fp8_side as f
+
+        m = self.model(ba_rows=96)
+        ba = m.layers[0].linear_attn.in_proj_ba
+        ba.bias = torch.nn.Parameter(torch.zeros(96, dtype=torch.bfloat16), requires_grad=False)
+        _, stats, _, _ = self.convert(m)
+        self.assertIsInstance(ba.quant_method, Unquant)
+        self.assertEqual(stats["skipped"], 2)                   # this and o_proj (K = 100)
+        self.assertIsNotNone(f)
 
     def test_custom_pattern(self):
         import gb10_fp8_side as f
