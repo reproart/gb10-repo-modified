@@ -564,8 +564,21 @@ So the step is BF16-bound, not MoE-bound: the layers the checkpoint keeps in
 BF16 run on sm80 WMMA 16x16 kernels (SGLang's faster BF16 backends are
 SM90/SM100 only), and the BF16 lm_head is read on every draft step. The vLLM
 recipe keeps exactly these small (FP8 side layers, int8 lm_head, a 65K draft
-vocabulary). Next A/B: DRAFT_VOCAB (the same 65K set via
---speculative-token-map) and BLAS=cublaslt.
+vocabulary).
+
+**The two cheap levers, one at a time** (cutlass MoE, single-stream decode):
+
+| | tok/s | accept_len |
+|---|---:|---:|
+| Profile as above | 39.5 | 3.55-3.73 |
+| `DRAFT_VOCAB` (65,536-token draft head, `--speculative-token-map`) | **46.9** (44.8-48.2) | 3.58-3.80 |
+| `BLAS=cublaslt` (`TORCH_BLAS_PREFER_CUBLASLT=1`) | 40.1 | 3.58-3.73 |
+
+The draft vocabulary is **+19% with acceptance unchanged** on this English
+code prompt, and is now the profile's default. cuBLASLt picks no better BF16
+kernels than cuBLAS here. What remains between this and the int4 vLLM recipe
+(~66 tok/s) is mostly the BF16 dense layers and the target's full lm_head,
+which that recipe carries in FP8 and int8.
 
 ## Reference comparison
 

@@ -73,20 +73,19 @@ MTP="${MTP:-1}"
 MTP_STEPS="${MTP_STEPS:-3}"
 MTP_DRAFT_TOKENS="${MTP_DRAFT_TOKENS:-4}"
 
-# The drafter's vocabulary (--speculative-token-map). Empty = the full
-# 248,320-row lm_head, read on every draft step: a decode profile on this box
-# put ~20 ms of a ~94 ms step in BF16 GEMVs that look like exactly that. The
-# 65,536-token set of the vLLM Flash-Next recipe (models/vocab/README.md) cuts
-# the draft head to a quarter; outputs cannot change (the target verifies),
-# acceptance can, on CJK text especially. Unmeasured here:
-#   DRAFT_VOCAB=$ROOT/models/vocab/qwen3.8-flash-next-draft-vocab-65536.pt
-DRAFT_VOCAB="${DRAFT_VOCAB:-}"
+# The drafter's vocabulary (--speculative-token-map): the 65,536-token set of
+# the vLLM Flash-Next recipe (models/vocab/README.md) instead of the full
+# 248,320-row lm_head, which the drafter reads on every draft step. Measured:
+# 46.9 tok/s single-stream against 39.5, accept_len unchanged (3.6-3.8 of 4).
+# Outputs cannot change (the target verifies every token); acceptance can, on
+# CJK-heavy text especially: DRAFT_VOCAB='' goes back to the full vocabulary.
+DRAFT_VOCAB="${DRAFT_VOCAB-$ROOT/models/vocab/qwen3.8-flash-next-draft-vocab-65536.pt}"
 
 # BF16 GEMM library for the dense layers left in BF16 (attention, GDN and
 # shared-expert projections). SGLang's own BF16 backends are SM90/SM100 only;
-# on GB10 cuBLAS picked sm80 WMMA 16x16 kernels for them, ~40% of the decode
-# step in the same profile. cublaslt = TORCH_BLAS_PREFER_CUBLASLT=1, whose
-# heuristics may pick better ones. Empty = torch's default (cuBLAS). Unmeasured.
+# on GB10 cuBLAS picks sm80 WMMA 16x16 kernels for them, ~40% of the decode
+# step. cublaslt = TORCH_BLAS_PREFER_CUBLASLT=1: measured 40.1 tok/s against
+# 39.5, no change. Empty = torch's default (cuBLAS).
 BLAS="${BLAS:-}"
 
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),
