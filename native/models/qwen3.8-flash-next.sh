@@ -88,6 +88,14 @@ DRAFT_VOCAB="${DRAFT_VOCAB-$ROOT/models/vocab/qwen3.8-flash-next-draft-vocab-655
 # 39.5, no change. Empty = torch's default (cuBLAS).
 BLAS="${BLAS:-}"
 
+# FP8 for the layers the checkpoint keeps in BF16 (GDN and attention
+# projections, the PLE key/value projections, the shared expert): quantized
+# per output channel at load and run on SGLang's FP8 Marlin GEMM
+# (patches/gb10_fp8_side.py). The decode profile puts ~40-48% of a step in
+# those BF16 GEMMs on sm80 WMMA kernels; the vLLM recipe carries them in FP8.
+# Lossy like any FP8 weight quantization; unmeasured here. 1 = on.
+FP8_SIDE="${FP8_SIDE:-0}"
+
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),
 # out of the ~12-18 GB the weights leave. The cookbook's pins: with MTP,
 # 8 requests x 5 slots (extra_buffer); without, 24 x 4 (extra_buffer_lazy).
@@ -160,7 +168,12 @@ model_env() {
   fi
   # patches/sitecustomize.py installs the enabled patches in every Python
   # process the server starts (SGLang spawns its scheduler).
-  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}" ]; then
+  if [ "$FP8_SIDE" = 1 ]; then
+    export GB10_FP8_SIDE=1
+  else
+    unset GB10_FP8_SIDE
+  fi
+  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -202,5 +215,5 @@ model_summary() {
   [ "$PLE_TABLE" = file ] && ple="stock sparse copy (rewritten at boot)"
   local vocab=full
   [ -n "$DRAFT_VOCAB" ] && vocab="$(basename "$DRAFT_VOCAB")"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BLAS ${BLAS:-cublas}; draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
 }

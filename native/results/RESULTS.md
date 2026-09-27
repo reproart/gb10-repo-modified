@@ -580,6 +580,33 @@ kernels than cuBLAS here. What remains between this and the int4 vLLM recipe
 (~66 tok/s) is mostly the BF16 dense layers and the target's full lm_head,
 which that recipe carries in FP8 and int8.
 
+**Profile with the draft vocabulary** (cutlass MoE, 40 steps, ~81 ms per step
+under the profiler):
+
+| Kernels | ms/step | Share |
+|---|---:|---:|
+| BF16 GEMM, cuBLAS sm80 WMMA 16x16 (~260 calls per step: GDN in/out, attention qkv/o, shared expert, PLE key/value) | ~39 | 48% |
+| MoE experts (flashinfer CUTLASS grouped GEMM) + the BF16 MTP experts | ~21 | 26% |
+| PLE gather | 7.4 | 9% |
+| `_hc_mix` + grouped RMSNorm | ~14 | — |
+| `gemvx` (draft lm_head, now 65K rows) | 6.2 | 8% (was ~20 ms) |
+| one `CatArrayBatchedCopy` per step | 3.0 | 4% |
+
+The draft vocabulary took the head from ~20 to ~6 ms per step. The BF16
+dense layers are now half the step; `FP8_SIDE=1`
+(patches/gb10_fp8_side.py) converts them to FP8 weight-only at load, on
+SGLang's FP8 Marlin GEMM.
+
+**Concurrency, with the draft vocabulary** (cap 8, 300-token answers):
+
+| Streams | 1 | 2 | 4 | 8 | 12 (4 queued) |
+|---|---:|---:|---:|---:|---:|
+| Aggregate tok/s | 46.3 | 76.5 | 121.1 | **188.2** | 159.5 |
+| Per stream | 48.0 | 40.1 | 32.0 | 24.8 | 24.7 |
+
+The cookbook's cell reported 71.7 tok/s output at 8; the vLLM recipe on this
+box 259 tok/s at 8.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
