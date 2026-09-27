@@ -532,6 +532,13 @@ the engine, so:
    original weights survive the repack, what holds them).
 3. Only if 2 does not get there: port the AutoRound checkpoint.
 
+**Measured so far** ([RESULTS](results/RESULTS.md#qwen38-flash-next-one-spark-2026-09-27)):
+39.5 tok/s single-stream as in the cookbook's cell, the same on Marlin
+(`MOE_RUNNER_BACKEND=marlin`), **46.9 tok/s with the 65K draft vocabulary**,
+now the default (`DRAFT_VOCAB`). A decode profile (`bench/profile_decode.py`)
+puts ~40% of a step in the BF16 dense layers and ~20% in the lm_head, not in
+the MoE.
+
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
 slot), 24 without; a ~93K-token KV pool at 0.85. `MAMBA_SSM_DTYPE=bfloat16`
 halves the slots. Every knob is commented in the profile.
