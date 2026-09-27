@@ -670,6 +670,7 @@ models/        one profile per model: qwen3.8-27b.sh (this README), its
                qwen3.8-flash-next.sh
 patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                in place · gb10_marlin_lean.py: leaner Marlin repack at load ·
+               gb10_fp8_side.py: BF16 side layers to FP8 Marlin at load ·
                sitecustomize.py (loads them) · test_*.py (CPU)
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)

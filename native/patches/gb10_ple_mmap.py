@@ -571,16 +571,17 @@ def _attach_table(torch, emb, config, layer_id) -> None:
 
 
 class _PatchingLoader(importlib.abc.Loader):
-    def __init__(self, inner, hook):
+    def __init__(self, inner, hooks):
         self._inner = inner
-        self._hook = hook
+        self._hooks = hooks
 
     def create_module(self, spec):
         return self._inner.create_module(spec)
 
     def exec_module(self, module):
         self._inner.exec_module(module)
-        self._hook(module)
+        for hook in self._hooks:
+            hook(module)
 
     def __getattr__(self, name):  # get_source, get_filename, ... (triton reads sources)
         return getattr(self._inner, name)
@@ -589,7 +590,7 @@ class _PatchingLoader(importlib.abc.Loader):
 class _Finder(importlib.abc.MetaPathFinder):
     def __init__(self, target: str, hook):
         self._target = target
-        self._hook = hook
+        self._hooks = [hook]
 
     def find_spec(self, fullname, path, target=None):
         if fullname != self._target:
@@ -604,15 +605,20 @@ class _Finder(importlib.abc.MetaPathFinder):
             return None
         if spec.loader is None:
             return None
-        spec.loader = _PatchingLoader(spec.loader, self._hook)
+        spec.loader = _PatchingLoader(spec.loader, list(self._hooks))
         return spec
 
 
 def install_import_hook(target: str = TARGET_MODULE, hook=apply) -> None:
     """Run `hook(module)` right after `target` is imported, in this process
-    (and, through sitecustomize, in every process SGLang spawns)."""
+    (and, through sitecustomize, in every process SGLang spawns). Several
+    hooks on one target run in the order they were installed."""
     if target in sys.modules:
         hook(sys.modules[target])
         return
-    if not any(isinstance(f, _Finder) and f._target == target for f in sys.meta_path):
-        sys.meta_path.insert(0, _Finder(target, hook))
+    for f in sys.meta_path:
+        if isinstance(f, _Finder) and f._target == target:
+            if hook not in f._hooks:
+                f._hooks.append(hook)
+            return
+    sys.meta_path.insert(0, _Finder(target, hook))
