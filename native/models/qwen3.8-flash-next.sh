@@ -73,6 +73,22 @@ MTP="${MTP:-1}"
 MTP_STEPS="${MTP_STEPS:-3}"
 MTP_DRAFT_TOKENS="${MTP_DRAFT_TOKENS:-4}"
 
+# The drafter's vocabulary (--speculative-token-map). Empty = the full
+# 248,320-row lm_head, read on every draft step: a decode profile on this box
+# put ~20 ms of a ~94 ms step in BF16 GEMVs that look like exactly that. The
+# 65,536-token set of the vLLM Flash-Next recipe (models/data/README.md) cuts
+# the draft head to a quarter; outputs cannot change (the target verifies),
+# acceptance can, on CJK text especially. Unmeasured here:
+#   DRAFT_VOCAB=$ROOT/models/data/qwen3.8-flash-next-draft-vocab-65536.pt
+DRAFT_VOCAB="${DRAFT_VOCAB:-}"
+
+# BF16 GEMM library for the dense layers left in BF16 (attention, GDN and
+# shared-expert projections). SGLang's own BF16 backends are SM90/SM100 only;
+# on GB10 cuBLAS picked sm80 WMMA 16x16 kernels for them, ~40% of the decode
+# step in the same profile. cublaslt = TORCH_BLAS_PREFER_CUBLASLT=1, whose
+# heuristics may pick better ones. Empty = torch's default (cuBLAS). Unmeasured.
+BLAS="${BLAS:-}"
+
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),
 # out of the ~12-18 GB the weights leave. The cookbook's pins: with MTP,
 # 8 requests x 5 slots (extra_buffer); without, 24 x 4 (extra_buffer_lazy).
@@ -115,6 +131,15 @@ model_env() {
   # The cookbook's advice for 200K+ contexts: variable-shape prefill buffers
   # otherwise fragment the caching allocator.
   export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+  case "$BLAS" in
+    cublaslt) export TORCH_BLAS_PREFER_CUBLASLT=1 ;;
+    '') ;;
+    *) echo "BLAS must be empty or cublaslt, not '$BLAS'" >&2; exit 1 ;;
+  esac
+  if [ -n "$DRAFT_VOCAB" ] && [ ! -f "$DRAFT_VOCAB" ]; then
+    echo "DRAFT_VOCAB=$DRAFT_VOCAB: no such file - see models/data/README.md" >&2
+    exit 1
+  fi
   case "$PLE_TABLE" in
     mmap)
       if ! compgen -G "$PLE_TABLE_DIR/*.safetensors" >/dev/null; then
@@ -165,6 +190,7 @@ model_args() {
       --speculative-eagle-topk 1
       --speculative-num-draft-tokens "$MTP_DRAFT_TOKENS"
     )
+    [ -n "$DRAFT_VOCAB" ] && args+=(--speculative-token-map "$DRAFT_VOCAB")
   fi
   [ -n "$REASONING_PARSER" ] && args+=(--reasoning-parser "$REASONING_PARSER")
   [ -n "$TOOL_CALL_PARSER" ] && args+=(--tool-call-parser "$TOOL_CALL_PARSER")
@@ -175,5 +201,7 @@ model_args() {
 model_summary() {
   local ple="read in place from $PLE_TABLE_DIR"
   [ "$PLE_TABLE" = file ] && ple="stock sparse copy (rewritten at boot)"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
+  local vocab=full
+  [ -n "$DRAFT_VOCAB" ] && vocab="$(basename "$DRAFT_VOCAB")"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BLAS ${BLAS:-cublas}; draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
 }

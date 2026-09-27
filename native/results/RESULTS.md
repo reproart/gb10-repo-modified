@@ -544,8 +544,28 @@ per layer, gc between layers) it boots:
 
 **Marlin changes nothing (+2%)**, so the expert GEMMs are not what holds a
 step at ~90 ms (40 tok/s at ~3.6 tokens per step), against ~53 ms for the
-int4 vLLM recipe on this box. bench/profile_decode.py breaks a step down by
-kernel group to find what does.
+int4 vLLM recipe on this box. `FP4_GEMM_BACKEND=marlin` on top: 39.6 tok/s,
+the same again.
+
+**Where a decode step goes** (bench/profile_decode.py, Marlin MoE + Marlin
+FP4 GEMM, 40 scheduler steps during one code answer; GPU busy 98% of the
+span, ~94 ms per step; times per step, under the profiler):
+
+| Kernels | ms/step | Share |
+|---|---:|---:|
+| BF16 GEMM, cuBLAS `cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_*` | ~38 | 40% |
+| BF16 GEMV `gemvx` (~9 calls of 2.3 ms; the size of the 248K-row lm_head) | ~20 | 22% |
+| MoE experts (Marlin) | ~19 | 20% |
+| `_hc_mix` (gated residual) + grouped RMSNorm | ~12 | 13% |
+| PLE gather (the patched kernel, 1 call per step) | 5.8 | 6% |
+| GDN, QSA, routing, sampling | < 4 | < 4% |
+
+So the step is BF16-bound, not MoE-bound: the layers the checkpoint keeps in
+BF16 run on sm80 WMMA 16x16 kernels (SGLang's faster BF16 backends are
+SM90/SM100 only), and the BF16 lm_head is read on every draft step. The vLLM
+recipe keeps exactly these small (FP8 side layers, int8 lm_head, a 65K draft
+vocabulary). Next A/B: DRAFT_VOCAB (the same 65K set via
+--speculative-token-map) and BLAS=cublaslt.
 
 ## Reference comparison
 
