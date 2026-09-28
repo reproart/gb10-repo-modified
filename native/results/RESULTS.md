@@ -816,7 +816,15 @@ every level (48.3 / 85.5 / 129.7 / 206.5): +15-26% at 1-4 streams, +3-8% at
 | + BF16 side layers on FP8 Marlin (`FP8_SIDE`) | 56.3-56.7 |
 | + draft head FP8 (`FP8_DRAFT_HEAD`) | 60.9 |
 | + target head FP8 (`FP8_HEAD`; HumanEval 97.0% / 100%) | 63.4 |
-| + hyper-connection mix FP8 (`FP8_HC`, HumanEval pending) | **65.7-65.9** |
+| + hyper-connection mix FP8 (`FP8_HC`; HumanEval 97.6% / 99.4%) | **65.7-65.9** |
+
+**HumanEval with `FP8_HC=1`** (on top of FP8 side layers and both heads):
+97.6% without thinking (160/164; misses 32, 140, 145, 163; 110.3 tok/s
+aggregate at 4 streams) and 99.4% with medium thinking (163/164; only 145,
+after 7.4K tokens, the problem every build fails). Not worse than any
+earlier step (96.3 -> 97.0 -> 97.6 without thinking: within the +-1-2
+problems greedy runs move). `FP8_HC=1` is now the default, and with it
+every row of this table.
 
 +67% over the cookbook's cell. What is left is bound by memory bandwidth:
 the NVFP4 MoE (~38% of a step) and the FP8 Marlin layers (~35%, ~220 GB/s)
