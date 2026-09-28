@@ -132,6 +132,10 @@ class ConvertTest(unittest.TestCase):
         self.assertIsInstance(qkv.quant_method, f.Fp8MarlinSideMethod)
         self.assertEqual(qkv.quant_method.apply(qkv, "x"), "out")
         self.assertEqual((calls[0]["size_n"], calls[0]["size_k"]), (384, 256))
+        # what stays BF16 is listed for the boot log (lm_head is not a Linear here)
+        self.assertEqual(sorted(stats["left"]), [
+            ("layers.N.mlp.gate", (64, 256), 1), ("layers.N.self_attn.o_proj", (256, 100), 1),
+            ("lm_head", (1024, 256), 1)])
 
     def test_fused_buffer_kept_when_a_half_stays_bf16(self):
         m = self.model()
