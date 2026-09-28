@@ -700,8 +700,8 @@ and, with `FP8_HEAD=1`, the same for `(target)`.
 
 | | heads BF16 | draft head FP8 (default) | + target head FP8 (`FP8_HEAD=1`) |
 |---|---:|---:|---:|
-| decode, tok/s (median of 5; two runs) | 56.3 | **60.8 / 61.0** | |
-| accept_len | 3.6-3.8 | 3.60-3.85 | |
+| decode, tok/s (median of 5) | 56.3 | **60.8 / 61.0** | **63.4** |
+| accept_len | 3.6-3.8 | 3.60-3.85 | 3.48-3.73 |
 | HumanEval, thinking off | 96.3% | (draft only: unchanged by construction) | |
 | HumanEval, thinking medium | 98.8% | | |
 
@@ -717,6 +717,13 @@ profiler) has no `gemvx` 65K-row calls left. What is still BF16:
 
 The rest of the step: FP8 Marlin side layers ~20.8 ms (239 calls, ~87 us;
 ~3.2 GB a step, ~150 GB/s), NVFP4 MoE ~18.4, `_hc_mix` ~6.9, GDN ~3.2.
+
+Target head on FP8 (`FP8_HEAD=1`): 63.4 tok/s, +4% over the draft head
+alone, 56.3 -> 63.4 (+13%) for both heads. In the profile the 5.4 ms BF16
+call is gone and Marlin gained one call a step at ~3.4 ms (the 1.27 GB head
+as 0.64 GB of FP8, ~190 GB/s). Still BF16: the ~64 small `wmma 128x2`
+calls (~2.9 ms a step). Whether FP8_HEAD becomes the default depends on
+HumanEval.
 
 ## Reference comparison
 
