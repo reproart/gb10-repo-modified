@@ -118,7 +118,11 @@ FP8_HEAD="${FP8_HEAD:-1}"
 # projections (index_qk_proj [640 x 2560]), ~64 calls a decode step at ~46 us
 # on cuBLAS's sm80 WMMA kernels (patches/gb10_skinny.py). Same BF16 weights,
 # FP32 accumulation, only the kernel changes; prefill keeps cuBLAS.
-# 0 = cuBLAS. Not measured yet, hence off.
+# Measured: no gain (62.0 tok/s against 63.4; the Triton kernel 45.0 us a
+# call against cuBLAS's 45.8). SGLang runs both on a second stream under
+# CUDA graphs (the router beside the shared expert, the indexer beside the
+# qkv projection), so they share the GPU and are mostly off the critical
+# path. Kept as an option; 0 = cuBLAS.
 SKINNY_BF16="${SKINNY_BF16:-0}"
 
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),

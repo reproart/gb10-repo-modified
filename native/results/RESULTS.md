@@ -744,6 +744,19 @@ tokens), so they stay BF16; `SKINNY_BF16=1` (patches/gb10_skinny.py) runs
 them on a Triton GEMM built for a few rows instead: same weights, FP32
 accumulation.
 
+**`SKINNY_BF16=1`: no gain.** Decode 61.8 / 62.0 / 62.0 tok/s (three runs)
+against 63.4; in the profile the Triton kernel replaced the 2574 WMMA calls
+and took 45.0 us a call, the same as cuBLAS's 45.8. Two unrelated kernels
+landing on the same time pointed away from the kernel: SGLang runs both
+layers on a second stream under CUDA graphs (qwen4_exp.py: the QSA indexer
+overlaps the qkv projection; qwen2_moe.py forward_normal_dual_stream: the
+router overlaps the shared expert), so they share the GPU with a Marlin GEMM
+and their duration is contention, mostly off the critical path. Kernel time
+(2614 ms) above busy time (2249 ms) in the same trace is that overlap, ~9 ms
+a step. `SKINNY_BF16` stays off. `bench/profile_decode.py` now prints a
+"wall" column that splits overlapped time among the kernels in flight, so
+such a group shows its real share.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
