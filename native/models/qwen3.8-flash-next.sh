@@ -125,6 +125,15 @@ FP8_HEAD="${FP8_HEAD:-1}"
 # path. Kept as an option; 0 = cuBLAS.
 SKINNY_BF16="${SKINNY_BF16:-0}"
 
+# FP8 for the hyper-connection mix weights (input_mix_weight_down/up,
+# [320 x 10240] + [10240 x 320] BF16 per mix, 97 mixes in the target): SGLang's
+# persistent _hc_mix kernel is bound by reading them, ~67 us a call, ~103 calls
+# a decode step (~7.4 ms of ~57, not overlapped). patches/gb10_fp8_hc.py keeps
+# them in FP8 with a per-row scale and runs a copy of the kernel that reads
+# FP8: half the bytes. Lossy (these gates mix the residual streams): off
+# until HumanEval says otherwise.
+FP8_HC="${FP8_HC:-0}"
+
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),
 # out of the ~12-18 GB the weights leave. The cookbook's pins: with MTP,
 # 8 requests x 5 slots (extra_buffer); without, 24 x 4 (extra_buffer_lazy).
@@ -216,7 +225,12 @@ model_env() {
   else
     unset GB10_SKINNY_BF16
   fi
-  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_SKINNY_BF16:-}" ]; then
+  if [ "$FP8_HC" = 1 ]; then
+    export GB10_FP8_HC=1
+  else
+    unset GB10_FP8_HC
+  fi
+  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_SKINNY_BF16:-}${GB10_FP8_HC:-}" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -261,5 +275,5 @@ model_summary() {
   local heads="target BF16"
   [ "$FP8_HEAD" = 1 ] && heads="target FP8"
   [ "$MTP" = 1 ] && heads="$heads, draft $([ "$FP8_DRAFT_HEAD" = 1 ] && echo FP8 || echo BF16)"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
 }

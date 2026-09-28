@@ -38,6 +38,14 @@ if os.environ.get("GB10_FP8_DRAFT_HEAD") == "1" or _fp8_target_head not in ("0",
     for _mod in gb10_fp8_side.SPEC_MODULES:
         gb10_ple_mmap.install_import_hook(_mod, gb10_fp8_side.apply_spec)
 
+if os.environ.get("GB10_FP8_HC") == "1":
+    import gb10_fp8_hc
+    import gb10_ple_mmap
+
+    gb10_ple_mmap.install_import_hook(gb10_fp8_hc.HC_MODULE, gb10_fp8_hc.apply_hc)
+    gb10_ple_mmap.install_import_hook(gb10_fp8_hc.TARGET_MODULE, gb10_fp8_hc.apply_target)
+    gb10_ple_mmap.install_import_hook(gb10_fp8_hc.MTP_MODULE, gb10_fp8_hc.apply_mtp)
+
 if os.environ.get("GB10_SKINNY_BF16") == "1":
     import gb10_ple_mmap
     import gb10_skinny

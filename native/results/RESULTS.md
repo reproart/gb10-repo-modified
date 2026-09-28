@@ -757,6 +757,25 @@ a step. `SKINNY_BF16` stays off. `bench/profile_decode.py` now prints a
 "wall" column that splits overlapped time among the kernels in flight, so
 such a group shows its real share.
 
+**Wall time per step** (the same two traces re-read with the wall column;
+~57 ms a step under the profiler):
+
+| Group | ms/step (wall) | share | note |
+|---|---:|---:|---|
+| MoE experts, NVFP4 grouped GEMM (+ MTP's BF16 experts ~2.2) | ~21.6 | 38% | |
+| FP8 Marlin (side layers + both heads) | ~19.8 | 35% | ~4.4 GB a step: ~220 GB/s, near GB10's bandwidth |
+| `_hc_mix` (hyper-connection mix) | ~7.4 | 13% | not overlapped; 13 MB of BF16 weights a call |
+| GDN | ~2.2 | 4% | half overlapped |
+| routers + indexer (skinny or WMMA) | ~1.5-1.9 | 3% | half overlapped |
+| norms / elementwise | ~1.9 | 3% | |
+
+The skinny GEMM saved ~0.4 ms a step of wall time: noise, as measured. The
+FP8 Marlin layers read at close to the memory bandwidth, so only fewer bytes
+would make them faster. The hyper-connection mix is the one sizable item
+that reads BF16 weights on the critical path: `FP8_HC=1`
+(patches/gb10_fp8_hc.py) keeps input_mix_weight_down/up in FP8 with a
+per-row scale and runs a copy of SGLang's persistent kernel that reads FP8.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
