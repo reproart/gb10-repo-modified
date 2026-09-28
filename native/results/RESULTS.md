@@ -776,6 +776,22 @@ that reads BF16 weights on the critical path: `FP8_HC=1`
 (patches/gb10_fp8_hc.py) keeps input_mix_weight_down/up in FP8 with a
 per-row scale and runs a copy of SGLang's persistent kernel that reads FP8.
 
+**`FP8_HC=1`, first run** (2026-09-28): boot log "97 hyper-connection mixes
+to FP8, 1.18 GiB -> 0.60 GiB" (target) and 3 in the MTP draft. Decode
+**65.0 / 65.6 tok/s** against 63.4 (+3-3.5%), accept_len 3.42-3.75. The
+kernel: 42.9 us a call against 67.0, wall ~4.9 ms a step against ~7.4.
+Two things the single-stream number hid, fixed after this run:
+
+- TTFT went 0.17-0.18 -> 0.20-0.21 s: prefill (over 16 rows) took a torch
+  path that dequantized each weight to FP32 per call (~200 elementwise and
+  copy kernels, 36-76 us each, in the trace). Now each weight is converted
+  to BF16 once per call and the row scales multiply the outputs.
+- SGLang's kernel stops at 16 rows, and so did the copy: a verify at 8
+  requests (32 rows) would have gone to that torch path on every step. The
+  copy now takes 16-, 32- and 64-row tiles (the wider ones with a shorter K
+  tile and two stages for shared memory; if they fail to build, inputs over
+  16 rows fall back to the torch path with a warning).
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
