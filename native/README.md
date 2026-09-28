@@ -542,9 +542,10 @@ put ~11 ms of a ~66 ms step in the two BF16 lm_heads: both now go to FP8
 too (`FP8_DRAFT_HEAD`, `FP8_HEAD`, default on): **63.4 tok/s**, HumanEval
 97.0% without thinking and 100% with medium thinking. (A Triton GEMM for
 the routers and indexer projections, `SKINNY_BF16=1`, gave nothing: SGLang
-already overlaps them with other work on a second stream.) `FP8_HC=1` (off
-until checked) stores the hyper-connection mix weights in FP8, ~13% of a
-step reading BF16 today.
+already overlaps them with other work on a second stream.) `FP8_HC` (default
+on) stores the hyper-connection mix weights in FP8: **65.8 tok/s**
+single-stream, 212-224 aggregate at 8 streams, HumanEval 97.6% without
+thinking and 99.4% with medium thinking; +67% over the cookbook's cell.
 
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
 slot), 24 without; a 374K-token KV pool at 0.85 (the cookbook's cell: ~93K). `MAMBA_SSM_DTYPE=bfloat16`
