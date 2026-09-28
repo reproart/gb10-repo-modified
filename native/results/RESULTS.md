@@ -792,6 +792,38 @@ Two things the single-stream number hid, fixed after this run:
   tile and two stages for shared memory; if they fail to build, inputs over
   16 rows fall back to the torch path with a warning).
 
+**After the fixes, full `perf.py`** (two runs; no "kernel failed" warning, so
+the 32/64-row tiles built on GB10):
+
+| | run 1 | run 2 |
+|---|---:|---:|
+| TTFT, short prompt | 135 ms | 134 ms |
+| Single-stream decode | **65.9** (ttft 0.17 s) | **65.7** |
+| Aggregate at 1 / 2 / 4 / 8 streams | 60.8 / 99.0 / 148.4 / **223.9** | 65.0 / 102.0 / 152.6 / 212.3 |
+| Prefill 2K / 8K / 32K / 101K, tok/s | 1458 / 1648 / 1661 / 1499 | 1444 / 1511 / 1447 / 1229 |
+
+TTFT is back to 0.17 s, and the sweep is above the FP8_SIDE-only build at
+every level (48.3 / 85.5 / 129.7 / 206.5): +15-26% at 1-4 streams, +3-8% at
+8. Prefill varies between the runs (the second ran warmer, 74-76 C at
+101K).
+
+### Where the day ended (2026-09-28)
+
+| Step | Single-stream decode |
+|---|---:|
+| Cookbook cell (stock SGLang 0.5.20, NVFP4, MTP) | 39.5 |
+| + 65K draft vocabulary | 46.9 |
+| + BF16 side layers on FP8 Marlin (`FP8_SIDE`) | 56.3-56.7 |
+| + draft head FP8 (`FP8_DRAFT_HEAD`) | 60.9 |
+| + target head FP8 (`FP8_HEAD`; HumanEval 97.0% / 100%) | 63.4 |
+| + hyper-connection mix FP8 (`FP8_HC`, HumanEval pending) | **65.7-65.9** |
+
++67% over the cookbook's cell. What is left is bound by memory bandwidth:
+the NVFP4 MoE (~38% of a step) and the FP8 Marlin layers (~35%, ~220 GB/s)
+read close to what GB10 delivers, so further gains need fewer bytes (a
+different checkpoint, or the MTP's BF16 experts in 4 bits for the draft),
+not faster kernels.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
