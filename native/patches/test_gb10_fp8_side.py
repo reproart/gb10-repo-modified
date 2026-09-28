@@ -4,8 +4,9 @@
     python3 patches/test_gb10_fp8_side.py
 
 Covers the per-channel FP8 quantization, which layers get converted (name,
-dtype, Marlin shape limits), the GDN fused-buffer drop and the quant_method
-swap. The Marlin repack and GEMM themselves need the GPU: on the Spark the
+dtype, Marlin shape limits), the GDN fused-buffer drop, the quant_method
+swap, and the output heads after the EAGLE worker's init_lm_head (token-map
+slice, shared target module, multi-layer drafts, tied embedding). The Marlin repack and GEMM themselves need the GPU: on the Spark the
 boot log has "FP8 side (target): N linear layers to FP8 ..." and the answers
 must stay coherent.
 """
@@ -206,6 +207,229 @@ class ConvertTest(unittest.TestCase):
             self.assertIsInstance(m.layers[0].linear_attn.out_proj.quant_method, f.Fp8MarlinSideMethod)
         finally:
             del os.environ["GB10_FP8_SIDE_LAYERS"]
+
+
+class UnquantizedEmbeddingMethod:  # the name logits_processor checks
+    pass
+
+
+class Head(torch.nn.Module if torch else object):
+    def __init__(self, weight):
+        super().__init__()
+        self.weight = torch.nn.Parameter(weight, requires_grad=False)
+        self.quant_method = UnquantizedEmbeddingMethod()
+
+
+class Model(torch.nn.Module if torch else object):
+    def __init__(self, head, embed):
+        super().__init__()
+        self.model = torch.nn.Module()
+        self.model.embed_tokens = torch.nn.Module()
+        self.model.embed_tokens.weight = embed
+        self.lm_head = head
+
+    def get_embed_and_head(self):
+        return self.model.embed_tokens.weight, self.lm_head.weight
+
+
+def ns(**kw):
+    import types
+
+    return types.SimpleNamespace(**kw)
+
+
+def fake_parts(prepared):
+    def prepare(module, size_k_first):
+        module.workspace = "ws"
+        prepared.append(module)
+
+    def apply(*, input, weight, weight_scale, workspace, size_n, size_k, bias):
+        w = weight.float() * weight_scale.float()[:, None]
+        return (input.float() @ w.T).to(torch.bfloat16)
+
+    return dict(is_linear=None, is_unquantized=None, prepare_fn=prepare, apply_fn=apply)
+
+
+@unittest.skipIf(torch is None, "torch not installed")
+class HeadTest(unittest.TestCase):
+    VOCAB, HIDDEN, HOT = 512, 256, 128
+
+    def setUp(self):
+        import gb10_fp8_side as f
+
+        self.f = f
+        self.prepared = []
+        self._parts = f._sglang_parts
+        f._sglang_parts = lambda: fake_parts(self.prepared)
+        self.env = {k: os.environ.pop(k, None) for k in ("GB10_FP8_DRAFT_HEAD", "GB10_FP8_TARGET_HEAD")}
+        torch.manual_seed(0)
+        self.head_w = torch.randn(self.VOCAB, self.HIDDEN).to(torch.bfloat16)
+        self.embed = torch.nn.Parameter(torch.randn(self.VOCAB, self.HIDDEN).to(torch.bfloat16),
+                                        requires_grad=False)
+
+    def tearDown(self):
+        self.f._sglang_parts = self._parts
+        for k, v in self.env.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+
+    def worker(self, *, token_map=True, layers=1, tied=False):
+        """What EagleDraftWorker.init_lm_head leaves behind."""
+        target_head = Head(self.embed.data if tied else self.head_w.clone())
+        target = Model(target_head, self.embed)
+        drafts = []
+        for _ in range(layers):
+            if token_map:               # head.clone(); head.data = head.data[hot_token_id]
+                hot = torch.arange(0, self.VOCAB, self.VOCAB // self.HOT)
+                d_head = Head(target_head.weight.data[hot].clone())
+            elif layers > 1:            # multi-layer: set_embed_and_head(embed, head)
+                d_head = Head(target_head.weight.data)
+            else:                       # set_lm_head_from_target(target_lm_head)
+                d_head = target_head
+            drafts.append(Model(d_head, self.embed))
+        w = ns(target_worker=ns(model_runner=ns(model=target)))
+        if layers > 1:
+            w.draft_runner_list = [ns(model=d) for d in drafts]
+        else:
+            w.draft_runner = ns(model=drafts[0])
+        return w, target, drafts
+
+    def env_set(self, draft="0", target="0"):
+        os.environ["GB10_FP8_DRAFT_HEAD"] = draft
+        os.environ["GB10_FP8_TARGET_HEAD"] = target
+
+    def assert_close(self, head, ref_weight):
+        x = torch.randn(3, self.HIDDEN, dtype=torch.bfloat16)
+        out = head.quant_method.apply(head, x)
+        ref = x.float() @ ref_weight.float().T
+        self.assertEqual(tuple(out.shape), tuple(ref.shape))
+        self.assertLess(((out.float() - ref).norm() / ref.norm()).item(), 0.05)
+
+    def test_draft_head_with_token_map(self):
+        self.env_set(draft="1")
+        w, target, (draft,) = self.worker()
+        ref = draft.lm_head.weight.detach().clone()
+        report = self.f.heads_after_init_lm_head(w)
+        self.assertEqual(report, [("draft", "converted")])
+        self.assertIsInstance(draft.lm_head.quant_method, self.f.Fp8MarlinSideMethod)
+        self.assertEqual(draft.lm_head.weight.shape, (self.HOT, self.HIDDEN))
+        self.assert_close(draft.lm_head, ref)
+        self.assertEqual(target.lm_head.weight.dtype, torch.bfloat16)   # target untouched
+        self.assertIsInstance(target.lm_head.quant_method, UnquantizedEmbeddingMethod)
+
+    def test_draft_only_leaves_a_shared_target_module_alone(self):
+        self.env_set(draft="1")
+        w, target, (draft,) = self.worker(token_map=False)
+        self.assertIs(draft.lm_head, target.lm_head)
+        self.assertEqual(self.f.heads_after_init_lm_head(w), [])
+        self.assertEqual(target.lm_head.weight.dtype, torch.bfloat16)
+        self.assertEqual(self.prepared, [])
+
+    def test_target_head_converts_a_shared_module_once(self):
+        self.env_set(draft="1", target="1")
+        w, target, (draft,) = self.worker(token_map=False)
+        report = self.f.heads_after_init_lm_head(w)
+        self.assertEqual(report[0], ("target", "converted"))
+        self.assertEqual(report[1][0], "draft")
+        self.assertIn("same module", report[1][1])
+        self.assertEqual(len(self.prepared), 1)
+        self.assert_close(target.lm_head, self.head_w)
+
+    def test_both_heads_with_token_map(self):
+        self.env_set(draft="1", target="1")
+        w, target, (draft,) = self.worker()
+        report = self.f.heads_after_init_lm_head(w)
+        self.assertEqual(report, [("target", "converted"), ("draft", "converted")])
+        self.assertEqual(target.lm_head.weight.shape, (self.VOCAB, self.HIDDEN))  # fake prepare: no repack
+
+    def test_multi_layer_drafts_share_one_fp8_copy(self):
+        self.env_set(draft="1")
+        w, target, drafts = self.worker(token_map=False, layers=3)
+        report = self.f.heads_after_init_lm_head(w)
+        self.assertEqual([r for _, r in report], ["converted", "shared", "shared"])
+        self.assertEqual(len(self.prepared), 1)
+        self.assertIs(drafts[1].lm_head.weight, drafts[0].lm_head.weight)
+        self.assertEqual(target.lm_head.weight.dtype, torch.bfloat16)   # its own module stays
+        self.assert_close(drafts[2].lm_head, self.head_w)
+
+    def test_tied_head_is_left_alone(self):
+        self.env_set(target="1")
+        w, target, _ = self.worker(tied=True)
+        report = self.f.heads_after_init_lm_head(w)
+        self.assertEqual(report, [("target", "tied to the input embedding")])
+        self.assertEqual(target.lm_head.weight.dtype, torch.bfloat16)
+
+    def test_off_by_default(self):
+        w, target, (draft,) = self.worker()
+        self.assertEqual(self.f.heads_after_init_lm_head(w), [])
+        self.assertEqual(self.prepared, [])
+
+    def test_bad_mode(self):
+        os.environ["GB10_FP8_TARGET_HEAD"] = "yes"
+        with self.assertRaises(RuntimeError):
+            self.f.target_head_mode()
+
+    def test_apply_spec_wraps_init_lm_head(self):
+        import types
+
+        mod = types.ModuleType(self.f.SPEC_MODULES[0])
+        test = self
+        calls = []
+
+        class EagleDraftWorker:
+            def init_lm_head(self):
+                calls.append("orig")
+                test.assertEqual(test.prepared, [])     # converted only after the original
+                w, _, _ = test.worker()
+                self.target_worker, self.draft_runner = w.target_worker, w.draft_runner
+
+        class StandaloneDraftWorker(EagleDraftWorker):   # overrides: left alone
+            def init_lm_head(self):
+                calls.append("standalone")
+
+        EagleDraftWorker.__module__ = StandaloneDraftWorker.__module__ = mod.__name__
+        mod.EagleDraftWorker = EagleDraftWorker
+        mod.StandaloneDraftWorker = StandaloneDraftWorker
+        self.env_set(draft="1")
+        self.f.apply_spec(mod)
+        self.f.apply_spec(mod)                             # a second hook does not double-wrap
+        worker = EagleDraftWorker()
+        worker.init_lm_head()
+        self.assertEqual(calls, ["orig"])
+        self.assertEqual(len(self.prepared), 1)
+        self.assertIsInstance(worker.draft_runner.model.lm_head.quant_method, self.f.Fp8MarlinSideMethod)
+        StandaloneDraftWorker().init_lm_head()
+        self.assertEqual(calls, ["orig", "standalone"])
+        os.environ["GB10_FP8_TARGET_HEAD"] = "load"        # target converted at load: refuse
+        with self.assertRaises(RuntimeError):
+            EagleDraftWorker().init_lm_head()
+
+    def test_apply_spec_without_the_class_fails_loudly(self):
+        import types
+
+        with self.assertRaises(RuntimeError):
+            self.f.apply_spec(types.ModuleType(self.f.SPEC_MODULES[0]))
+        self.f.apply_spec(types.ModuleType(self.f.SPEC_MODULES[1]))   # optional module: fine
+
+    def test_target_head_at_load(self):
+        import types
+
+        class Qwen4ExpForConditionalGeneration(Model):
+            def load_weights(self, weights):
+                self.loaded = weights
+
+        mod = types.ModuleType(self.f.TARGET_MODULE)
+        mod.Qwen4ExpForConditionalGeneration = Qwen4ExpForConditionalGeneration
+        os.environ["GB10_FP8_TARGET_HEAD"] = "load"
+        side = os.environ.pop("GB10_FP8_SIDE", None)
+        self.addCleanup(lambda: side is not None and os.environ.__setitem__("GB10_FP8_SIDE", side))
+        self.f.apply_target(mod)
+        m = Qwen4ExpForConditionalGeneration(Head(self.head_w.clone()), self.embed)
+        m.load_weights("w")
+        self.assertEqual(m.loaded, "w")
+        self.assertEqual(self.prepared, [m.lm_head])       # side layers off: only the head
+        self.assert_close(m.lm_head, self.head_w)
 
 
 class HookOrderTest(unittest.TestCase):

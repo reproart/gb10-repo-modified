@@ -98,6 +98,18 @@ BLAS="${BLAS:-}"
 # like any FP8 weight quantization. 0 = keep them in BF16.
 FP8_SIDE="${FP8_SIDE:-1}"
 
+# FP8 for the output heads (lm_head, BF16 [vocab x 2560]), same kernel
+# (patches/gb10_fp8_side.py). After FP8_SIDE the profile has ~11 ms of a step
+# in them: the target head once per verify (~5.4 ms) and the draft head once
+# per MTP step (~1.2 ms x ~5).
+# FP8_DRAFT_HEAD=1: the MTP draft's head (with DRAFT_VOCAB, a 65,536-row
+#   slice of the target head). Only proposes tokens: a worse draft can lower
+#   acceptance, never change an answer. On by default.
+# FP8_HEAD=1: the target head, which decides every emitted token. Lossy: off
+#   until HumanEval says otherwise (compare with FP8_HEAD=0).
+FP8_DRAFT_HEAD="${FP8_DRAFT_HEAD:-1}"
+FP8_HEAD="${FP8_HEAD:-0}"
+
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),
 # out of the ~12-18 GB the weights leave. The cookbook's pins: with MTP,
 # 8 requests x 5 slots (extra_buffer); without, 24 x 4 (extra_buffer_lazy).
@@ -175,7 +187,16 @@ model_env() {
   else
     unset GB10_FP8_SIDE
   fi
-  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}" ]; then
+  # Heads: with MTP they are converted after the draft takes its copy of
+  # the target head; without MTP the target head is converted at load.
+  unset GB10_FP8_DRAFT_HEAD GB10_FP8_TARGET_HEAD
+  if [ "$MTP" = 1 ] && [ "$FP8_DRAFT_HEAD" = 1 ]; then
+    export GB10_FP8_DRAFT_HEAD=1
+  fi
+  if [ "$FP8_HEAD" = 1 ]; then
+    if [ "$MTP" = 1 ]; then export GB10_FP8_TARGET_HEAD=1; else export GB10_FP8_TARGET_HEAD=load; fi
+  fi
+  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -217,5 +238,8 @@ model_summary() {
   [ "$PLE_TABLE" = file ] && ple="stock sparse copy (rewritten at boot)"
   local vocab=full
   [ -n "$DRAFT_VOCAB" ] && vocab="$(basename "$DRAFT_VOCAB")"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
+  local heads="target BF16"
+  [ "$FP8_HEAD" = 1 ] && heads="target FP8"
+  [ "$MTP" = 1 ] && heads="$heads, draft $([ "$FP8_DRAFT_HEAD" = 1 ] && echo FP8 || echo BF16)"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
 }

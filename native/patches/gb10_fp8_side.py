@@ -24,6 +24,20 @@ GDN's fused BF16 in_proj buffer is dropped for converted layers, so both
 projections go through the FP8 path.
 The target and, unless GB10_FP8_SIDE_MTP=0, the MTP draft are converted.
 
+The output heads (lm_head, BF16 [vocab x hidden]) are separate switches, since
+the target head decides every emitted token and the draft head only proposes:
+  GB10_FP8_DRAFT_HEAD=1   the MTP draft's head (with --speculative-token-map a
+                          [65536 x hidden] slice of the target head) to FP8;
+                          a worse draft costs acceptance, never correctness.
+  GB10_FP8_TARGET_HEAD=1  the target head to FP8 (lossy for the answers: check
+                          HumanEval). With speculative decoding.
+  GB10_FP8_TARGET_HEAD=load  the same without speculative decoding: converted at
+                          load, so the freed memory goes to the KV pool.
+With speculative decoding the heads are converted right after the EAGLE worker's
+init_lm_head, which builds the draft head from the target's BF16 one (a slice
+for the token map, or the target module itself); it runs after the KV pools
+are sized and before any CUDA graph is captured.
+
 Lossy, like any FP8 quantization (per-channel FP8 of BF16 weights typically
 moves logits very little; the vLLM recipe uses 128x128 blocks). Check
 answers, not only tok/s. Written against SGLang 0.5.20.
@@ -39,6 +53,12 @@ logger = logging.getLogger("sglang.srt.models.qwen4_exp.gb10_fp8_side")
 
 TARGET_MODULE = "sglang.srt.models.qwen4_exp"
 MTP_MODULE = "sglang.srt.models.qwen4_exp_mtp"
+SPEC_MODULES = (
+    "sglang.srt.speculative.eagle_worker_v2",              # EagleDraftWorker
+    "sglang.srt.speculative.multi_layer_eagle_worker_v2",  # MultiLayerEagleDraftWorker
+)
+# logits_processor._UNQUANTIZED_LM_HEAD_METHODS: heads that run as a plain matmul
+UNQUANT_HEAD_METHODS = ("UnquantizedEmbeddingMethod", "UnquantizedLinearMethod")
 
 DEFAULT_LAYERS = (
     r"\.(in_proj_qkvz|in_proj_ba|out_proj|qkv_proj|o_proj|key_proj|value_proj"
@@ -50,6 +70,18 @@ MIN_N, MIN_K = 64, 128  # Marlin's thread tile (marlin_utils.GPTQ_MARLIN_MIN_THR
 
 def enabled() -> bool:
     return os.environ.get("GB10_FP8_SIDE") == "1"
+
+
+def draft_head_enabled() -> bool:
+    return os.environ.get("GB10_FP8_DRAFT_HEAD") == "1"
+
+
+def target_head_mode() -> str:
+    """'' (BF16), '1' (after init_lm_head) or 'load' (no speculative decoding)."""
+    mode = os.environ.get("GB10_FP8_TARGET_HEAD", "0")
+    if mode not in ("0", "1", "load"):
+        raise RuntimeError(f"GB10_FP8_TARGET_HEAD must be 0, 1 or load, not {mode!r}")
+    return "" if mode == "0" else mode
 
 
 def layer_pattern() -> re.Pattern:
@@ -180,6 +212,76 @@ def convert_model(model, *, is_linear, is_unquantized, prepare_fn, apply_fn,
     return stats
 
 
+def _is_unquant_head(qm) -> bool:
+    return qm is None or type(qm).__name__ in UNQUANT_HEAD_METHODS
+
+
+def _ptr(t) -> int:
+    return t.untyped_storage().data_ptr()
+
+
+def _share_converted(dst, src) -> None:
+    """Point another head module at an already converted head's FP8 weights."""
+    for attr in ("weight", "weight_scale", "workspace", "orig_dtype", "input_size_per_partition",
+                 "output_size_per_partition", "_gb10_n", "_gb10_marlin_n", "quant_method"):
+        setattr(dst, attr, getattr(src, attr))
+
+
+def convert_heads(heads, *, protected=(), prepare_fn, apply_fn) -> list:
+    """Convert output heads to FP8 Marlin. `heads` is [(label, module)];
+    `protected` holds tensors a head must not be converted out of (the input
+    embedding, when the head is tied to it). A module listed twice is converted
+    once; a second module holding the same BF16 tensor shares the FP8 copy.
+    Returns [(label, 'converted' | 'shared' | reason)]."""
+    import torch
+
+    protected_ptrs = {_ptr(t) for t in protected if t is not None}
+    by_module, by_tensor, report = {}, {}, []
+    for label, head in heads:
+        if head is None:
+            continue
+        if id(head) in by_module:
+            report.append((label, f"same module as the {by_module[id(head)]} head"))
+            continue
+        w = getattr(head, "weight", None)
+        if isinstance(getattr(head, "quant_method", None), Fp8MarlinSideMethod):
+            report.append((label, "already FP8"))
+            continue
+        if w is None or w.dtype != torch.bfloat16 or w.dim() != 2 or not _is_unquant_head(
+                getattr(head, "quant_method", None)):
+            why = f"not a BF16 matmul head ({getattr(w, 'dtype', None)}, " \
+                  f"{type(getattr(head, 'quant_method', None)).__name__})"
+            report.append((label, why))
+            logger.info("FP8 head (%s): left as is, %s", label, why)
+            continue
+        if _ptr(w) in protected_ptrs:
+            report.append((label, "tied to the input embedding"))
+            logger.info("FP8 head (%s): left in BF16, tied to the input embedding", label)
+            continue
+        n, k = w.shape
+        if k % MIN_K or getattr(head, "bias", None) is not None:
+            report.append((label, "shape/bias"))
+            logger.info("FP8 head (%s): [%d x %d] left in BF16 (Marlin needs K%%%d, no bias)",
+                        label, n, k, MIN_K)
+            continue
+        by_module[id(head)] = label
+        src = by_tensor.get(_ptr(w))
+        if src is not None:
+            _share_converted(head, src)
+            report.append((label, "shared"))
+            logger.info("FP8 head (%s): shares the FP8 copy of the same BF16 tensor", label)
+            continue
+        by_tensor[_ptr(w)] = head
+        before = w.numel() * w.element_size()
+        convert_module(head, prepare_fn, apply_fn)
+        report.append((label, "converted"))
+        logger.info("FP8 head (%s): lm_head [%d x %d] BF16 -> FP8 weight-only (Marlin); "
+                    "%.0f MiB -> %.0f MiB", label, n, k, before / 2**20,
+                    head.weight.numel() * head.weight.element_size() / 2**20)
+    torch.cuda.empty_cache()
+    return report
+
+
 def _sglang_parts():
     from sglang.srt.layers.linear import LinearBase
     from sglang.srt.layers.quantization.marlin_utils_fp8 import (
@@ -196,12 +298,24 @@ def _sglang_parts():
     )
 
 
-def _wrap_load_weights(cls, label):
+def _embed_of(model):
+    try:
+        return model.get_embed_and_head()[0]
+    except Exception:  # noqa: BLE001 - only used to protect a tied head
+        return getattr(getattr(getattr(model, "model", None), "embed_tokens", None), "weight", None)
+
+
+def _wrap_load_weights(cls, label, *, side=True, target_head=False):
     orig = cls.load_weights
 
     def load_weights(self, weights, *args, **kwargs):
         result = orig(self, weights, *args, **kwargs)
-        convert_model(self, label=label, **_sglang_parts())
+        parts = _sglang_parts()
+        if side:
+            convert_model(self, label=label, **parts)
+        if target_head:
+            convert_heads([("target", getattr(self, "lm_head", None))], protected=[_embed_of(self)],
+                          prepare_fn=parts["prepare_fn"], apply_fn=parts["apply_fn"])
         return result
 
     cls.load_weights = load_weights
@@ -211,8 +325,11 @@ def apply_target(mod) -> None:
     if not hasattr(mod, "Qwen4ExpForConditionalGeneration"):
         raise RuntimeError("GB10_FP8_SIDE: Qwen4ExpForConditionalGeneration not found "
                            "(written for SGLang 0.5.20); unset GB10_FP8_SIDE.")
-    _wrap_load_weights(mod.Qwen4ExpForConditionalGeneration, "target")
-    logger.info("GB10_FP8_SIDE: target BF16 side layers will load as FP8 (Marlin)")
+    head = target_head_mode() == "load"
+    _wrap_load_weights(mod.Qwen4ExpForConditionalGeneration, "target", side=enabled(),
+                       target_head=head)
+    logger.info("GB10_FP8_SIDE: target %s will load as FP8 (Marlin)",
+                " and ".join(x for x, on in (("BF16 side layers", enabled()), ("lm_head", head)) if on))
 
 
 def apply_mtp(mod) -> None:
@@ -222,3 +339,65 @@ def apply_mtp(mod) -> None:
         raise RuntimeError("GB10_FP8_SIDE: Qwen4ExpForCausalLMMTP not found "
                            "(written for SGLang 0.5.20); set GB10_FP8_SIDE_MTP=0.")
     _wrap_load_weights(mod.Qwen4ExpForCausalLMMTP, "MTP draft")
+
+
+def heads_after_init_lm_head(worker) -> list:
+    """Called with an EAGLE draft worker once init_lm_head has shared the target's
+    embedding and head with the draft model(s)."""
+    target = worker.target_worker.model_runner.model
+    runners = getattr(worker, "draft_runner_list", None) or [worker.draft_runner]
+    drafts = [r.model for r in runners]
+    target_head = getattr(target, "lm_head", None)
+    with_target = target_head_mode() == "1"
+    heads = [("target", target_head)] if with_target else []
+    if draft_head_enabled():
+        for d in drafts:
+            head = getattr(d, "lm_head", None)
+            if head is target_head and not with_target:
+                # no --speculative-token-map: the draft calls the target's own
+                # head module; converting it would convert the target head
+                logger.info("FP8 head (draft): left in BF16, it is the target's head module "
+                            "(no --speculative-token-map); GB10_FP8_TARGET_HEAD=1 converts both")
+                continue
+            heads.append(("draft", head))
+    if not heads:
+        return []
+    parts = _sglang_parts()
+    return convert_heads(heads, protected=[_embed_of(target)] + [_embed_of(d) for d in drafts],
+                         prepare_fn=parts["prepare_fn"], apply_fn=parts["apply_fn"])
+
+
+def _wrap_init_lm_head(cls) -> None:
+    orig = cls.__dict__["init_lm_head"]
+
+    def init_lm_head(self, *args, **kwargs):
+        if target_head_mode() == "load":
+            # the draft head is built from the target's BF16 head right here
+            raise RuntimeError("GB10_FP8_TARGET_HEAD=load converts the target head at load and "
+                               "is for serving without speculative decoding; use 1 with MTP.")
+        result = orig(self, *args, **kwargs)
+        heads_after_init_lm_head(self)
+        return result
+
+    init_lm_head._gb10_fp8_heads = True
+    cls.init_lm_head = init_lm_head
+
+
+def apply_spec(mod) -> None:
+    """Hook for SPEC_MODULES: wrap the draft workers' own init_lm_head (a
+    subclass that overrides it, like the standalone worker, is left alone)."""
+    wrapped = []
+    for name in ("EagleDraftWorker", "MultiLayerEagleDraftWorker"):
+        cls = getattr(mod, name, None)
+        if cls is not None and cls.__module__ == mod.__name__ and "init_lm_head" in cls.__dict__:
+            if not getattr(cls.__dict__["init_lm_head"], "_gb10_fp8_heads", False):
+                _wrap_init_lm_head(cls)
+            wrapped.append(name)
+    if mod.__name__ == SPEC_MODULES[0] and "EagleDraftWorker" not in wrapped:
+        raise RuntimeError("GB10_FP8 heads: EagleDraftWorker.init_lm_head not found (written "
+                           "for SGLang 0.5.20); set GB10_FP8_DRAFT_HEAD=0 GB10_FP8_TARGET_HEAD=0.")
+    if wrapped:
+        logger.info("GB10_FP8 heads: %s converted to FP8 after %s.init_lm_head",
+                    " and ".join(x for x, on in (("draft head", draft_head_enabled()),
+                                                 ("target head", target_head_mode() == "1")) if on),
+                    "/".join(wrapped))

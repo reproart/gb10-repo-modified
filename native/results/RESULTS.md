@@ -663,6 +663,47 @@ in_proj_qkvz.) The patch now zero-pads such a layer to the tile (96 -> 128)
 and slices the output back. The MTP draft: 4 layers converted, 0.10 -> 0.05
 GiB.
 
+**With `in_proj_ba` padded** (2026-09-28): the boot log has all 257 layers
+converted, 36 of them padded, 0 left in BF16; decode **56.3 tok/s**, the same
+as 56.7: the ~8.8 ms the cuBLAS calls took became FP8 Marlin time (~19.3 ms
+for 236 calls a step, was ~15.8 for 200), not a shorter step. Where a step
+goes now (~66 ms under the profiler):
+
+| Kernels | ms/step |
+|---|---:|
+| FP8 Marlin GEMMs (all side layers) | ~19.3 |
+| MoE experts, NVFP4 grouped GEMM | ~18.2 |
+| `_hc_mix` + grouped RMSNorm | ~13 |
+| lm_heads in BF16: target (verify, once) ~5.4 + draft `gemvx` (~1.2 x ~5) | ~11 |
+| PLE gather | 4.4 |
+| GDN | 3.3 |
+| MTP BF16 experts | 2.2 |
+
+The heads are the last BF16 GEMMs of size, hence `FP8_DRAFT_HEAD` (on by
+default: the draft only proposes tokens) and `FP8_HEAD` (the target head,
+off until HumanEval passes); see the next section.
+
+**KV pool.** With FP8_SIDE, MTP and the lean load the boot log reads
+`max_total_num_tokens=374272 ... available_gpu_mem=16.09 GB` at
+mem-fraction 0.85: **374,272 tokens**, four times the ~93K in the
+cookbook's cell. The PLE table read in place (no 16 GB host copy) and the
+halved side layers are where it comes from.
+
+### FP8 heads (2026-09-28, to measure)
+
+`patches/gb10_fp8_side.py` converts the output heads with the same per-channel
+FP8 Marlin path, right after the EAGLE worker's `init_lm_head` (the draft's
+head is a 65,536-row slice of the target's BF16 head, cut there; the KV pools
+are already sized and no CUDA graph is captured yet). Boot log lines:
+`FP8 head (draft): lm_head [65536 x 2560] BF16 -> FP8 weight-only (Marlin); 320 MiB -> 160 MiB`
+and, with `FP8_HEAD=1`, the same for `(target)`.
+
+| | draft head FP8 (default) | + target head FP8 (`FP8_HEAD=1`) |
+|---|---:|---:|
+| decode, tok/s | | |
+| HumanEval, thinking off | | |
+| HumanEval, thinking medium | | |
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
