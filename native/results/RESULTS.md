@@ -832,6 +832,28 @@ read close to what GB10 delivers, so further gains need fewer bytes (a
 different checkpoint, or the MTP's BF16 experts in 4 bits for the draft),
 not faster kernels.
 
+### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
+
+A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).
+ModelOpt `MIXED_PRECISION` with a `quantized_layers` map, the format SGLang
+0.5.20's ModelOptMixedPrecisionConfig reads: routed experts NVFP4 (static
+activation scales), attention / GDN / QSA indexer / shared experts MXFP8
+(E4M3 + E8M0 scale per 32, dynamic MXFP8 activations), MTP routed experts
+W4A16 NVFP4, routers / hyper-connection / PLE projections / lm_head BF16.
+The PLE table is NVFP4 (`ple_embedding_dtype: nvfp4`): per shard `weight`
+U8 [2.5M, 80] + `weight_scale` F8 [2.5M, 10] and one `weight_scale_2`,
+~29 GB against ~51 GB in FP8.
+
+What it would take here: SGLang 0.5.20 loads PLE shards only as FP8 or BF16
+(qwen4_exp.py load_qwen4_exp_ple_shard), so gb10_ple_mmap would need an
+NVFP4 gather (unpack + block scale + global scale); and MXFP8 W8A8 on sm121
+is an open question against the FP8 Marlin path at ~220 GB/s. Expected
+speed about today's 65.8 tok/s (plus: 4-bit MTP experts, a smaller table;
+unknown: the MXFP8 kernel); the gain would be quality (QAD, shorter
+thinking), which HumanEval, near its ceiling here, barely shows. Postponed
+until a runtime reads the NVFP4 table, or answers on the RadixArk build
+give a reason.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
