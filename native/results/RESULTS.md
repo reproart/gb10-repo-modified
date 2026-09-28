@@ -702,8 +702,8 @@ and, with `FP8_HEAD=1`, the same for `(target)`.
 |---|---:|---:|---:|
 | decode, tok/s (median of 5) | 56.3 | **60.8 / 61.0** | **63.4** |
 | accept_len | 3.6-3.8 | 3.60-3.85 | 3.48-3.73 |
-| HumanEval, thinking off | 96.3% | (draft only: unchanged by construction) | |
-| HumanEval, thinking medium | 98.8% | | |
+| HumanEval, thinking off | 96.3% (158/164) | (the draft cannot change answers) | **97.0%** (159/164) |
+| HumanEval, thinking medium | 98.8% | | **100%** (164/164) |
 
 Draft head: **+8%**, acceptance unchanged (the draft's top token rarely
 moves under per-channel FP8). The profile (40 steps, ~61 ms each under the
@@ -722,8 +722,27 @@ Target head on FP8 (`FP8_HEAD=1`): 63.4 tok/s, +4% over the draft head
 alone, 56.3 -> 63.4 (+13%) for both heads. In the profile the 5.4 ms BF16
 call is gone and Marlin gained one call a step at ~3.4 ms (the 1.27 GB head
 as 0.64 GB of FP8, ~190 GB/s). Still BF16: the ~64 small `wmma 128x2`
-calls (~2.9 ms a step). Whether FP8_HEAD becomes the default depends on
-HumanEval.
+calls (~2.9 ms a step).
+
+HumanEval with both heads on FP8: 97.0% without thinking (misses 32, 113,
+132, 145, 163; 104.9 tok/s aggregate at 4 streams) and 100% with medium
+thinking (~600 tokens a problem, 105.4 tok/s aggregate): not worse than BF16
+heads, within the +-1-2 problems greedy runs move. `FP8_HEAD=1` is now the
+default.
+
+**What is still BF16** (the new boot-log line): in the target, the MoE
+routers `mlp.gate` [512 x 2560] x48 and `shared_expert_gate` [1 x 2560] x48,
+the QSA indexer `index_qk_proj` [640 x 2560] x12, the hyper-connection
+weights (`input_mix_weight_down/up` [320 x 10240] / [10240 x 320],
+`block_inject_weight` [4 x 10240], x48 each for attention and MLP, used by
+the `_hc_mix` kernel itself, not a GEMM) and the vision tower; in the MTP
+draft the same per layer plus `fc_embedding` / `fc_hidden` [2560 x 2560]
+(plain nn.Linear, the ~2 `gemvx` calls a step). The ~64 `wmma 128x2` calls
+a step are then the 48 + 12 routers and indexer projections of the target
+(M = 4 at verify) plus the draft's. Both select something (experts, attended
+tokens), so they stay BF16; `SKINNY_BF16=1` (patches/gb10_skinny.py) runs
+them on a Triton GEMM built for a few rows instead: same weights, FP32
+accumulation.
 
 ## Reference comparison
 

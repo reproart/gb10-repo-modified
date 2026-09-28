@@ -105,10 +105,21 @@ FP8_SIDE="${FP8_SIDE:-1}"
 # FP8_DRAFT_HEAD=1: the MTP draft's head (with DRAFT_VOCAB, a 65,536-row
 #   slice of the target head). Only proposes tokens: a worse draft can lower
 #   acceptance, never change an answer. On by default.
-# FP8_HEAD=1: the target head, which decides every emitted token. Lossy: off
-#   until HumanEval says otherwise (compare with FP8_HEAD=0).
+# FP8_HEAD=1: the target head, which decides every emitted token. Lossy in
+#   principle; measured HumanEval 97.0% without thinking and 100% with medium
+#   thinking (96.3% / 98.8% with it in BF16). On by default.
+# Measured: 56.3 tok/s with both heads BF16, 60.9 with the draft head on FP8,
+# 63.4 with both.
 FP8_DRAFT_HEAD="${FP8_DRAFT_HEAD:-1}"
-FP8_HEAD="${FP8_HEAD:-0}"
+FP8_HEAD="${FP8_HEAD:-1}"
+
+# A Triton GEMM for the small layers that stay BF16 because they select
+# something: the MoE routers (mlp.gate [512 x 2560]) and the QSA indexer
+# projections (index_qk_proj [640 x 2560]), ~64 calls a decode step at ~46 us
+# on cuBLAS's sm80 WMMA kernels (patches/gb10_skinny.py). Same BF16 weights,
+# FP32 accumulation, only the kernel changes; prefill keeps cuBLAS.
+# 0 = cuBLAS. Not measured yet, hence off.
+SKINNY_BF16="${SKINNY_BF16:-0}"
 
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),
 # out of the ~12-18 GB the weights leave. The cookbook's pins: with MTP,
@@ -196,7 +207,12 @@ model_env() {
   if [ "$FP8_HEAD" = 1 ]; then
     if [ "$MTP" = 1 ]; then export GB10_FP8_TARGET_HEAD=1; else export GB10_FP8_TARGET_HEAD=load; fi
   fi
-  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}" ]; then
+  if [ "$SKINNY_BF16" = 1 ]; then
+    export GB10_SKINNY_BF16=1
+  else
+    unset GB10_SKINNY_BF16
+  fi
+  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_SKINNY_BF16:-}" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -241,5 +257,5 @@ model_summary() {
   local heads="target BF16"
   [ "$FP8_HEAD" = 1 ] && heads="target FP8"
   [ "$MTP" = 1 ] && heads="$heads, draft $([ "$FP8_DRAFT_HEAD" = 1 ] && echo FP8 || echo BF16)"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
 }
