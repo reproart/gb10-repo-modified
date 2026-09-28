@@ -134,6 +134,7 @@ def _hc_mix_fp8_kernel(
         tl.store(counters_ptr + 2, 0)
 
 
+MAX_ROWS = 64
 _counters_cache = {}
 
 
@@ -148,14 +149,17 @@ def _get_counters(device):
 
 
 def fused_hc_mix_fp8(x, w_down, s_down, w_up, s_up, hc, hs, num_ctas=None):
-    """Same contract as SGLang's fused_hc_mix (rows <= 16, x [rows, hc*hs]
-    contiguous), with FP8 w_down [lowrank, hc*hs] / w_up [hc*hs, lowrank] and
-    their float32 per-row scales."""
+    """SGLang's fused_hc_mix (x [rows, hc*hs] contiguous) with FP8 w_down
+    [lowrank, hc*hs] / w_up [hc*hs, lowrank] and their float32 per-row
+    scales. Up to 64 rows: SGLang's kernel stops at 16, one decode step's
+    verify at 8 requests x 4 draft tokens is 32."""
     import torch
 
     rows, k = x.shape
     lowrank = w_down.shape[0]
-    rows_pad = 16
+    if rows > MAX_ROWS:
+        raise ValueError(f"fused_hc_mix_fp8: {rows} rows, at most {MAX_ROWS}")
+    rows_pad = 16 if rows <= 16 else 32 if rows <= 32 else 64
     device = x.device
     if num_ctas is None:
         num_ctas = torch.cuda.get_device_properties(device).multi_processor_count
@@ -166,7 +170,9 @@ def fused_hc_mix_fp8(x, w_down, s_down, w_up, s_up, hc, hs, num_ctas=None):
     _hc_mix_fp8_kernel[(num_ctas,)](
         x, w_down, s_down, w_up, s_up, t_raw, out, _get_counters(device),
         k, lowrank, hs, rows, num_ctas, 1.0 / hc,
-        ROWS=rows_pad, HC=hc, BLOCK_N=32, BLOCK_K=256, BLOCK_J=32, BLOCK_R=64,
-        num_warps=8,
+        # 16 rows: SGLang's tiles. 32/64: a shorter K tile and two stages, so
+        # the pipelined x tile stays well inside GB10's ~100 KB shared memory.
+        ROWS=rows_pad, HC=hc, BLOCK_N=32, BLOCK_K=256 if rows_pad == 16 else 128,
+        BLOCK_J=32, BLOCK_R=64, num_warps=8, num_stages=3 if rows_pad == 16 else 2,
     )
     return out

@@ -130,8 +130,9 @@ SKINNY_BF16="${SKINNY_BF16:-0}"
 # persistent _hc_mix kernel is bound by reading them, ~67 us a call, ~103 calls
 # a decode step (~7.4 ms of ~57, not overlapped). patches/gb10_fp8_hc.py keeps
 # them in FP8 with a per-row scale and runs a copy of the kernel that reads
-# FP8: half the bytes. Lossy (these gates mix the residual streams): off
-# until HumanEval says otherwise.
+# FP8: half the bytes. Measured 65.0-65.6 tok/s against 63.4 (the kernel
+# 43 us a call against 67). Lossy (these gates mix the residual streams):
+# off until HumanEval says otherwise.
 FP8_HC="${FP8_HC:-0}"
 
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),

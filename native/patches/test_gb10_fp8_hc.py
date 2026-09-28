@@ -136,8 +136,38 @@ class ConvertTest(unittest.TestCase):
         fake = x.as_subclass(FakeCuda)
         mix(fake, wd, wu, HC, HS)
         self.assertEqual(calls["kernel"], [(4, HC * HS)])
-        mix(torch.randn(17, HC * HS, dtype=torch.bfloat16).as_subclass(FakeCuda), wd, wu, HC, HS)
-        self.assertEqual(len(calls["kernel"]), 1)                       # 17 rows: torch path
+        mix(torch.randn(32, HC * HS, dtype=torch.bfloat16).as_subclass(FakeCuda), wd, wu, HC, HS)
+        self.assertEqual(calls["kernel"][-1], (32, HC * HS))            # a verify at 8 requests
+        mix(torch.randn(65, HC * HS, dtype=torch.bfloat16).as_subclass(FakeCuda), wd, wu, HC, HS)
+        self.assertEqual(len(calls["kernel"]), 2)                       # 65 rows: torch path
+
+    def test_wide_tile_failure_falls_back_once(self):
+        state = {"n": 0}
+
+        def kernel(x, *a):
+            state["n"] += 1
+            if x.shape[0] > 16:
+                raise RuntimeError("out of resources: shared memory")
+            return torch.zeros(x.shape[0], HS, dtype=x.dtype)
+
+        class FakeCuda(torch.Tensor):
+            @property
+            def is_cuda(self):
+                return True
+
+        self.addCleanup(self.h._wide.__setitem__, "ok", True)
+        _, mix = self.h.make_wrappers(None, None, kernel)
+        conv = hc_module()
+        holder = torch.nn.Module()
+        holder.hc = conv
+        self.h.convert_model(holder)
+        wd, wu = conv.input_mix_weight_down.weight, conv.input_mix_weight_up.weight
+        wide = torch.randn(32, HC * HS, dtype=torch.bfloat16).as_subclass(FakeCuda)
+        self.assertEqual(tuple(mix(wide, wd, wu, HC, HS).shape), (32, HS))    # torch path
+        mix(wide, wd, wu, HC, HS)                                            # not retried
+        self.assertEqual(state["n"], 1)
+        mix(torch.randn(8, HC * HS, dtype=torch.bfloat16).as_subclass(FakeCuda), wd, wu, HC, HS)
+        self.assertEqual(state["n"], 2)                                      # 16-row kernel still used
 
     def test_apply_hc_is_idempotent(self):
         import types
@@ -156,20 +186,28 @@ class ConvertTest(unittest.TestCase):
 def kernel_selfcheck():
     """Run in a child with TRITON_INTERPRET=1. Prints the worst relative error
     of the FP8 kernel against the same math in torch on the same FP8 weights."""
-    import gb10_fp8_hc as h
     from gb10_fp8_hc_kernel import fused_hc_mix_fp8
     from gb10_fp8_side import quantize_per_channel
 
     torch.manual_seed(0)
     worst = 0.0
-    for rows in (1, 4, 16):
+    for rows in (1, 4, 16, 17, 32, 33, 64):
         x = torch.randn(rows, HC * HS).to(torch.float16)
         wd, sd = quantize_per_channel(torch.randn(LOWRANK, HC * HS) * 0.05)
         wu, su = quantize_per_channel(torch.randn(HC * HS, LOWRANK) * 0.2)
         out = fused_hc_mix_fp8(x, wd, sd, wu, su, HC, HS, num_ctas=1)
-        ref = h.mix_reference(x.float(), wd, sd, wu, su, HC, HS)
+        # the same math in FP32 with the weights dequantized
+        wdf, wuf = wd.float() * sd[:, None], wu.float() * su[:, None]
+        t = torch.nn.functional.silu(x.float() @ wdf.T / HC)
+        gate = torch.sigmoid(t @ wuf.T).unflatten(-1, (HC, HS))
+        ref = (gate * x.float().unflatten(-1, (HC, HS))).mean(dim=-2)
         assert out.shape == (rows, HS) and out.dtype == torch.float16
         worst = max(worst, ((out.float() - ref).norm() / ref.norm()).item())
+    try:
+        fused_hc_mix_fp8(torch.randn(65, HC * HS).half(), wd, sd, wu, su, HC, HS, num_ctas=1)
+        raise AssertionError("65 rows accepted")
+    except ValueError:
+        pass
     print(f"worst relative error: {worst:.2e}")
 
 
