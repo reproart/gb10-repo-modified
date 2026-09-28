@@ -689,7 +689,7 @@ mem-fraction 0.85: **374,272 tokens**, four times the ~93K in the
 cookbook's cell. The PLE table read in place (no 16 GB host copy) and the
 halved side layers are where it comes from.
 
-### FP8 heads (2026-09-28, to measure)
+### FP8 heads (2026-09-28)
 
 `patches/gb10_fp8_side.py` converts the output heads with the same per-channel
 FP8 Marlin path, right after the EAGLE worker's `init_lm_head` (the draft's
@@ -698,11 +698,25 @@ are already sized and no CUDA graph is captured yet). Boot log lines:
 `FP8 head (draft): lm_head [65536 x 2560] BF16 -> FP8 weight-only (Marlin); 320 MiB -> 160 MiB`
 and, with `FP8_HEAD=1`, the same for `(target)`.
 
-| | draft head FP8 (default) | + target head FP8 (`FP8_HEAD=1`) |
-|---|---:|---:|
-| decode, tok/s | | |
-| HumanEval, thinking off | | |
-| HumanEval, thinking medium | | |
+| | heads BF16 | draft head FP8 (default) | + target head FP8 (`FP8_HEAD=1`) |
+|---|---:|---:|---:|
+| decode, tok/s (median of 5; two runs) | 56.3 | **60.8 / 61.0** | |
+| accept_len | 3.6-3.8 | 3.60-3.85 | |
+| HumanEval, thinking off | 96.3% | (draft only: unchanged by construction) | |
+| HumanEval, thinking medium | 98.8% | | |
+
+Draft head: **+8%**, acceptance unchanged (the draft's top token rarely
+moves under per-channel FP8). The profile (40 steps, ~61 ms each under the
+profiler) has no `gemvx` 65K-row calls left. What is still BF16:
+
+| Kernel | calls/step | avg | ms/step |
+|---|---:|---:|---:|
+| `wmma ... 128x1` = the target head at verify (M = 4, 1.27 GB) | 1 | 5.4 ms | 5.4 |
+| `wmma ... 128x2`, small layers (the boot log now lists which) | ~64 | 45 us | 2.9 |
+| `gemvx` | ~2 | 107 us | 0.2 |
+
+The rest of the step: FP8 Marlin side layers ~20.8 ms (239 calls, ~87 us;
+~3.2 GB a step, ~150 GB/s), NVFP4 MoE ~18.4, `_hc_mix` ~6.9, GDN ~3.2.
 
 ## Reference comparison
 

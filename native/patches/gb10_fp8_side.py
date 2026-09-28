@@ -203,6 +203,7 @@ def convert_model(model, *, is_linear, is_unquantized, prepare_fn, apply_fn,
             if lin is not None and lin.weight.dtype == torch.bfloat16:
                 lin.weight.data = lin.weight.data.clone()
     torch.cuda.empty_cache()
+    stats["left"] = report_bf16_left(model, is_linear, label)
     logger.info(
         "FP8 side (%s): %d linear layers to FP8 weight-only (Marlin; %d with N padded to "
         "the %d-column tile), %d left in BF16; %.2f GiB -> %.2f GiB", label,
@@ -210,6 +211,29 @@ def convert_model(model, *, is_linear, is_unquantized, prepare_fn, apply_fn,
         stats["bytes_before"] / 2**30, stats["bytes_after"] / 2**30,
     )
     return stats
+
+
+def report_bf16_left(model, is_linear, label) -> list:
+    """Log the linear layers still in BF16 after the conversion, grouped by name
+    with layer numbers folded ("layers.N.mlp.gate [256 x 2560] x48"): in a
+    decode profile under CUDA graphs a kernel has no stack, only its name, and
+    small BF16 GEMMs on GB10's sm80 WMMA kernels take ~40-250 us a call."""
+    import torch
+
+    groups = {}
+    for name, module in model.named_modules():
+        w = getattr(module, "weight", None)
+        if not (is_linear(module) or isinstance(module, torch.nn.Linear)):
+            continue
+        if not isinstance(w, torch.Tensor) or w.dim() != 2 or w.dtype != torch.bfloat16:
+            continue
+        key = (re.sub(r"\.\d+\.", ".N.", name), tuple(w.shape))
+        groups[key] = groups.get(key, 0) + 1
+    left = sorted(((n, shape, c) for (n, shape), c in groups.items()), key=lambda g: -g[2])
+    if left:
+        logger.info("FP8 side (%s): linear layers still in BF16: %s", label, "; ".join(
+            f"{n} [{shape[0]} x {shape[1]}] x{c}" for n, shape, c in left))
+    return left
 
 
 def _is_unquant_head(qm) -> bool:
