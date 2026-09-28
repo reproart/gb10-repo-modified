@@ -14,6 +14,14 @@ then reads the Chrome trace the server wrote and prints:
   * how much of the profiled span the GPU was idle (waiting on the CPU,
     launches or page faults outside kernels).
 
+"ms" is the kernels' own durations. SGLang runs some work on a second
+stream under CUDA graphs (on Qwen4-Exp the MoE router beside the shared
+expert, the QSA indexer beside the qkv projection), and a kernel sharing the
+GPU runs longer without making the step longer. "wall" splits every
+stretch of GPU time evenly among the kernels running in it, so it adds up
+to the busy time: a group whose wall is well below its ms is mostly
+overlapped, and a faster kernel there buys little.
+
 A kernel that reads host memory through the page tables (the PLE gather on
 GB10) shows its fault time inside its own duration, so a slow table read
 lands in the "ple gather" row.
@@ -43,7 +51,7 @@ GROUPS = [
     ("MoE routing", r"moe_fused_gate|topk|router|route_radix|gating"),
     ("MoE experts", r"marlin_moe|moe|expert|groupproblemshape|fused_experts"),
     ("dense GEMM, FP8/FP4 Marlin", r"marlin"),
-    ("dense GEMM, BF16", r"wmma|gemvx|gemv|bf16.*gemm|gemm.*bf16|cublas|nvjet|sm\d+_xmma"),
+    ("dense GEMM, BF16", r"wmma|gemvx|gemv|skinny_gemm|bf16.*gemm|gemm.*bf16|cublas|nvjet|sm\d+_xmma"),
     ("dense GEMM, other", r"gemm|cutlass|matmul|mm_"),
     ("norm / elementwise", r"norm|rms|silu|gelu|act_and_mul|elementwise|vectorized|add_|mul_|copy_kernel|cat|index"),
     ("sampling / spec", r"sample|argmax|verify|accept|eagle|spec|logits|tree"),
@@ -65,6 +73,37 @@ def load_trace(path: str) -> dict:
         return json.load(f)
 
 
+def wall_shares(kernels) -> tuple[dict, dict]:
+    """Split GPU time among the kernels running at each moment: a stretch with
+    n kernels in flight gives each 1/n of it. Returns (per group, per name) in
+    the trace's time unit; each sums to the GPU busy time."""
+    edges = []
+    for i, e in enumerate(kernels):
+        ts, dur = float(e.get("ts", 0.0)), float(e.get("dur", 0.0))
+        name = e.get("name", "?")
+        group = group_of(name) if e["cat"] == "kernel" else "memcpy"
+        edges.append((ts, 1, group, name))
+        edges.append((ts + dur, -1, group, name))
+    edges.sort(key=lambda x: (x[0], x[1]))  # ends before starts at one instant
+    by_group, by_name = defaultdict(float), defaultdict(float)
+    active_group, active_name = defaultdict(int), defaultdict(int)
+    n_active, prev = 0, None
+    for t, step, group, name in edges:
+        if n_active and prev is not None and t > prev:
+            share = (t - prev) / n_active
+            for g, c in active_group.items():
+                by_group[g] += share * c
+            for k, c in active_name.items():
+                by_name[k] += share * c
+        prev = t
+        n_active += step
+        for d, key in ((active_group, group), (active_name, name)):
+            d[key] += step
+            if not d[key]:
+                del d[key]
+    return by_group, by_name
+
+
 def summarize(trace: dict, top: int = 20) -> str:
     events = trace.get("traceEvents", trace if isinstance(trace, list) else [])
     kernels = [e for e in events
@@ -83,6 +122,7 @@ def summarize(trace: dict, top: int = 20) -> str:
         rec[0] += dur
         rec[1] += 1
         intervals.append((ts, ts + dur))
+    wall_group, wall_name = wall_shares(kernels)
     intervals.sort()
     span = intervals[-1][1] - intervals[0][0]
     busy, cur_s, cur_e = 0.0, *intervals[0]
@@ -99,12 +139,16 @@ def summarize(trace: dict, top: int = 20) -> str:
            f"({100 * busy / span:.0f}%), idle {100 * (1 - busy / span):.0f}%",
            f"{len(kernels)} kernels, {total / 1e3:.1f} ms of kernel time "
            "(overlapping streams can exceed busy time)", "",
-           f"{'group':<22}{'ms':>10}{'share':>8}"]
-    for g, d in sorted(by_group.items(), key=lambda kv: -kv[1]):
-        out.append(f"{g:<22}{d / 1e3:>10.1f}{100 * d / total:>7.0f}%")
-    out += ["", f"top {top} kernels:", f"{'ms':>9}{'calls':>7}{'avg us':>9}  name"]
-    for name, (d, n) in sorted(by_name.items(), key=lambda kv: -kv[1][0])[:top]:
-        out.append(f"{d / 1e3:>9.1f}{n:>7}{d / n:>9.1f}  [{group_of(name)}] {name[:110]}")
+           f"{'group':<27}{'ms':>9}{'wall ms':>9}{'share':>7}"]
+    wall_total = sum(wall_group.values()) or 1.0
+    for g, d in sorted(by_group.items(), key=lambda kv: -wall_group.get(kv[0], 0.0)):
+        w = wall_group.get(g, 0.0)
+        out.append(f"{g:<27}{d / 1e3:>9.1f}{w / 1e3:>9.1f}{100 * w / wall_total:>6.0f}%")
+    out += ["", f"top {top} kernels (by wall time):",
+            f"{'ms':>9}{'wall ms':>9}{'calls':>7}{'avg us':>9}  name"]
+    for name, (d, n) in sorted(by_name.items(), key=lambda kv: -wall_name.get(kv[0], 0.0))[:top]:
+        out.append(f"{d / 1e3:>9.1f}{wall_name.get(name, 0.0) / 1e3:>9.1f}{n:>7}{d / n:>9.1f}"
+                   f"  [{group_of(name)}] {name[:100]}")
     return "\n".join(out)
 
 
