@@ -37,3 +37,10 @@ if os.environ.get("GB10_FP8_DRAFT_HEAD") == "1" or _fp8_target_head not in ("0",
 
     for _mod in gb10_fp8_side.SPEC_MODULES:
         gb10_ple_mmap.install_import_hook(_mod, gb10_fp8_side.apply_spec)
+
+if os.environ.get("GB10_SKINNY_BF16") == "1":
+    import gb10_ple_mmap
+    import gb10_skinny
+
+    gb10_ple_mmap.install_import_hook(gb10_skinny.TARGET_MODULE, gb10_skinny.apply_target)
+    gb10_ple_mmap.install_import_hook(gb10_skinny.MTP_MODULE, gb10_skinny.apply_mtp)

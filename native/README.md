@@ -538,10 +538,10 @@ the engine, so:
 now the default (`DRAFT_VOCAB`), and **56.7 tok/s with the BF16 side layers
 on FP8** (`FP8_SIDE`, default too; HumanEval without thinking 96.3%, the same
 as the int4 AutoRound recipe on vLLM). A decode profile (`bench/profile_decode.py`)
-now puts ~11 ms of a ~66 ms step in the two BF16 lm_heads: the draft head
-goes to FP8 by default (`FP8_DRAFT_HEAD`, it only proposes tokens), the
-target head with `FP8_HEAD=1` (lossy for the answers: check HumanEval with
-and without it).
+put ~11 ms of a ~66 ms step in the two BF16 lm_heads: both now go to FP8
+too (`FP8_DRAFT_HEAD`, `FP8_HEAD`, default on): **63.4 tok/s**, HumanEval
+97.0% without thinking and 100% with medium thinking. `SKINNY_BF16=1` tries
+a Triton GEMM for the routers and indexer projections, which stay BF16.
 
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
 slot), 24 without; a 374K-token KV pool at 0.85 (the cookbook's cell: ~93K). `MAMBA_SSM_DTYPE=bfloat16`
@@ -675,6 +675,7 @@ models/        one profile per model: qwen3.8-27b.sh (this README), its
 patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                in place · gb10_marlin_lean.py: leaner Marlin repack at load ·
                gb10_fp8_side.py: BF16 side layers and lm_heads to FP8 Marlin ·
+               gb10_skinny.py (+ its kernel): few-row BF16 GEMM for routers ·
                sitecustomize.py (loads them) · test_*.py (CPU)
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
