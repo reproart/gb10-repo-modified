@@ -854,6 +854,31 @@ thinking), which HumanEval, near its ceiling here, barely shows. Postponed
 until a runtime reads the NVFP4 table, or answers on the RadixArk build
 give a reason.
 
+## Ornith-1.5-35B-A3B, one Spark (2026-09-29)
+
+r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 (W4A16 on every Linear, BF16 heads
+and MTP), SGLang 0.5.20, `models/ornith-1.5-35b.sh` as first written: MoE
+marlin, flashinfer attention, FP8 KV, MTP 1 step / 2 draft tokens, cap 16.
+
+| | |
+|---|---:|
+| TTFT, short prompt | 78 ms |
+| Single-stream decode | 46.3 tok/s, **accept_len 1.00** |
+| Aggregate at 1 / 2 / 4 / 8 / 16 streams | 45.9 / 87.8 / 150.8 / 234.7 / **326.2** |
+| Prefill 2K / 8K / 32K / 101K, tok/s | 7339 / 4721 / 4667 / 3305 (79 C at 101K) |
+
+accept_len 1.00 on every request: no MTP proposal was ever accepted, so this
+is plain decoding plus the draft's cost. The card's run of the same
+checkpoint (SGLang 0.5.6.post3, triton attention) accepted 1.74. Checked in
+0.5.20 and ruled out: the MTP layer is built in BF16 (`_mtp_quant_config`
+returns None for a serialized modelopt_fp4 checkpoint), and the draft's BF16
+experts run on the Triton MoE runner despite `--moe-runner-backend marlin`
+(UnquantizedFusedMoEMethod picks it). The profile's one departure from the
+card was flashinfer attention, so `SPEC=mtp` now runs triton, and the
+default is Ornith AI's DFlash draft (`SPEC=dflash`, block 8). To measure:
+DFlash at DRAFT_TOKENS 8 and a sweep up (the 27B's DFlash2 peaked at
+11-16), and SPEC=mtp with triton.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
