@@ -1,13 +1,12 @@
 # shellcheck shell=bash disable=SC2034  # read by scripts/serve-sglang.sh
 # Profile: Ornith-1.5-35B-A3B (a Qwen3.5-35B-A3B finetune: hybrid GDN +
 # softmax attention, 256-expert MoE, ~3B active, multimodal, a reasoning
-# model). The original BF16 weights quantized to FP8 at load by default
-# (WEIGHTS); r0b0tlab's NVFP4 W4A16 checkpoint answers garbage on SGLang
+# model). Ornith AI's FP8 checkpoint by default (WEIGHTS); r0b0tlab's NVFP4 W4A16 checkpoint answers garbage on SGLang
 # 0.5.20 (see "Measured here" below). Speculative decoding (Ornith's DFlash
 # draft, or the checkpoint's MTP head) is wired in, off until the target is
 # confirmed to answer right.
 #
-#   ./serve.sh ornith-1.5-35b                    # BF16 -> FP8, no draft
+#   ./serve.sh ornith-1.5-35b                    # FP8 checkpoint, no draft
 #   SPEC=dflash ./serve.sh ornith-1.5-35b        # with the DFlash draft
 #
 # Weights, once:
@@ -54,17 +53,23 @@ SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
 
 # Which weights:
+#   fp8    ornith-ai/Ornith-1.5-35B-A3B-FP8, Ornith AI's own FP8 checkpoint;
+#          its quantization config is read from the checkpoint (the FP8 path
+#          Qwen3.8-27B-FP8 runs on this GB10). The default.
 #   bf16   ornith-ai/Ornith-1.5-35B-A3B, the original (67 GB), quantized to
 #          FP8 at load (--quantization fp8: per-tensor FP8 weights, ~35 GB
 #          resident; SGLang 0.5.20 has online FP8 for dense layers and MoE).
-#          The DFlash draft was trained against this target. The default.
+#          The DFlash draft was trained against this target.
 #   w4a16  r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16. Broken on SGLang 0.5.20:
 #          every answer is one token repeated, with or without a draft, and
 #          NVFP4_SCALES did not change that. Kept to test a newer SGLang.
 #   <path> another checkpoint directory (set QUANTIZATION / MOE_RUNNER_BACKEND)
-#   hf download ornith-ai/Ornith-1.5-35B-A3B --local-dir /models/Ornith-1.5-35B-A3B
-WEIGHTS="${WEIGHTS:-bf16}"
+#   hf download ornith-ai/Ornith-1.5-35B-A3B-FP8 --local-dir /models/Ornith-1.5-35B-A3B-FP8
+WEIGHTS="${WEIGHTS:-fp8}"
 case "$WEIGHTS" in
+  fp8)
+    MODEL_DIR="${MODEL_DIR:-/models/Ornith-1.5-35B-A3B-FP8}"
+    MOE_RUNNER_BACKEND="${MOE_RUNNER_BACKEND-}" ;;
   bf16)
     MODEL_DIR="${MODEL_DIR:-/models/Ornith-1.5-35B-A3B}"
     QUANTIZATION="${QUANTIZATION-fp8}"
@@ -74,7 +79,7 @@ case "$WEIGHTS" in
   /*)
     MODEL_DIR="${MODEL_DIR:-$WEIGHTS}" ;;
   *)
-    echo "WEIGHTS must be bf16, w4a16 or an absolute path, not '$WEIGHTS'" >&2
+    echo "WEIGHTS must be fp8, bf16, w4a16 or an absolute path, not '$WEIGHTS'" >&2
     exit 2 ;;
 esac
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-ornith-1.5-35b}"

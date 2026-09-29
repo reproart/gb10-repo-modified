@@ -565,7 +565,8 @@ service can run.
 
 [`models/ornith-1.5-35b.sh`](models/ornith-1.5-35b.sh): a Qwen3.5-35B-A3B
 finetune (hybrid GDN, 256-expert MoE, ~3B active, a reasoning model). By
-default the original BF16 weights, quantized to FP8 at load; Ornith AI's
+default Ornith AI's FP8 checkpoint (`WEIGHTS=bf16`: the original, quantized
+to FP8 at load); Ornith AI's
 DFlash draft (`SPEC=dflash`) and the checkpoint's MTP head (`SPEC=mtp`) are
 wired in, off until the target is confirmed. r0b0tlab's NVFP4 W4A16
 checkpoint (`WEIGHTS=w4a16`) answers one token repeated on SGLang 0.5.20,
@@ -573,9 +574,9 @@ with or without a draft
 ([RESULTS](results/RESULTS.md#ornith-15-35b-a3b-one-spark-2026-09-29)).
 
 ```bash
-$HF download ornith-ai/Ornith-1.5-35B-A3B --local-dir /models/Ornith-1.5-35B-A3B
+$HF download ornith-ai/Ornith-1.5-35B-A3B-FP8 --local-dir /models/Ornith-1.5-35B-A3B-FP8
 $HF download ornith-ai/Ornith-1.5-35B-A3B-DFlash --local-dir /models/Ornith-1.5-35B-A3B-DFlash
-./serve.sh ornith-1.5-35b                        # BF16 -> FP8, serves as "ornith-1.5-35b"
+./serve.sh ornith-1.5-35b                        # FP8, serves as "ornith-1.5-35b"
 SPEC=dflash ./serve.sh ornith-1.5-35b            # with the DFlash draft
 ```
 
