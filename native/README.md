@@ -586,10 +586,18 @@ kernel config"), and the MoE is about half of a decode step. SGLang's own
 tuner, from the source of the same version, writes the missing files;
 the profile picks them up from `moe-configs/` (`SGLANG_MOE_CONFIG_DIR`):
 
+The tuner imports `ray`, which SGLang itself does not need; it goes into a
+venv of its own that sees the server's packages through a `.pth` file, so
+the serving venv stays as locked:
+
 ```bash
 git clone --depth 1 --branch v0.5.20 https://github.com/sgl-project/sglang ~/sglang-src
+~/spark/venv-sglang-0.5.20/bin/python -m venv ~/spark/venv-moe-tune
+~/spark/venv-sglang-0.5.20/bin/python -c 'import site; print(site.getsitepackages()[0])' \
+  > "$(~/spark/venv-moe-tune/bin/python -c 'import site; print(site.getsitepackages()[0])')/sglang-venv.pth"
+~/spark/venv-moe-tune/bin/pip install ray
 cd ~/sglang-src/benchmark/kernels/fused_moe_triton
-~/spark/venv-sglang-0.5.20/bin/python tuning_fused_moe_triton.py --help   # flags differ by version
+~/spark/venv-moe-tune/bin/python tuning_fused_moe_triton.py --help   # flags differ by version
 # typically: --model /models/Ornith-1.5-35B-A3B-FP8 --tp-size 1 --dtype fp8_w8a8 --per-channel-quant --tune
 # then copy the E=256,N=512,...json files (and _down) it writes to
 #   native/moe-configs/configs/triton_<version>/   (the version in the boot log's path)
