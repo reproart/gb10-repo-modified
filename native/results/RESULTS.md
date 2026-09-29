@@ -967,6 +967,12 @@ kernel configs: `Using default MoE kernel config ... E=256,N=512,
 device_name=NVIDIA_GB10,dtype=fp8_w8a8,per_channel_quant=True.json` (and
 `_down`); SGLang 0.5.20 ships a GB10 config only for E=128, N=768.
 
+**HumanEval** (164 problems, greedy): the same with `FP8_SIDE` on and off,
+147/164 (89.6%) with thinking off and 161/164 (98.2%) with medium thinking.
+Ornith is a reasoning model, and thinking off is not its mode. `FP8_SIDE=1`
+is now the profile's default: FP8 checkpoint + DFlash 8 + FP8 GDN
+projections, 97.6 tok/s.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |

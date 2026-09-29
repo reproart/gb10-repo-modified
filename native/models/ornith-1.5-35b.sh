@@ -5,7 +5,7 @@
 # DFlash draft (SPEC), which doubles single-stream decode. r0b0tlab's NVFP4
 # W4A16 checkpoint answers garbage on SGLang 0.5.20 (see "Measured here").
 #
-#   ./serve.sh ornith-1.5-35b                    # FP8 + DFlash: 83.8 tok/s
+#   ./serve.sh ornith-1.5-35b                    # FP8 + DFlash + FP8_SIDE: 97.6 tok/s
 #   SPEC=off ./serve.sh ornith-1.5-35b           # no draft: 39.8
 #
 # Weights, once:
@@ -170,9 +170,10 @@ NVFP4_SCALES="${NVFP4_SCALES:-0}"
 # there ~39 -> ~16 ms a step, HumanEval unchanged). Activations stay BF16
 # (the checkpoint's own FP8 layers quantize them per token). Measured: 117
 # layers, 2.08 -> 1.04 GiB; 83.8 -> 97.6 tok/s single-stream, 71 -> 98 at
-# the sweep's first level, 345 -> 353 at 16 streams; "437" right. Lossy:
-# off until HumanEval says otherwise.
-FP8_SIDE="${FP8_SIDE:-0}"
+# the sweep's first level, 345 -> 353 at 16 streams; HumanEval the same
+# with and without it (147/164 thinking off, 161/164 thinking medium). On
+# by default; 0 = the GDN projections in BF16, as the checkpoint ships them.
+FP8_SIDE="${FP8_SIDE:-1}"
 
 # Tuned Triton MoE kernel configs. SGLang 0.5.20 ships none for this MoE on
 # GB10 ("Using default MoE kernel config ... E=256,N=512,device_name=

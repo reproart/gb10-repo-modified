@@ -565,9 +565,10 @@ service can run.
 
 [`models/ornith-1.5-35b.sh`](models/ornith-1.5-35b.sh): a Qwen3.5-35B-A3B
 finetune (hybrid GDN, 256-expert MoE, ~3B active, a reasoning model). By
-default Ornith AI's FP8 checkpoint with Ornith AI's DFlash draft: **83.8
-tok/s** single-stream (39.8 without the draft), 345 tok/s aggregate at 16
-streams. `WEIGHTS=bf16` takes the original and quantizes it to FP8 at load. r0b0tlab's NVFP4 W4A16
+default Ornith AI's FP8 checkpoint with Ornith AI's DFlash draft and the
+GDN projections the checkpoint keeps in BF16 moved to FP8 (`FP8_SIDE`):
+**97.6 tok/s** single-stream (39.8 with neither), 353 tok/s aggregate at 16
+streams, HumanEval 98.2% with medium thinking. `WEIGHTS=bf16` takes the original and quantizes it to FP8 at load. r0b0tlab's NVFP4 W4A16
 checkpoint (`WEIGHTS=w4a16`) answers one token repeated on SGLang 0.5.20,
 with or without a draft
 ([RESULTS](results/RESULTS.md#ornith-15-35b-a3b-one-spark-2026-09-29)).
