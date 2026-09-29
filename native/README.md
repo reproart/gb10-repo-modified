@@ -579,6 +579,21 @@ $HF download ornith-ai/Ornith-1.5-35B-A3B-DFlash --local-dir /models/Ornith-1.5-
 SPEC=off ./serve.sh ornith-1.5-35b               # without the draft
 ```
 
+**Faster MoE kernels, tuned on this machine.** SGLang 0.5.20 has no Triton
+MoE config for this model on GB10 (the boot log says "Using default MoE
+kernel config"), and the MoE is about half of a decode step. SGLang's own
+tuner, from the source of the same version, writes the missing files;
+the profile picks them up from `moe-configs/` (`SGLANG_MOE_CONFIG_DIR`):
+
+```bash
+git clone --depth 1 --branch v0.5.20 https://github.com/sgl-project/sglang ~/sglang-src
+cd ~/sglang-src/benchmark/kernels/fused_moe_triton
+~/spark/venv-sglang-0.5.20/bin/python tuning_fused_moe_triton.py --help   # flags differ by version
+# typically: --model /models/Ornith-1.5-35B-A3B-FP8 --tp-size 1 --dtype fp8_w8a8 --per-channel-quant --tune
+# then copy the E=256,N=512,...json files (and _down) it writes to
+#   native/moe-configs/configs/triton_<version>/   (the version in the boot log's path)
+```
+
 ---
 
 ## Moving from the Docker toolkit / SparkStation

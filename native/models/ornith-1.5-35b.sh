@@ -168,9 +168,20 @@ NVFP4_SCALES="${NVFP4_SCALES:-0}"
 # them at load to FP8 weight-only, one scale per output channel, on SGLang's
 # FP8 Marlin GEMM (patches/gb10_fp8_side.py, as the Flash-Next profile does:
 # there ~39 -> ~16 ms a step, HumanEval unchanged). Activations stay BF16
-# (the checkpoint's own FP8 layers quantize them per token). Lossy: off
-# until measured.
+# (the checkpoint's own FP8 layers quantize them per token). Measured: 117
+# layers, 2.08 -> 1.04 GiB; 83.8 -> 97.6 tok/s single-stream, 71 -> 98 at
+# the sweep's first level, 345 -> 353 at 16 streams; "437" right. Lossy:
+# off until HumanEval says otherwise.
 FP8_SIDE="${FP8_SIDE:-0}"
+
+# Tuned Triton MoE kernel configs. SGLang 0.5.20 ships none for this MoE on
+# GB10 ("Using default MoE kernel config ... E=256,N=512,device_name=
+# NVIDIA_GB10,dtype=fp8_w8a8,per_channel_quant=True.json" in the boot log),
+# and the MoE is ~47% of a decode step. Files tuned on this machine go in
+# $ROOT/moe-configs/configs/triton_<version>/ (README, "Ornith"); when that
+# directory exists it is SGLANG_MOE_CONFIG_DIR, which replaces SGLang's own
+# directory (fine here: this model has one MoE shape).
+MOE_CONFIG_DIR="${MOE_CONFIG_DIR:-$ROOT/moe-configs}"
 
 # Concurrency: GDN state slots, 5 per running request with a draft (extra_buffer)
 # plus one to keep a finished turn's state for the next one, as in the 27B
@@ -223,6 +234,9 @@ model_env() {
     # the load-time conversion hooks Qwen4-Exp only; DFlash needs a dense head
     echo "FP8_HEAD=1 needs SPEC=mtp in this profile" >&2
     exit 1
+  fi
+  if [ -d "$MOE_CONFIG_DIR/configs" ]; then
+    export SGLANG_MOE_CONFIG_DIR="$MOE_CONFIG_DIR"
   fi
   if [ "$FP8_SIDE" = 1 ]; then
     export GB10_FP8_SIDE=1
@@ -286,5 +300,5 @@ model_summary() {
     dflash) spec="DFlash, $DRAFT_TOKENS draft tokens" ;;
     mtp) spec="MTP $MTP_STEPS/1/$MTP_DRAFT_TOKENS, draft vocab $vocab, heads target $([ "$FP8_HEAD" = 1 ] && echo FP8 || echo BF16)" ;;
   esac
-  echo "weights $WEIGHTS (quantization ${QUANTIZATION:-from checkpoint}$([ "$NVFP4_SCALES" = 1 ] && echo ", NVFP4 per-shard scales kept")$([ "$FP8_SIDE" = 1 ] && echo ", BF16 GDN projections -> FP8 Marlin")), MoE ${MOE_RUNNER_BACKEND:-auto}, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE$([ -n "$YARN_FACTOR" ] && echo ", YaRN x$YARN_FACTOR"); $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
+  echo "weights $WEIGHTS (quantization ${QUANTIZATION:-from checkpoint}$([ "$NVFP4_SCALES" = 1 ] && echo ", NVFP4 per-shard scales kept")$([ "$FP8_SIDE" = 1 ] && echo ", BF16 GDN projections -> FP8 Marlin")), MoE ${MOE_RUNNER_BACKEND:-auto}, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE$([ -n "$YARN_FACTOR" ] && echo ", YaRN x$YARN_FACTOR")$([ -d "$MOE_CONFIG_DIR/configs" ] && echo ", MoE configs from $MOE_CONFIG_DIR"); $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
 }
