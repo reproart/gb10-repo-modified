@@ -30,9 +30,36 @@ SGLANG_INDEX="${SGLANG_INDEX:-}"
 #     the BF16 MTP head are inside)
 # nvidia/Qwen3.8-Flash-Next-NVFP4 (ModelOpt MIXED_PRECISION) loads too: set
 # QUANTIZATION='' and MOE_RUNNER_BACKEND=flashinfer_cutlass (cookbook).
-MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-Flash-Next-NVFP4}"
+#
+# Which weights, by name (MODEL_DIR, if set, wins over this):
+#   radixark     RadixArk/Qwen3.8-Flash-Next-NVFP4, the default
+#   abliterated  edp1096/Huihui-RadixArk-Qwen3.8-Flash-Next-abliterated-NVFP4:
+#                the RadixArk checkpoint with Huihui's abliteration deltas
+#                (recovered from Q8 GGUF; experts of layers 2, 4, 30, 46, 47
+#                re-quantized, RadixArk's activation scales, table, MTP,
+#                vision and tokenizer kept). Same layout, so every patch here
+#                applies unchanged. Also: ./serve.sh qwen3.8-flash-next-abliterated
+#   <a path>     any other checkpoint directory with this layout
+# The served name follows (clients see which one answers).
+WEIGHTS="${WEIGHTS:-radixark}"
+case "$WEIGHTS" in
+  radixark)
+    _dir=/models/RadixArk/Qwen3.8-Flash-Next-NVFP4
+    _name=qwen3.8-flash-next ;;
+  abliterated)
+    _dir=/models/edp1096/Huihui-RadixArk-Qwen3.8-Flash-Next-abliterated-NVFP4
+    _name=qwen3.8-flash-next-abliterated ;;
+  /*)
+    _dir="$WEIGHTS"
+    _name=qwen3.8-flash-next ;;
+  *)
+    echo "WEIGHTS must be radixark, abliterated or an absolute path, not '$WEIGHTS'" >&2
+    exit 2 ;;
+esac
+MODEL_DIR="${MODEL_DIR:-$_dir}"
 DRAFT_DIR=""
-SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.8-flash-next}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-$_name}"
+unset _dir _name
 
 # Where the n-gram table is read from:
 #   mmap  the checkpoint's own safetensors shards, mapped read-only

@@ -430,7 +430,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next
+ls models/                        # gemma4-31b  ornith-1.5-35b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next(-abliterated)
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest
@@ -480,7 +480,7 @@ read in place from the checkpoint (below).
 ```bash
 HF=~/spark/venv/bin/hf
 $HF download RadixArk/Qwen3.8-Flash-Next-NVFP4 --revision <sha> \
-  --local-dir /models/Qwen3.8-Flash-Next-NVFP4   # 126 GiB, table and MTP head inside
+  --local-dir /models/RadixArk/Qwen3.8-Flash-Next-NVFP4   # 126 GiB, table and MTP head inside
 ./serve.sh qwen3.8-flash-next                    # serves as "qwen3.8-flash-next" on :8888
 python3 patches/test_gb10_ple_mmap.py            # optional, CPU only: the patch below
 ```
@@ -550,6 +550,34 @@ thinking and 99.4% with medium thinking; +67% over the cookbook's cell.
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
 slot), 24 without; a 374K-token KV pool at 0.85 (the cookbook's cell: ~93K). `MAMBA_SSM_DTYPE=bfloat16`
 halves the slots. Every knob is commented in the profile.
+
+**Other weights with the same layout.** `WEIGHTS` picks the checkpoint by
+name: `radixark` (default) or `abliterated`
+(edp1096/Huihui-RadixArk-Qwen3.8-Flash-Next-abliterated-NVFP4, RadixArk's
+checkpoint with Huihui's abliteration deltas; every patch applies unchanged),
+or an absolute path. The served name follows (`qwen3.8-flash-next`,
+`qwen3.8-flash-next-abliterated`); `MODEL_DIR` still overrides the directory.
+`./serve.sh qwen3.8-flash-next-abliterated` is the same as
+`WEIGHTS=abliterated ./serve.sh qwen3.8-flash-next`, as a profile the
+service can run.
+
+### Ornith 1.5 35B-A3B
+
+[`models/ornith-1.5-35b.sh`](models/ornith-1.5-35b.sh): a Qwen3.5-35B-A3B
+finetune (hybrid GDN, 256-expert MoE, ~3B active) in r0b0tlab's NVFP4 W4A16
+quantization (23 GB), with its BF16 MTP head. Flags from the checkpoint's
+card (validated there on a DGX Spark with an older SGLang): MoE on `marlin`
+(auto picks `flashinfer_trtllm`, which has no W4A16 path), FP8 KV, MTP with
+1 step / 2 draft tokens. Attention is `flashinfer` as in the 27B profile of
+the same family (`ATTENTION_BACKEND=triton` is the card's). Not measured
+here yet; the profile lists what to sweep (`MTP_STEPS`, `DRAFT_VOCAB` if the
+tokenizer matches Qwen3.8's, `FP8_HEAD`).
+
+```bash
+$HF download r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 --revision <sha> \
+  --local-dir /models/r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16
+./serve.sh ornith-1.5-35b                        # serves as "ornith-1.5-35b"
+```
 
 ---
 
@@ -674,8 +702,9 @@ Each of these cost real time.
 ```
 serve.sh       the launcher: machine knobs, profile choice; also `install` and `manifest`
 models/        one profile per model: qwen3.8-27b.sh (this README), its
-               variants -single, -longctx and -throughput, gemma4-31b.sh,
-               qwen3.8-flash-next.sh
+               variants -single, -longctx, -throughput and -dspark,
+               gemma4-31b.sh, qwen3.8-flash-next.sh (+ -abliterated),
+               ornith-1.5-35b.sh
 patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                in place · gb10_marlin_lean.py: leaner Marlin repack at load ·
                gb10_fp8_side.py: BF16 side layers and lm_heads to FP8 Marlin ·
