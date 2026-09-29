@@ -1,11 +1,12 @@
 # shellcheck shell=bash disable=SC2034  # read by scripts/serve-sglang.sh
 # Profile: Ornith-1.5-35B-A3B (a Qwen3.5-35B-A3B finetune: hybrid GDN +
 # softmax attention, 256-expert MoE, ~3B active, multimodal, a reasoning
-# model) in NVFP4 W4A16, with speculative decoding by Ornith's DFlash draft
-# (default) or the checkpoint's own MTP head.
+# model) in NVFP4 W4A16. Speculative decoding (Ornith's DFlash draft or the
+# checkpoint's own MTP head) is wired in but off by default: on this build
+# no draft token is ever accepted (see "Measured here" below).
 #
-#   ./serve.sh ornith-1.5-35b
-#   SPEC=mtp ./serve.sh ornith-1.5-35b
+#   ./serve.sh ornith-1.5-35b                    # no draft: 72 tok/s
+#   SPEC=dflash ./serve.sh ornith-1.5-35b        # to test a fix
 #
 # Weights, once:
 #   hf download r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 \
@@ -30,11 +31,16 @@
 # layers on the FP4 Marlin GEMM), DFLASH. Each value is "${VAR:-default}":
 #   DRAFT_TOKENS=12 ./serve.sh ornith-1.5-35b
 #
-# Measured here (2026-09-29), SPEC=mtp 1/1/2 with flashinfer attention:
-# accept_len 1.00 on every request (no proposal ever accepted), so 46.3 tok/s
-# single-stream is plain decoding; 326 tok/s aggregate at 16 streams; prefill
-# 3.3-7.3K tok/s. The card's run (triton attention) accepted 1.74: triton is
-# now the MTP default, and DFlash the default accelerator.
+# Measured here (2026-09-29), single-stream decode, greedy:
+#   SPEC=off                      72.0 tok/s
+#   SPEC=mtp 1/1/2, flashinfer    46.3, accept_len 1.00
+#   SPEC=mtp 1/1/2, triton        44.5, accept_len 1.00
+#   SPEC=dflash, 8 / 12 tokens    38.1 / 35.1, accept_len 1.00
+# Two different drafts under two attention backends, and not one token
+# accepted: the fault is in what they share, the target's side (the hidden
+# states both drafts read, or its verify pass), not in a draft. The card's
+# run of this checkpoint (SGLang 0.5.6.post3) accepted 1.74. Until found,
+# the default is no draft.
 
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
@@ -48,7 +54,7 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-ornith-1.5-35b}"
 #           profile runs the same algorithm with z-lab's DFlash2.
 #   mtp     the checkpoint's BF16 MTP head (NEXTN, served as EAGLE)
 #   off     none
-SPEC="${SPEC:-dflash}"
+SPEC="${SPEC:-off}"
 case "$SPEC" in
   dflash) DRAFT_DIR="${DRAFT_DIR:-/models/Ornith-1.5-35B-A3B-DFlash}" ;;
   mtp|off) DRAFT_DIR="" ;;

@@ -565,19 +565,19 @@ service can run.
 
 [`models/ornith-1.5-35b.sh`](models/ornith-1.5-35b.sh): a Qwen3.5-35B-A3B
 finetune (hybrid GDN, 256-expert MoE, ~3B active, a reasoning model) in
-r0b0tlab's NVFP4 W4A16 quantization (23 GB), sped up by Ornith AI's DFlash
-draft (`SPEC=dflash`, default) or the checkpoint's own MTP head
-(`SPEC=mtp`). MoE on `marlin` (auto picks `flashinfer_trtllm`, which has no
-W4A16 path), FP8 KV. First run with MTP: every proposal rejected
-(accept_len 1.00, 46.3 tok/s, 326 aggregate at 16 streams), so MTP now runs
-with the card's triton attention and DFlash is the default
+r0b0tlab's NVFP4 W4A16 quantization (23 GB). MoE on `marlin` (auto picks
+`flashinfer_trtllm`, which has no W4A16 path), FP8 KV. **72 tok/s**
+single-stream with no draft, the default: Ornith AI's DFlash draft
+(`SPEC=dflash`) and the checkpoint's MTP head (`SPEC=mtp`) are wired in, but
+on this build no draft token is ever accepted, whichever draft or attention
+backend, so each only costs time
 ([RESULTS](results/RESULTS.md#ornith-15-35b-a3b-one-spark-2026-09-29)).
 
 ```bash
 $HF download r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 --local-dir /models/Ornith-1.5-35B-A3B-NVFP4-W4A16
 $HF download ornith-ai/Ornith-1.5-35B-A3B-DFlash --local-dir /models/Ornith-1.5-35B-A3B-DFlash
-./serve.sh ornith-1.5-35b                        # DFlash, serves as "ornith-1.5-35b"
-SPEC=mtp ./serve.sh ornith-1.5-35b               # the MTP head instead
+./serve.sh ornith-1.5-35b                        # no draft, serves as "ornith-1.5-35b"
+SPEC=dflash ./serve.sh ornith-1.5-35b            # with the DFlash draft (see above)
 ```
 
 ---

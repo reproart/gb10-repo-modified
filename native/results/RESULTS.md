@@ -874,10 +874,24 @@ checkpoint (SGLang 0.5.6.post3, triton attention) accepted 1.74. Checked in
 returns None for a serialized modelopt_fp4 checkpoint), and the draft's BF16
 experts run on the Triton MoE runner despite `--moe-runner-backend marlin`
 (UnquantizedFusedMoEMethod picks it). The profile's one departure from the
-card was flashinfer attention, so `SPEC=mtp` now runs triton, and the
-default is Ornith AI's DFlash draft (`SPEC=dflash`, block 8). To measure:
-DFlash at DRAFT_TOKENS 8 and a sweep up (the 27B's DFlash2 peaked at
-11-16), and SPEC=mtp with triton.
+card was flashinfer attention, so `SPEC=mtp` now runs triton, and Ornith
+AI's DFlash draft was added (`SPEC=dflash`).
+
+**All four modes** (single-stream decode, greedy, 700 tokens):
+
+| Mode | tok/s | accept_len |
+|---|---:|---:|
+| no draft (`SPEC=off`) | **72.0** | - |
+| MTP 1/1/2, flashinfer attention | 46.3 | 1.00 |
+| MTP 1/1/2, triton attention (the card's) | 44.5 | 1.00 |
+| DFlash, 8 draft tokens (the card's) | 38.1 | 1.00 |
+| DFlash, 12 | 35.1 | 1.00 |
+
+Two unrelated drafts under two attention backends, and not one token
+accepted: the fault sits in what they share on the target's side, the
+hidden states both drafts are fed from, or the verify pass itself, not in a
+draft. Without one the model decodes at 72 tok/s (TTFT 63 ms), the top of
+the card's 63-77. `SPEC=off` is the default until that is found.
 
 ## Reference comparison
 
