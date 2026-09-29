@@ -170,9 +170,22 @@ MAMBA_SSM_DTYPE="${MAMBA_SSM_DTYPE:-}"
 MEM_FRACTION="${MEM_FRACTION:-0.80}"
 CHUNKED_PREFILL="${CHUNKED_PREFILL:-8192}"
 PREFILL_CUDA_GRAPH="${PREFILL_CUDA_GRAPH:-0}"
-# Context: empty = the model's own maximum (config.json). The card tested 32K.
+# Context: empty = the model's own maximum (config.json: 262,144).
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-}"
+# YaRN RoPE scaling past 262K (Ornith's card: validated, factor 4 = ~1M).
+# Static in SGLang, so it applies to every request and can cost a little
+# quality on ordinary lengths: set it only for workloads that need it, with
+# the factor sized to them (2 for ~512K). Empty = off. Sets CONTEXT_LENGTH to
+# factor x 262144 unless given.
+YARN_FACTOR="${YARN_FACTOR:-}"
+if [ -n "$YARN_FACTOR" ] && [ -z "$CONTEXT_LENGTH" ]; then
+  CONTEXT_LENGTH=$(awk -v f="$YARN_FACTOR" 'BEGIN { printf "%d", f * 262144 }')
+fi
 
+# Parsers as Ornith's card (reasoning in reasoning_content, <tool_call> blocks
+# as tool_calls). Sampling: --sampling-defaults model takes the checkpoint's
+# generation_config; the card recommends temperature 0.6, top_p 0.95,
+# top_k 20 for general use (1.0 to reproduce its benchmarks).
 REASONING_PARSER="${REASONING_PARSER:-qwen3}"
 TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-qwen3_coder}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
@@ -180,6 +193,7 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 # Environment of the server process, set just before it starts.
 model_env() {
   export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+  [ -n "$YARN_FACTOR" ] && export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
   if [ -n "$DRAFT_VOCAB" ] && [ ! -f "$DRAFT_VOCAB" ]; then
     echo "DRAFT_VOCAB=$DRAFT_VOCAB: no such file - see models/vocab/README.md" >&2
     exit 1
@@ -233,6 +247,9 @@ model_args() {
     )
     [ -n "$DRAFT_VOCAB" ] && args+=(--speculative-token-map "$DRAFT_VOCAB")
   fi
+  if [ -n "$YARN_FACTOR" ]; then
+    args+=(--json-model-override-args "{\"rope_scaling\": {\"rope_type\": \"yarn\", \"factor\": $YARN_FACTOR, \"original_max_position_embeddings\": 262144}}")
+  fi
   [ -n "$REASONING_PARSER" ] && args+=(--reasoning-parser "$REASONING_PARSER")
   [ -n "$TOOL_CALL_PARSER" ] && args+=(--tool-call-parser "$TOOL_CALL_PARSER")
   return 0
@@ -246,5 +263,5 @@ model_summary() {
     dflash) spec="DFlash, $DRAFT_TOKENS draft tokens" ;;
     mtp) spec="MTP $MTP_STEPS/1/$MTP_DRAFT_TOKENS, draft vocab $vocab, heads target $([ "$FP8_HEAD" = 1 ] && echo FP8 || echo BF16)" ;;
   esac
-  echo "weights $WEIGHTS (quantization ${QUANTIZATION:-from checkpoint}$([ "$NVFP4_SCALES" = 1 ] && echo ", NVFP4 per-shard scales kept")), MoE ${MOE_RUNNER_BACKEND:-auto}, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE; $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
+  echo "weights $WEIGHTS (quantization ${QUANTIZATION:-from checkpoint}$([ "$NVFP4_SCALES" = 1 ] && echo ", NVFP4 per-shard scales kept")), MoE ${MOE_RUNNER_BACKEND:-auto}, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE$([ -n "$YARN_FACTOR" ] && echo ", YaRN x$YARN_FACTOR"); $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
 }
