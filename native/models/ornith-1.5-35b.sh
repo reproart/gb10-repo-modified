@@ -161,6 +161,17 @@ FP8_HEAD="${FP8_HEAD:-0}"
 # w4a16 answers stayed garbage with it, so that was not the fault; off.
 NVFP4_SCALES="${NVFP4_SCALES:-0}"
 
+# FP8 for the layers the FP8 checkpoint keeps in BF16. Its ignore list:
+# every linear_attn.* (the GDN projections in_proj_qkvz, in_proj_ba,
+# out_proj), routers, lm_head, MTP, vision. The GDN projections are 37% of
+# a decode step on sm80 WMMA BF16 kernels (RESULTS). FP8_SIDE=1 converts
+# them at load to FP8 weight-only, one scale per output channel, on SGLang's
+# FP8 Marlin GEMM (patches/gb10_fp8_side.py, as the Flash-Next profile does:
+# there ~39 -> ~16 ms a step, HumanEval unchanged). Activations stay BF16
+# (the checkpoint's own FP8 layers quantize them per token). Lossy: off
+# until measured.
+FP8_SIDE="${FP8_SIDE:-0}"
+
 # Concurrency: GDN state slots, 5 per running request with a draft (extra_buffer)
 # plus one to keep a finished turn's state for the next one, as in the 27B
 # profile. The boot log's mamba pool line says what the cap costs; the KV
@@ -213,12 +224,18 @@ model_env() {
     echo "FP8_HEAD=1 needs SPEC=mtp in this profile" >&2
     exit 1
   fi
+  if [ "$FP8_SIDE" = 1 ]; then
+    export GB10_FP8_SIDE=1
+    export GB10_FP8_SIDE_TARGET=sglang.srt.models.qwen3_5:Qwen3_5MoeForConditionalGeneration
+  else
+    unset GB10_FP8_SIDE GB10_FP8_SIDE_TARGET
+  fi
   if [ "$NVFP4_SCALES" = 1 ]; then
     export GB10_NVFP4_SCALES=1
   else
     unset GB10_NVFP4_SCALES
   fi
-  if [ -n "${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_NVFP4_SCALES:-}" ]; then
+  if [ -n "${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_NVFP4_SCALES:-}${GB10_FP8_SIDE:-}" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -269,5 +286,5 @@ model_summary() {
     dflash) spec="DFlash, $DRAFT_TOKENS draft tokens" ;;
     mtp) spec="MTP $MTP_STEPS/1/$MTP_DRAFT_TOKENS, draft vocab $vocab, heads target $([ "$FP8_HEAD" = 1 ] && echo FP8 || echo BF16)" ;;
   esac
-  echo "weights $WEIGHTS (quantization ${QUANTIZATION:-from checkpoint}$([ "$NVFP4_SCALES" = 1 ] && echo ", NVFP4 per-shard scales kept")), MoE ${MOE_RUNNER_BACKEND:-auto}, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE$([ -n "$YARN_FACTOR" ] && echo ", YaRN x$YARN_FACTOR"); $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
+  echo "weights $WEIGHTS (quantization ${QUANTIZATION:-from checkpoint}$([ "$NVFP4_SCALES" = 1 ] && echo ", NVFP4 per-shard scales kept")$([ "$FP8_SIDE" = 1 ] && echo ", BF16 GDN projections -> FP8 Marlin")), MoE ${MOE_RUNNER_BACKEND:-auto}, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE$([ -n "$YARN_FACTOR" ] && echo ", YaRN x$YARN_FACTOR"); $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
 }
