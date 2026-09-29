@@ -564,19 +564,20 @@ service can run.
 ### Ornith 1.5 35B-A3B
 
 [`models/ornith-1.5-35b.sh`](models/ornith-1.5-35b.sh): a Qwen3.5-35B-A3B
-finetune (hybrid GDN, 256-expert MoE, ~3B active) in r0b0tlab's NVFP4 W4A16
-quantization (23 GB), with its BF16 MTP head. Flags from the checkpoint's
-card (validated there on a DGX Spark with an older SGLang): MoE on `marlin`
-(auto picks `flashinfer_trtllm`, which has no W4A16 path), FP8 KV, MTP with
-1 step / 2 draft tokens. Attention is `flashinfer` as in the 27B profile of
-the same family (`ATTENTION_BACKEND=triton` is the card's). Not measured
-here yet; the profile lists what to sweep (`MTP_STEPS`, `DRAFT_VOCAB` if the
-tokenizer matches Qwen3.8's, `FP8_HEAD`).
+finetune (hybrid GDN, 256-expert MoE, ~3B active, a reasoning model) in
+r0b0tlab's NVFP4 W4A16 quantization (23 GB), sped up by Ornith AI's DFlash
+draft (`SPEC=dflash`, default) or the checkpoint's own MTP head
+(`SPEC=mtp`). MoE on `marlin` (auto picks `flashinfer_trtllm`, which has no
+W4A16 path), FP8 KV. First run with MTP: every proposal rejected
+(accept_len 1.00, 46.3 tok/s, 326 aggregate at 16 streams), so MTP now runs
+with the card's triton attention and DFlash is the default
+([RESULTS](results/RESULTS.md#ornith-15-35b-a3b-one-spark-2026-09-29)).
 
 ```bash
-$HF download r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 --revision <sha> \
-  --local-dir /models/r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16
-./serve.sh ornith-1.5-35b                        # serves as "ornith-1.5-35b"
+$HF download r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 --local-dir /models/Ornith-1.5-35B-A3B-NVFP4-W4A16
+$HF download ornith-ai/Ornith-1.5-35B-A3B-DFlash --local-dir /models/Ornith-1.5-35B-A3B-DFlash
+./serve.sh ornith-1.5-35b                        # DFlash, serves as "ornith-1.5-35b"
+SPEC=mtp ./serve.sh ornith-1.5-35b               # the MTP head instead
 ```
 
 ---
