@@ -596,6 +596,9 @@ git clone --depth 1 --branch v0.5.20 https://github.com/sgl-project/sglang ~/sgl
 ~/spark/venv-sglang-0.5.20/bin/python -c 'import site; print(site.getsitepackages()[0])' \
   > "$(~/spark/venv-moe-tune/bin/python -c 'import site; print(site.getsitepackages()[0])')/sglang-venv.pth"
 ~/spark/venv-moe-tune/bin/pip install ray
+# v0.5.20's tuner fails on FP8 per-channel checkpoints (block_shape [0, None])
+# and would time per-tensor scales; this fixes both in the clone:
+python3 scripts/patch-moe-tuner.py ~/sglang-src/benchmark/kernels/fused_moe_triton
 cd ~/sglang-src/benchmark/kernels/fused_moe_triton
 # the server stopped (the tuner needs the GPU); --disable-shared-experts-fusion
 # keeps E=256, the shape the server looks up
