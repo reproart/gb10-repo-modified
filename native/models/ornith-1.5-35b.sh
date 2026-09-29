@@ -43,6 +43,9 @@
 # Flash-Next profile's notes). The card's run of this checkpoint (SGLang
 # 0.5.6.post3) accepted 1.74. Do not serve with SPEC set until that is
 # found; the default is no draft.
+# Then: with no draft too the answer is "òòòò...": the model itself is
+# broken on this build, not the verify pass. The suspect, in 0.5.20's
+# W4A16 Marlin path: one global scale per fused layer (see NVFP4_SCALES).
 
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
@@ -115,6 +118,15 @@ DRAFT_VOCAB="${DRAFT_VOCAB:-}"
 FP8_DRAFT_HEAD="${FP8_DRAFT_HEAD:-1}"
 FP8_HEAD="${FP8_HEAD:-0}"
 
+# Per-shard NVFP4 global scales on the Marlin paths (patches/gb10_nvfp4_scales.py).
+# SGLang fuses q/k/v, GDN in_proj_qkv + in_proj_z, and gate + up (shared and
+# routed experts), which ModelOpt quantized one by one, each with its own
+# global scale; 0.5.20's W4A16 Marlin path keeps one per fused layer (the
+# max for dense layers, the gate's for experts) and the rest come out
+# scaled wrong. The patch corrects the outputs exactly (column factors for
+# dense layers, the down projection's scale for experts). 0 = stock.
+NVFP4_SCALES="${NVFP4_SCALES:-1}"
+
 # Concurrency: GDN state slots, 5 per running request with a draft (extra_buffer)
 # plus one to keep a finished turn's state for the next one, as in the 27B
 # profile. The boot log's mamba pool line says what the cap costs; the KV
@@ -153,7 +165,12 @@ model_env() {
     echo "FP8_HEAD=1 needs SPEC=mtp in this profile" >&2
     exit 1
   fi
-  if [ -n "${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}" ]; then
+  if [ "$NVFP4_SCALES" = 1 ]; then
+    export GB10_NVFP4_SCALES=1
+  else
+    unset GB10_NVFP4_SCALES
+  fi
+  if [ -n "${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_NVFP4_SCALES:-}" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -201,5 +218,5 @@ model_summary() {
     dflash) spec="DFlash, $DRAFT_TOKENS draft tokens" ;;
     mtp) spec="MTP $MTP_STEPS/1/$MTP_DRAFT_TOKENS, draft vocab $vocab, heads target $([ "$FP8_HEAD" = 1 ] && echo FP8 || echo BF16)" ;;
   esac
-  echo "NVFP4 W4A16 (${QUANTIZATION:-from checkpoint}), MoE $MOE_RUNNER_BACKEND, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE; $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
+  echo "NVFP4 W4A16 (${QUANTIZATION:-from checkpoint}; per-shard scales $([ "$NVFP4_SCALES" = 1 ] && echo kept || echo "stock (max/gate)")), MoE $MOE_RUNNER_BACKEND, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE; $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
 }
