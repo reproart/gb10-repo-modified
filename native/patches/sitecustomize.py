@@ -52,3 +52,9 @@ if os.environ.get("GB10_SKINNY_BF16") == "1":
 
     gb10_ple_mmap.install_import_hook(gb10_skinny.TARGET_MODULE, gb10_skinny.apply_target)
     gb10_ple_mmap.install_import_hook(gb10_skinny.MTP_MODULE, gb10_skinny.apply_mtp)
+
+if os.environ.get("GB10_NVFP4_SCALES") == "1":
+    import gb10_nvfp4_scales
+    import gb10_ple_mmap
+
+    gb10_ple_mmap.install_import_hook(gb10_nvfp4_scales.TARGET_MODULE, gb10_nvfp4_scales.apply)

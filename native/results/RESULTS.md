@@ -899,6 +899,20 @@ number." (greedy, thinking off) came back as one token repeated,
 NEXTN collapse" looked on Flash-Next (NaN routing; fixed there in 0.5.20's
 moe_fused_gate and route_radix), but this is the W4A16 / Marlin MoE path.
 
+And with no draft the same question returns the same `òòòò...`: the model
+itself is broken on this build, and the 72 tok/s above is speed on garbage.
+The suspect is in 0.5.20's W4A16 Marlin path. SGLang fuses q/k/v, GDN
+in_proj_qkv + in_proj_z and every gate + up into one GEMM, while ModelOpt
+quantized each Hugging Face Linear on its own, with its own FP32 global
+scale; the Marlin path keeps one per fused layer: the max over the shards
+for dense layers (with a warning, "weight_scale_2 differs across fused
+parallel layers"), the gate's for experts ("w1_weight_scale_2 must match
+w3_weight_scale_2"). The card's SGLang 0.5.6 ran these layers on FlashInfer
+CUTLASS instead. `patches/gb10_nvfp4_scales.py` (`NVFP4_SCALES`, default on
+in this profile) corrects both exactly: dense output column blocks times
+g_i / g_max, and each expert's down-projection global scale times
+g_up / g_gate (silu(gate) * up is linear in up). To confirm on the Spark.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |

@@ -569,8 +569,10 @@ r0b0tlab's NVFP4 W4A16 quantization (23 GB). MoE on `marlin` (auto picks
 `flashinfer_trtllm`, which has no W4A16 path), FP8 KV. **72 tok/s**
 single-stream with no draft, the default: Ornith AI's DFlash draft
 (`SPEC=dflash`) and the checkpoint's MTP head (`SPEC=mtp`) are wired in, but
-on this build no draft token is ever accepted, whichever draft or attention
-backend, so each only costs time
+on this build no draft token is ever accepted, and the model's answers are
+garbage even without a draft: 0.5.20's W4A16 Marlin path keeps one global
+scale per fused layer, which `NVFP4_SCALES` (default on,
+`patches/gb10_nvfp4_scales.py`) corrects; to be confirmed
 ([RESULTS](results/RESULTS.md#ornith-15-35b-a3b-one-spark-2026-09-29)).
 
 ```bash
@@ -711,6 +713,7 @@ patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                gb10_fp8_side.py: BF16 side layers and lm_heads to FP8 Marlin ·
                gb10_skinny.py (+ its kernel): few-row BF16 GEMM for routers ·
                gb10_fp8_hc.py (+ its kernel): FP8 hyper-connection mix ·
+               gb10_nvfp4_scales.py: per-shard NVFP4 scales on Marlin ·
                sitecustomize.py (loads them) · test_*.py (CPU)
 scripts/       00-check-host · 01-install · serve-sglang · install-service
                build-manifest · lib/config.sh (shared defaults)
