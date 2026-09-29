@@ -893,6 +893,12 @@ hidden states both drafts are fed from, or the verify pass itself, not in a
 draft. Without one the model decodes at 72 tok/s (TTFT 63 ms), the top of
 the card's 63-77. `SPEC=off` is the default until that is found.
 
+It is the verify pass: with `SPEC=mtp`, "What is 19*23? Answer with just the
+number." (greedy, thinking off) came back as one token repeated,
+`òòòò...` for all 32 tokens. Output stuck on one token is how the "GB10
+NEXTN collapse" looked on Flash-Next (NaN routing; fixed there in 0.5.20's
+moe_fused_gate and route_radix), but this is the W4A16 / Marlin MoE path.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |

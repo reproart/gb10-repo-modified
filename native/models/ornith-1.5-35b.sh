@@ -37,10 +37,12 @@
 #   SPEC=mtp 1/1/2, triton        44.5, accept_len 1.00
 #   SPEC=dflash, 8 / 12 tokens    38.1 / 35.1, accept_len 1.00
 # Two different drafts under two attention backends, and not one token
-# accepted: the fault is in what they share, the target's side (the hidden
-# states both drafts read, or its verify pass), not in a draft. The card's
-# run of this checkpoint (SGLang 0.5.6.post3) accepted 1.74. Until found,
-# the default is no draft.
+# accepted. With SPEC=mtp the answer itself is garbage: "What is 19*23?"
+# (greedy) returns one token repeated ("òòòò..."), so the target's verify
+# pass is broken, not a draft (the look of the "GB10 NEXTN collapse" in the
+# Flash-Next profile's notes). The card's run of this checkpoint (SGLang
+# 0.5.6.post3) accepted 1.74. Do not serve with SPEC set until that is
+# found; the default is no draft.
 
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
