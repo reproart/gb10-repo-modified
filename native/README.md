@@ -597,10 +597,15 @@ git clone --depth 1 --branch v0.5.20 https://github.com/sgl-project/sglang ~/sgl
   > "$(~/spark/venv-moe-tune/bin/python -c 'import site; print(site.getsitepackages()[0])')/sglang-venv.pth"
 ~/spark/venv-moe-tune/bin/pip install ray
 cd ~/sglang-src/benchmark/kernels/fused_moe_triton
-~/spark/venv-moe-tune/bin/python tuning_fused_moe_triton.py --help   # flags differ by version
-# typically: --model /models/Ornith-1.5-35B-A3B-FP8 --tp-size 1 --dtype fp8_w8a8 --per-channel-quant --tune
-# then copy the E=256,N=512,...json files (and _down) it writes to
-#   native/moe-configs/configs/triton_<version>/   (the version in the boot log's path)
+# the server stopped (the tuner needs the GPU); --disable-shared-experts-fusion
+# keeps E=256, the shape the server looks up
+~/spark/venv-moe-tune/bin/python tuning_fused_moe_triton.py \
+  --model /models/Ornith-1.5-35B-A3B-FP8 --tp-size 1 --dtype fp8_w8a8 --per-channel-quant \
+  --disable-shared-experts-fusion --tune \
+  --batch-sizes 1 2 4 8 16 24 32 48 64 96 128 256 512 1024 2048 4096 8192
+# then copy the E=256,N=512,...json file(s) it writes to
+#   native/moe-configs/configs/triton_3_7_1/   (the version in the boot log's path)
+# and restart: the boot log then says "Using MoE kernel config from .../moe-configs/..."
 ```
 
 ---
