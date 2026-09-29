@@ -449,7 +449,7 @@ class TargetSpecTest(unittest.TestCase):
                                            "Qwen3_5MoeForConditionalGeneration"))
         seen = []
 
-        class Qwen3_5MoeForConditionalGeneration:
+        class Qwen3_5MoeForConditionalGeneration(torch.nn.Module):
             def load_weights(self, weights):
                 seen.append("orig")
 
