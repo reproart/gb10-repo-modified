@@ -436,6 +436,46 @@ class HeadTest(unittest.TestCase):
         self.assert_close(m.lm_head, self.head_w)
 
 
+@unittest.skipIf(torch is None, "torch not installed")
+class TargetSpecTest(unittest.TestCase):
+    def test_other_model_class(self):
+        import types
+
+        import gb10_fp8_side as f
+
+        os.environ["GB10_FP8_SIDE_TARGET"] = "sglang.srt.models.qwen3_5:Qwen3_5MoeForConditionalGeneration"
+        self.addCleanup(os.environ.pop, "GB10_FP8_SIDE_TARGET")
+        self.assertEqual(f.target_spec(), ("sglang.srt.models.qwen3_5",
+                                           "Qwen3_5MoeForConditionalGeneration"))
+        seen = []
+
+        class Qwen3_5MoeForConditionalGeneration:
+            def load_weights(self, weights):
+                seen.append("orig")
+
+        mod = types.ModuleType("sglang.srt.models.qwen3_5")
+        mod.Qwen3_5MoeForConditionalGeneration = Qwen3_5MoeForConditionalGeneration
+        parts = f._sglang_parts
+        f._sglang_parts = lambda: dict(is_linear=lambda m: False, is_unquantized=lambda q: True,
+                                       prepare_fn=None, apply_fn=None)
+        self.addCleanup(setattr, f, "_sglang_parts", parts)
+        os.environ["GB10_FP8_SIDE"] = "1"
+        self.addCleanup(os.environ.pop, "GB10_FP8_SIDE")
+        f.apply_target(mod)
+        Qwen3_5MoeForConditionalGeneration().load_weights([])
+        self.assertEqual(seen, ["orig"])          # wrapped, converted nothing here
+        with self.assertRaises(RuntimeError):
+            f.apply_target(types.ModuleType("sglang.srt.models.qwen3_5"))
+
+    def test_bad_spec(self):
+        import gb10_fp8_side as f
+
+        os.environ["GB10_FP8_SIDE_TARGET"] = "no_colon"
+        self.addCleanup(os.environ.pop, "GB10_FP8_SIDE_TARGET")
+        with self.assertRaises(RuntimeError):
+            f.target_spec()
+
+
 class HookOrderTest(unittest.TestCase):
     def test_two_hooks_on_one_module_both_run_in_order(self):
         import gb10_ple_mmap as g

@@ -23,6 +23,9 @@ conversion and skip is logged. An output width off Marlin's 64-column tile
 GDN's fused BF16 in_proj buffer is dropped for converted layers, so both
 projections go through the FP8 path.
 The target and, unless GB10_FP8_SIDE_MTP=0, the MTP draft are converted.
+Another model with the same kind of BF16 layers (e.g. a Qwen3.5 MoE FP8
+checkpoint that keeps its GDN projections in BF16): GB10_FP8_SIDE_TARGET=
+<module>:<class>; its MTP draft is then left alone.
 
 The output heads (lm_head, BF16 [vocab x hidden]) are separate switches, since
 the target head decides every emitted token and the draft head only proposes:
@@ -345,13 +348,24 @@ def _wrap_load_weights(cls, label, *, side=True, target_head=False):
     cls.load_weights = load_weights
 
 
+def target_spec() -> tuple:
+    """(module, class) of the target model to convert: Qwen4-Exp by default,
+    another model with GB10_FP8_SIDE_TARGET=<module>:<class> (e.g.
+    sglang.srt.models.qwen3_5:Qwen3_5MoeForConditionalGeneration)."""
+    spec = os.environ.get("GB10_FP8_SIDE_TARGET") or f"{TARGET_MODULE}:Qwen4ExpForConditionalGeneration"
+    module, _, cls = spec.partition(":")
+    if not module or not cls:
+        raise RuntimeError(f"GB10_FP8_SIDE_TARGET must be <module>:<class>, not {spec!r}")
+    return module, cls
+
+
 def apply_target(mod) -> None:
-    if not hasattr(mod, "Qwen4ExpForConditionalGeneration"):
-        raise RuntimeError("GB10_FP8_SIDE: Qwen4ExpForConditionalGeneration not found "
+    _, cls_name = target_spec()
+    if not hasattr(mod, cls_name):
+        raise RuntimeError(f"GB10_FP8_SIDE: {mod.__name__}.{cls_name} not found "
                            "(written for SGLang 0.5.20); unset GB10_FP8_SIDE.")
     head = target_head_mode() == "load"
-    _wrap_load_weights(mod.Qwen4ExpForConditionalGeneration, "target", side=enabled(),
-                       target_head=head)
+    _wrap_load_weights(getattr(mod, cls_name), "target", side=enabled(), target_head=head)
     logger.info("GB10_FP8_SIDE: target %s will load as FP8 (Marlin)",
                 " and ".join(x for x, on in (("BF16 side layers", enabled()), ("lm_head", head)) if on))
 
