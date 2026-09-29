@@ -1,13 +1,12 @@
 # shellcheck shell=bash disable=SC2034  # read by scripts/serve-sglang.sh
 # Profile: Ornith-1.5-35B-A3B (a Qwen3.5-35B-A3B finetune: hybrid GDN +
 # softmax attention, 256-expert MoE, ~3B active, multimodal, a reasoning
-# model). Ornith AI's FP8 checkpoint by default (WEIGHTS); r0b0tlab's NVFP4 W4A16 checkpoint answers garbage on SGLang
-# 0.5.20 (see "Measured here" below). Speculative decoding (Ornith's DFlash
-# draft, or the checkpoint's MTP head) is wired in, off until the target is
-# confirmed to answer right.
+# model). Ornith AI's FP8 checkpoint by default (WEIGHTS), with Ornith AI's
+# DFlash draft (SPEC), which doubles single-stream decode. r0b0tlab's NVFP4
+# W4A16 checkpoint answers garbage on SGLang 0.5.20 (see "Measured here").
 #
-#   ./serve.sh ornith-1.5-35b                    # FP8 checkpoint, no draft
-#   SPEC=dflash ./serve.sh ornith-1.5-35b        # with the DFlash draft
+#   ./serve.sh ornith-1.5-35b                    # FP8 + DFlash: 83.8 tok/s
+#   SPEC=off ./serve.sh ornith-1.5-35b           # no draft: 39.8
 #
 # Weights, once:
 #   hf download ornith-ai/Ornith-1.5-35B-A3B \
@@ -33,21 +32,17 @@
 # layers on the FP4 Marlin GEMM), DFLASH. Each value is "${VAR:-default}":
 #   DRAFT_TOKENS=12 ./serve.sh ornith-1.5-35b
 #
-# Measured here (2026-09-29), single-stream decode, greedy:
-#   SPEC=off                      72.0 tok/s
-#   SPEC=mtp 1/1/2, flashinfer    46.3, accept_len 1.00
-#   SPEC=mtp 1/1/2, triton        44.5, accept_len 1.00
-#   SPEC=dflash, 8 / 12 tokens    38.1 / 35.1, accept_len 1.00
-# Two different drafts under two attention backends, and not one token
-# accepted. With SPEC=mtp the answer itself is garbage: "What is 19*23?"
-# (greedy) returns one token repeated ("òòòò..."), so the target's verify
-# pass is broken, not a draft (the look of the "GB10 NEXTN collapse" in the
-# Flash-Next profile's notes). The card's run of this checkpoint (SGLang
-# 0.5.6.post3) accepted 1.74. Do not serve with SPEC set until that is
-# found; the default is no draft.
-# Then: with no draft too the answer is "òòòò...": the model itself is
-# broken on this build, not the verify pass. The suspect, in 0.5.20's
-# W4A16 Marlin path: one global scale per fused layer (see NVFP4_SCALES).
+# Measured here (2026-09-29), WEIGHTS=fp8 (Ornith AI's FP8 checkpoint), greedy:
+#   decode tok/s   accept_len   aggregate at 16 streams
+#   SPEC=off              39.8       -            274
+#   SPEC=dflash, 8        83.8   4.5-5.5          345   (the default)
+#   SPEC=dflash, 12       76.7   4.3-5.4          306
+#   SPEC=dflash, 16       75.7   5.7-6.6          266
+# Prefill 3.4-6.0K tok/s either way; the GPU reached 83-84 C at 101K.
+# The r0b0tlab W4A16 checkpoint (WEIGHTS=w4a16) answered one token repeated
+# ("òòòò...") on SGLang 0.5.20, with or without a draft (72 tok/s of
+# garbage); every draft looked rejected (accept_len 1.00) because of it.
+# NVFP4_SCALES did not change that.
 
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
@@ -90,7 +85,11 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-ornith-1.5-35b}"
 #           profile runs the same algorithm with z-lab's DFlash2.
 #   mtp     the checkpoint's BF16 MTP head (NEXTN, served as EAGLE)
 #   off     none
-SPEC="${SPEC:-off}"
+if [ "$WEIGHTS" = w4a16 ]; then
+  SPEC="${SPEC:-off}"
+else
+  SPEC="${SPEC:-dflash}"
+fi
 case "$SPEC" in
   dflash) DRAFT_DIR="${DRAFT_DIR:-/models/Ornith-1.5-35B-A3B-DFlash}" ;;
   mtp|off) DRAFT_DIR="" ;;
@@ -100,6 +99,8 @@ esac
 # is 8). On the 27B with DFlash2, 11-16 beat the block size single-stream
 # (models/qwen3.8-27b.sh); worth the same sweep here. A value other than the
 # draft's block size logs "DFLASH block size mismatch" at boot; harmless.
+# Measured on FP8: 8 wins at every level (83.8 single, 345 at 16 streams),
+# 12 and 16 accept more tokens per step but lose more to the longer verify.
 DRAFT_TOKENS="${DRAFT_TOKENS:-8}"
 
 # Quantization: empty = read from the checkpoint (w4a16: hf_quant_config.json,

@@ -921,6 +921,35 @@ FP8 at load (`--quantization fp8`, online FP8 for dense layers and MoE in
 is also the target the DFlash draft was trained against. `WEIGHTS=w4a16`
 keeps the r0b0tlab checkpoint for a newer SGLang.
 
+**Ornith AI's FP8 checkpoint** (ornith-ai/Ornith-1.5-35B-A3B-FP8,
+quantization read from the checkpoint, MoE backend SGLang's choice): "437",
+right. With Ornith AI's DFlash draft:
+
+| | decode tok/s | accept_len | aggregate 1 / 2 / 4 / 8 / 16 streams | TTFT |
+|---|---:|---:|---|---:|
+| no draft | 39.8 | - | 39.1 / 74.9 / 121.8 / 182.6 / 274.1 | 80 ms |
+| **DFlash, 8 draft tokens** | **83.8** | 4.5-5.5 | 71.4 / 114.8 / 158.8 / 245.8 / **345.4** | 102 ms |
+| DFlash, 12 | 76.7 | 4.3-5.4 | 62.6 / 95.4 / 142.9 / 209.1 / 305.8 | 108 ms |
+| DFlash, 16 | 75.7 | 5.7-6.6 | 66.7 / 94.0 / 129.6 / 184.8 / 266.0 | 112 ms |
+
+DFlash at 8 (the card's block size) wins at every level: x2.1 single-stream,
++26% at 16 streams; 12 and 16 accept more per step and lose more to the
+longer verify. It is the profile's default now. Prefill 3.4-6.5K tok/s in
+every run, and the GPU reached 83-84 C at the 101K prompt.
+
+Decode profile (DFlash 16, 40 steps, ~65 ms each under the profiler):
+
+| Kernel group | wall ms/step | share |
+|---|---:|---:|
+| MoE, `fused_moe_kernel` (Triton, FP8), 80 calls, ~390 us each | ~30.8 | 47% |
+| BF16 dense GEMMs on sm80 WMMA: 43 calls at ~411 us + 110 at ~62 us | ~24 | 37% |
+| FP8 dense GEMMs (CUTLASS) + per-token activation quant | ~2.9 | 4% |
+| GDN, norms | ~5.6 | 9% |
+
+The BF16 dense GEMMs are layers the FP8 checkpoint keeps in BF16 (its
+ignore list names them); per-channel FP8 on Marlin took the same kind of
+layers from ~39 to ~16 ms a step on Flash-Next (`FP8_SIDE`).
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
