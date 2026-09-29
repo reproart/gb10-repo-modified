@@ -911,7 +911,15 @@ w3_weight_scale_2"). The card's SGLang 0.5.6 ran these layers on FlashInfer
 CUTLASS instead. `patches/gb10_nvfp4_scales.py` (`NVFP4_SCALES`, default on
 in this profile) corrects both exactly: dense output column blocks times
 g_i / g_max, and each expert's down-projection global scale times
-g_up / g_gate (silu(gate) * up is linear in up). To confirm on the Spark.
+g_up / g_gate (silu(gate) * up is linear in up).
+
+Result: the same `òòòò...` with the patch, so the scales were not the fault
+(the patch stays, off). Not chased further: the profile now defaults to the
+original BF16 weights (ornith-ai/Ornith-1.5-35B-A3B, 67 GB) quantized to
+FP8 at load (`--quantization fp8`, online FP8 for dense layers and MoE in
+0.5.20; the FP8 path is the one Qwen3.8-27B-FP8 runs on this GB10), which
+is also the target the DFlash draft was trained against. `WEIGHTS=w4a16`
+keeps the r0b0tlab checkpoint for a newer SGLang.
 
 ## Reference comparison
 

@@ -1,16 +1,19 @@
 # shellcheck shell=bash disable=SC2034  # read by scripts/serve-sglang.sh
 # Profile: Ornith-1.5-35B-A3B (a Qwen3.5-35B-A3B finetune: hybrid GDN +
 # softmax attention, 256-expert MoE, ~3B active, multimodal, a reasoning
-# model) in NVFP4 W4A16. Speculative decoding (Ornith's DFlash draft or the
-# checkpoint's own MTP head) is wired in but off by default: on this build
-# no draft token is ever accepted (see "Measured here" below).
+# model). The original BF16 weights quantized to FP8 at load by default
+# (WEIGHTS); r0b0tlab's NVFP4 W4A16 checkpoint answers garbage on SGLang
+# 0.5.20 (see "Measured here" below). Speculative decoding (Ornith's DFlash
+# draft, or the checkpoint's MTP head) is wired in, off until the target is
+# confirmed to answer right.
 #
-#   ./serve.sh ornith-1.5-35b                    # no draft: 72 tok/s
-#   SPEC=dflash ./serve.sh ornith-1.5-35b        # to test a fix
+#   ./serve.sh ornith-1.5-35b                    # BF16 -> FP8, no draft
+#   SPEC=dflash ./serve.sh ornith-1.5-35b        # with the DFlash draft
 #
 # Weights, once:
-#   hf download r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 \
-#     --local-dir /models/Ornith-1.5-35B-A3B-NVFP4-W4A16      # 23 GB
+#   hf download ornith-ai/Ornith-1.5-35B-A3B \
+#     --local-dir /models/Ornith-1.5-35B-A3B                   # 67 GB, BF16
+#   (r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16, 23 GB: WEIGHTS=w4a16)
 #   hf download ornith-ai/Ornith-1.5-35B-A3B-DFlash \
 #     --local-dir /models/Ornith-1.5-35B-A3B-DFlash           # the draft
 # Both MIT. The W4A16 checkpoint is r0b0tlab's community quantization, not
@@ -50,7 +53,30 @@
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
 
-MODEL_DIR="${MODEL_DIR:-/models/Ornith-1.5-35B-A3B-NVFP4-W4A16}"
+# Which weights:
+#   bf16   ornith-ai/Ornith-1.5-35B-A3B, the original (67 GB), quantized to
+#          FP8 at load (--quantization fp8: per-tensor FP8 weights, ~35 GB
+#          resident; SGLang 0.5.20 has online FP8 for dense layers and MoE).
+#          The DFlash draft was trained against this target. The default.
+#   w4a16  r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16. Broken on SGLang 0.5.20:
+#          every answer is one token repeated, with or without a draft, and
+#          NVFP4_SCALES did not change that. Kept to test a newer SGLang.
+#   <path> another checkpoint directory (set QUANTIZATION / MOE_RUNNER_BACKEND)
+#   hf download ornith-ai/Ornith-1.5-35B-A3B --local-dir /models/Ornith-1.5-35B-A3B
+WEIGHTS="${WEIGHTS:-bf16}"
+case "$WEIGHTS" in
+  bf16)
+    MODEL_DIR="${MODEL_DIR:-/models/Ornith-1.5-35B-A3B}"
+    QUANTIZATION="${QUANTIZATION-fp8}"
+    MOE_RUNNER_BACKEND="${MOE_RUNNER_BACKEND-}" ;;
+  w4a16)
+    MODEL_DIR="${MODEL_DIR:-/models/Ornith-1.5-35B-A3B-NVFP4-W4A16}" ;;
+  /*)
+    MODEL_DIR="${MODEL_DIR:-$WEIGHTS}" ;;
+  *)
+    echo "WEIGHTS must be bf16, w4a16 or an absolute path, not '$WEIGHTS'" >&2
+    exit 2 ;;
+esac
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-ornith-1.5-35b}"
 
 # Speculative decoding:
@@ -71,13 +97,14 @@ esac
 # draft's block size logs "DFLASH block size mismatch" at boot; harmless.
 DRAFT_TOKENS="${DRAFT_TOKENS:-8}"
 
-# Quantization: empty = read from the checkpoint (hf_quant_config.json,
-# ModelOpt W4A16_NVFP4), as the card does.
+# Quantization: empty = read from the checkpoint (w4a16: hf_quant_config.json,
+# ModelOpt W4A16_NVFP4); bf16 sets fp8 above.
 QUANTIZATION="${QUANTIZATION:-}"
-# MoE expert kernels. SGLang's auto picks flashinfer_trtllm on Blackwell,
-# which has no NVFP4 W4A16 MoE path (the card's note, and 0.5.20's
-# ModelOptNvFp4FusedMoEMethod); marlin is the W4A16 kernel.
-MOE_RUNNER_BACKEND="${MOE_RUNNER_BACKEND:-marlin}"
+# MoE expert kernels. Empty = SGLang's choice (bf16 + online FP8). For w4a16:
+# SGLang's auto picks flashinfer_trtllm on Blackwell, which has no NVFP4
+# W4A16 MoE path (the card's note, and 0.5.20's ModelOptNvFp4FusedMoEMethod);
+# marlin is the W4A16 kernel.
+MOE_RUNNER_BACKEND="${MOE_RUNNER_BACKEND-marlin}"
 # Attention. dflash: flashinfer, what the Qwen3.8-27B profile (same Qwen3.5
 # hybrid family) runs with DFlash2 on this GB10. mtp: triton, the card's;
 # with flashinfer every MTP proposal was rejected here (accept_len 1.00).
@@ -124,8 +151,9 @@ FP8_HEAD="${FP8_HEAD:-0}"
 # global scale; 0.5.20's W4A16 Marlin path keeps one per fused layer (the
 # max for dense layers, the gate's for experts) and the rest come out
 # scaled wrong. The patch corrects the outputs exactly (column factors for
-# dense layers, the down projection's scale for experts). 0 = stock.
-NVFP4_SCALES="${NVFP4_SCALES:-1}"
+# dense layers, the down projection's scale for experts). Measured: the
+# w4a16 answers stayed garbage with it, so that was not the fault; off.
+NVFP4_SCALES="${NVFP4_SCALES:-0}"
 
 # Concurrency: GDN state slots, 5 per running request with a draft (extra_buffer)
 # plus one to keep a finished turn's state for the next one, as in the 27B
@@ -178,7 +206,6 @@ model_env() {
 # This model's flags, appended to the common ones in scripts/serve-sglang.sh.
 model_args() {
   args+=(
-    --moe-runner-backend "$MOE_RUNNER_BACKEND"
     --attention-backend "$ATTENTION_BACKEND"
     --kv-cache-dtype "$KV_CACHE_DTYPE"
     --mamba-radix-cache-strategy extra_buffer
@@ -188,6 +215,7 @@ model_args() {
     --chunked-prefill-size "$CHUNKED_PREFILL"
   )
   [ -n "$QUANTIZATION" ] && args+=(--quantization "$QUANTIZATION")
+  [ -n "$MOE_RUNNER_BACKEND" ] && args+=(--moe-runner-backend "$MOE_RUNNER_BACKEND")
   [ -n "$MAMBA_SSM_DTYPE" ] && args+=(--mamba-ssm-dtype "$MAMBA_SSM_DTYPE")
   [ "$PREFILL_CUDA_GRAPH" = 1 ] || args+=(--disable-prefill-cuda-graph)
   if [ "$SPEC" = dflash ]; then
@@ -218,5 +246,5 @@ model_summary() {
     dflash) spec="DFlash, $DRAFT_TOKENS draft tokens" ;;
     mtp) spec="MTP $MTP_STEPS/1/$MTP_DRAFT_TOKENS, draft vocab $vocab, heads target $([ "$FP8_HEAD" = 1 ] && echo FP8 || echo BF16)" ;;
   esac
-  echo "NVFP4 W4A16 (${QUANTIZATION:-from checkpoint}; per-shard scales $([ "$NVFP4_SCALES" = 1 ] && echo kept || echo "stock (max/gate)")), MoE $MOE_RUNNER_BACKEND, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE; $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
+  echo "weights $WEIGHTS (quantization ${QUANTIZATION:-from checkpoint}$([ "$NVFP4_SCALES" = 1 ] && echo ", NVFP4 per-shard scales kept")), MoE ${MOE_RUNNER_BACKEND:-auto}, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE; $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
 }

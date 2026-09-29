@@ -564,22 +564,19 @@ service can run.
 ### Ornith 1.5 35B-A3B
 
 [`models/ornith-1.5-35b.sh`](models/ornith-1.5-35b.sh): a Qwen3.5-35B-A3B
-finetune (hybrid GDN, 256-expert MoE, ~3B active, a reasoning model) in
-r0b0tlab's NVFP4 W4A16 quantization (23 GB). MoE on `marlin` (auto picks
-`flashinfer_trtllm`, which has no W4A16 path), FP8 KV. **72 tok/s**
-single-stream with no draft, the default: Ornith AI's DFlash draft
-(`SPEC=dflash`) and the checkpoint's MTP head (`SPEC=mtp`) are wired in, but
-on this build no draft token is ever accepted, and the model's answers are
-garbage even without a draft: 0.5.20's W4A16 Marlin path keeps one global
-scale per fused layer, which `NVFP4_SCALES` (default on,
-`patches/gb10_nvfp4_scales.py`) corrects; to be confirmed
+finetune (hybrid GDN, 256-expert MoE, ~3B active, a reasoning model). By
+default the original BF16 weights, quantized to FP8 at load; Ornith AI's
+DFlash draft (`SPEC=dflash`) and the checkpoint's MTP head (`SPEC=mtp`) are
+wired in, off until the target is confirmed. r0b0tlab's NVFP4 W4A16
+checkpoint (`WEIGHTS=w4a16`) answers one token repeated on SGLang 0.5.20,
+with or without a draft
 ([RESULTS](results/RESULTS.md#ornith-15-35b-a3b-one-spark-2026-09-29)).
 
 ```bash
-$HF download r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 --local-dir /models/Ornith-1.5-35B-A3B-NVFP4-W4A16
+$HF download ornith-ai/Ornith-1.5-35B-A3B --local-dir /models/Ornith-1.5-35B-A3B
 $HF download ornith-ai/Ornith-1.5-35B-A3B-DFlash --local-dir /models/Ornith-1.5-35B-A3B-DFlash
-./serve.sh ornith-1.5-35b                        # no draft, serves as "ornith-1.5-35b"
-SPEC=dflash ./serve.sh ornith-1.5-35b            # with the DFlash draft (see above)
+./serve.sh ornith-1.5-35b                        # BF16 -> FP8, serves as "ornith-1.5-35b"
+SPEC=dflash ./serve.sh ornith-1.5-35b            # with the DFlash draft
 ```
 
 ---
