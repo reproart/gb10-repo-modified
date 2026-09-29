@@ -950,6 +950,23 @@ The BF16 dense GEMMs are layers the FP8 checkpoint keeps in BF16 (its
 ignore list names them); per-channel FP8 on Marlin took the same kind of
 layers from ~39 to ~16 ms a step on Flash-Next (`FP8_SIDE`).
 
+The ignore list (compressed-tensors FP8: per-channel weights, dynamic
+per-token activations): `lm_head`, routers, `shared_expert_gate`, every
+`linear_attn.*` (the GDN projections), MTP, vision. **`FP8_SIDE=1`**
+(`GB10_FP8_SIDE_TARGET` pointed at Qwen3_5MoeForConditionalGeneration): 117
+GDN projections to FP8 weight-only on Marlin, 2.08 -> 1.04 GiB; "437" right.
+
+| | decode tok/s | accept_len | aggregate 1 / 2 / 4 / 8 / 16 streams |
+|---|---:|---:|---|
+| FP8 + DFlash 8 | 83.8 | 4.5-5.5 | 71.4 / 114.8 / 158.8 / 245.8 / 345.4 |
+| **+ FP8_SIDE** | **97.6** (93.2-102.0) | 4.6-5.5 | **98.0** / 130.2 / 168.4 / 249.0 / **353.0** |
+
++16% single-stream, +37% at the sweep's first level, +2% at 16 streams
+(where the MoE dominates). The boot log also names the MoE's missing
+kernel configs: `Using default MoE kernel config ... E=256,N=512,
+device_name=NVIDIA_GB10,dtype=fp8_w8a8,per_channel_quant=True.json` (and
+`_down`); SGLang 0.5.20 ships a GB10 config only for E=128, N=768.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
