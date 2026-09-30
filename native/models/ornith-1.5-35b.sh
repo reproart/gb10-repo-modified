@@ -177,14 +177,14 @@ FP8_SIDE="${FP8_SIDE:-1}"
 
 # Tuned Triton MoE kernel configs. SGLang 0.5.20 ships none for this MoE on
 # GB10 ("Using default MoE kernel config ... E=256,N=512,device_name=
-# NVIDIA_GB10,dtype=fp8_w8a8,per_channel_quant=True.json" in the boot log),
-# and the MoE is ~47% of a decode step. Files tuned on this machine go in
-# $ROOT/moe-configs/configs/triton_<version>/ (README, "Ornith"); when that
-# directory exists it is SGLANG_MOE_CONFIG_DIR, which replaces SGLang's own
-# directory (fine here: this model has one MoE shape). A file tuned for this
-# model is committed (moe-configs/configs/triton_3_7_1/, ~24 h of tuning);
-# measured within noise of the defaults (96.4 vs 97.6 tok/s single, 361.7
-# vs 353.0 at 16 streams).
+# NVIDIA_GB10,dtype=fp8_w8a8,per_channel_quant=True.json" in the boot log).
+# One tuned on this machine is committed (moe-configs/configs/triton_3_7_1/,
+# ~24 h of tuning), and measured within noise of SGLang's defaults: 93-98
+# against 97.6 tok/s single-stream, 343-362 against 353 at 16 streams. So
+# off by default: MOE_TUNED=1 sets SGLANG_MOE_CONFIG_DIR to MOE_CONFIG_DIR,
+# which replaces SGLang's own config directory for this server (fine here:
+# one MoE shape).
+MOE_TUNED="${MOE_TUNED:-0}"
 MOE_CONFIG_DIR="${MOE_CONFIG_DIR:-$ROOT/moe-configs}"
 
 # Concurrency: GDN state slots, 5 per running request with a draft (extra_buffer)
@@ -239,8 +239,11 @@ model_env() {
     echo "FP8_HEAD=1 needs SPEC=mtp in this profile" >&2
     exit 1
   fi
-  if [ -d "$MOE_CONFIG_DIR/configs" ]; then
+  if [ "$MOE_TUNED" = 1 ]; then
+    [ -d "$MOE_CONFIG_DIR/configs" ] || { echo "MOE_TUNED=1: no $MOE_CONFIG_DIR/configs" >&2; exit 1; }
     export SGLANG_MOE_CONFIG_DIR="$MOE_CONFIG_DIR"
+  else
+    unset SGLANG_MOE_CONFIG_DIR
   fi
   if [ "$FP8_SIDE" = 1 ]; then
     export GB10_FP8_SIDE=1
@@ -304,5 +307,5 @@ model_summary() {
     dflash) spec="DFlash, $DRAFT_TOKENS draft tokens" ;;
     mtp) spec="MTP $MTP_STEPS/1/$MTP_DRAFT_TOKENS, draft vocab $vocab, heads target $([ "$FP8_HEAD" = 1 ] && echo FP8 || echo BF16)" ;;
   esac
-  echo "weights $WEIGHTS (quantization ${QUANTIZATION:-from checkpoint}$([ "$NVFP4_SCALES" = 1 ] && echo ", NVFP4 per-shard scales kept")$([ "$FP8_SIDE" = 1 ] && echo ", BF16 GDN projections -> FP8 Marlin")), MoE ${MOE_RUNNER_BACKEND:-auto}, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE$([ -n "$YARN_FACTOR" ] && echo ", YaRN x$YARN_FACTOR")$([ -d "$MOE_CONFIG_DIR/configs" ] && echo ", MoE configs from $MOE_CONFIG_DIR"); $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
+  echo "weights $WEIGHTS (quantization ${QUANTIZATION:-from checkpoint}$([ "$NVFP4_SCALES" = 1 ] && echo ", NVFP4 per-shard scales kept")$([ "$FP8_SIDE" = 1 ] && echo ", BF16 GDN projections -> FP8 Marlin")), MoE ${MOE_RUNNER_BACKEND:-auto}, attention $ATTENTION_BACKEND, KV $KV_CACHE_DTYPE$([ -n "$YARN_FACTOR" ] && echo ", YaRN x$YARN_FACTOR")$([ "$MOE_TUNED" = 1 ] && echo ", MoE configs from $MOE_CONFIG_DIR"); $spec; cap $MAX_RUNNING (GDN pool $MAMBA_CACHE)"
 }

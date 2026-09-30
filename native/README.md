@@ -584,7 +584,9 @@ SPEC=off ./serve.sh ornith-1.5-35b               # without the draft
 MoE config for this model on GB10 (the boot log says "Using default MoE
 kernel config"), and the MoE is about half of a decode step. SGLang's own
 tuner, from the source of the same version, writes the missing files;
-the profile picks them up from `moe-configs/` (`SGLANG_MOE_CONFIG_DIR`):
+`MOE_TUNED=1` makes the profile load them from `moe-configs/`
+(`SGLANG_MOE_CONFIG_DIR`). The file tuned for Ornith is committed there, but
+measured within noise of SGLang's defaults, so it is off by default:
 
 The tuner imports `ray`, which SGLang itself does not need; it goes into a
 venv of its own that sees the server's packages through a `.pth` file, so
@@ -608,7 +610,7 @@ cd ~/sglang-src/benchmark/kernels/fused_moe_triton
   --batch-sizes 1 2 4 8 16 24 32 48 64 96 128 256 512 1024 2048 4096 8192
 # then copy the E=256,N=512,...json file(s) it writes to
 #   native/moe-configs/configs/triton_3_7_1/   (the version in the boot log's path)
-# and restart: the boot log then says "Using MoE kernel config from .../moe-configs/..."
+# and restart with MOE_TUNED=1: the boot log then says "Using MoE kernel config from .../moe-configs/..."
 # Time: 25 min to 1 h 45 per batch size on GB10 with the default search space,
 # growing with the size, and nothing is written until the last one: do not stop
 # it. The patched tuner also logs each size's winner ("GB10_BEST ..."), so a run
