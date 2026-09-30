@@ -550,7 +550,25 @@ What is left to try:
 - the FP8 projections are already near the weight-read speed for
   in_proj_qkvz (~84 MB, ~310 us ideal, 372 us); out_proj reaches ~60%.
 
-To measure.
+Measured (`bench/perf.py`, draft 11, cap 12; baseline the RadixArk column
+of "draft 11 vs 15" below):
+
+| | Baseline | FP8_SIDE + FP8_DRAFT | + `FP4_GEMM_BACKEND=flashinfer_cudnn` |
+|---|---:|---:|---:|
+| Single-stream decode (700-token code answer) | 74.1 | **77.1** (74.5-78.9) | 74.9 (73.9-79.3) |
+| accept_len there | 8.1-9.1 | 8.2-8.9 | 8.3-9.2 |
+| Sweep, 1 / 2 / 4 streams | 71.2 / 120.5 / 197.3 | **74.1 / 126.9 / 221.2** | 74.4 / 122.0 / 215.2 |
+| 8 / 12 streams | 294.6 / 394.3 | 292.4 / 396.1 | 319.9 / 394.4 |
+| Prefill 2K / 8K | — | 2,724 / 1,672 tok/s | 2,610 / 2,210 tok/s |
+
++4% single-stream, +4-12% at 1-4 streams, flat at 8-12, and the FP8 draft
+keeps its accept_len. `FP8_DRAFT=1` is now the default (it cannot change an
+answer); `FP8_SIDE` stays off (lossy in the target, ~2% of a step). cuDNN
+for the NVFP4 GEMMs gains nothing. `FP4_GEMM_BACKEND=marlin` died in CUDA
+graph warmup: Qwen3.5's dense MLP fuses SiLU with the FP4 quantization of
+down_proj's input and hands it a packed (fp4, scale) tuple without checking
+the backend. The profile now sets `SGLANG_DISABLE_SILU_FP4_QUANT_FUSION=1`
+with marlin; to measure.
 
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
