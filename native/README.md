@@ -609,6 +609,14 @@ cd ~/sglang-src/benchmark/kernels/fused_moe_triton
 # then copy the E=256,N=512,...json file(s) it writes to
 #   native/moe-configs/configs/triton_3_7_1/   (the version in the boot log's path)
 # and restart: the boot log then says "Using MoE kernel config from .../moe-configs/..."
+# Time: 25 min to 1 h 45 per batch size on GB10 with the default search space,
+# growing with the size, and nothing is written until the last one: do not stop
+# it. The patched tuner also logs each size's winner ("GB10_BEST ..."), so a run
+# that had to stop still yields a file:
+#   grep GB10_BEST tune.log | python3 scripts/moe-configs-from-log.py E=256,...json
+# Decode on this profile is at most 16 requests x 8 draft tokens = 128 tokens
+# a step; --batch-sizes 1 2 4 8 16 24 32 48 64 96 128 covers it in about half
+# the time (prefill then uses the 128 config).
 ```
 
 ---

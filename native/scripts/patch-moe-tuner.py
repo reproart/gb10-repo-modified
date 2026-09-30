@@ -15,6 +15,10 @@ activations), has two faults:
   * benchmark_config builds per-channel scales and dynamic activations only
     for int8 w8a8; FP8 with --per-channel-quant got per-tensor scales and a
     static activation scale, i.e. not the kernel path the server runs.
+  * results live in memory until the last batch size is done (1-2 h per
+    size on GB10 with the default search space); each size's winner is now
+    printed as "GB10_BEST <M> <config json> <us>", so a stopped run's log
+    rebuilds the file: grep GB10_BEST log | scripts/moe-configs-from-log.py
 
 Both edits are exact-string replacements; the script refuses to touch a file
 that does not contain the expected text, and running it twice is a no-op.
@@ -40,6 +44,16 @@ EDITS = {
         # path the server runs (FP8 per-channel too, not only int8)
         if (use_int8_w8a8 or per_channel_quant) and block_shape is None:""",
     ),
+    # The tuner writes its JSON only after the last batch size; a stopped run
+    # (hours per size on GB10) kept nothing. Print each batch size's winner
+    # as it is found, so the log alone rebuilds the file.
+    "tuning_fused_moe_triton.py:log": (
+        """        print(f"{now.ctime()}] Completed tuning for batch_size={num_tokens}")
+        assert best_config is not None""",
+        """        print(f"{now.ctime()}] Completed tuning for batch_size={num_tokens}")
+        assert best_config is not None
+        print(f"GB10_BEST {num_tokens} {json.dumps(best_config)} {best_time:.2f} us", flush=True)""",
+    ),
 }
 
 
@@ -48,17 +62,18 @@ def main() -> int:
         print(__doc__.strip().splitlines()[2], file=sys.stderr)
         return 2
     root = Path(sys.argv[1]).expanduser()
-    for name, (old, new) in EDITS.items():
+    for key, (old, new) in EDITS.items():
+        name = key.split(":")[0]
         path = root / name
         text = path.read_text()
         if new in text:
-            print(f"{name}: already patched")
+            print(f"{key}: already patched")
             continue
         if text.count(old) != 1:
-            print(f"{name}: expected text not found once; not the v0.5.20 tuner?", file=sys.stderr)
+            print(f"{key}: expected text not found once; not the v0.5.20 tuner?", file=sys.stderr)
             return 1
         path.write_text(text.replace(old, new))
-        print(f"{name}: patched")
+        print(f"{key}: patched")
     return 0
 
 
