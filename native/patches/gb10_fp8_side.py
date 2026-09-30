@@ -27,6 +27,14 @@ Another model with the same kind of BF16 layers (e.g. a Qwen3.5 MoE FP8
 checkpoint that keeps its GDN projections in BF16): GB10_FP8_SIDE_TARGET=
 <module>:<class>; its MTP draft is then left alone.
 
+A DFlash / DFlash2 draft (a few dense BF16 layers read in full every decode
+step: ~3 GB for the 27B's DFlash2, ~13% of a step next to an NVFP4 target)
+converts with GB10_FP8_DFLASH=1: its MLPs and o_proj (GB10_FP8_DFLASH_LAYERS,
+default below). qkv_proj stays BF16, since the DFlash worker slices its K/V
+rows out of the BF16 weight for one fused context-KV GEMM over all layers.
+The draft only proposes tokens; a worse draft costs acceptance, never
+correctness.
+
 The output heads (lm_head, BF16 [vocab x hidden]) are separate switches, since
 the target head decides every emitted token and the draft head only proposes:
   GB10_FP8_DRAFT_HEAD=1   the MTP draft's head (with --speculative-token-map a
@@ -56,6 +64,7 @@ logger = logging.getLogger("sglang.srt.models.qwen4_exp.gb10_fp8_side")
 
 TARGET_MODULE = "sglang.srt.models.qwen4_exp"
 MTP_MODULE = "sglang.srt.models.qwen4_exp_mtp"
+DFLASH_MODULE = "sglang.srt.models.dflash"
 SPEC_MODULES = (
     "sglang.srt.speculative.eagle_worker_v2",              # EagleDraftWorker
     "sglang.srt.speculative.multi_layer_eagle_worker_v2",  # MultiLayerEagleDraftWorker
@@ -67,12 +76,17 @@ DEFAULT_LAYERS = (
     r"\.(in_proj_qkvz|in_proj_ba|out_proj|qkv_proj|o_proj|key_proj|value_proj"
     r"|shared_expert\.gate_up_proj|shared_expert\.down_proj)$"
 )
+DFLASH_LAYERS = r"\.(o_proj|gate_up_proj|down_proj)$"
 FP8_MAX = 448.0
 MIN_N, MIN_K = 64, 128  # Marlin's thread tile (marlin_utils.GPTQ_MARLIN_MIN_THREAD_*)
 
 
 def enabled() -> bool:
     return os.environ.get("GB10_FP8_SIDE") == "1"
+
+
+def dflash_enabled() -> bool:
+    return os.environ.get("GB10_FP8_DFLASH") == "1"
 
 
 def draft_head_enabled() -> bool:
@@ -332,14 +346,14 @@ def _embed_of(model):
         return getattr(getattr(getattr(model, "model", None), "embed_tokens", None), "weight", None)
 
 
-def _wrap_load_weights(cls, label, *, side=True, target_head=False):
+def _wrap_load_weights(cls, label, *, side=True, target_head=False, pattern=None):
     orig = cls.load_weights
 
     def load_weights(self, weights, *args, **kwargs):
         result = orig(self, weights, *args, **kwargs)
         parts = _sglang_parts()
         if side:
-            convert_model(self, label=label, **parts)
+            convert_model(self, label=label, pattern=pattern, **parts)
         if target_head:
             convert_heads([("target", getattr(self, "lm_head", None))], protected=[_embed_of(self)],
                           prepare_fn=parts["prepare_fn"], apply_fn=parts["apply_fn"])
@@ -377,6 +391,19 @@ def apply_mtp(mod) -> None:
         raise RuntimeError("GB10_FP8_SIDE: Qwen4ExpForCausalLMMTP not found "
                            "(written for SGLang 0.5.20); set GB10_FP8_SIDE_MTP=0.")
     _wrap_load_weights(mod.Qwen4ExpForCausalLMMTP, "MTP draft")
+
+
+def apply_dflash(mod) -> None:
+    """Hook for DFLASH_MODULE: every DFlash draft class inherits
+    DFlashDraftModel.load_weights."""
+    cls = getattr(mod, "DFlashDraftModel", None)
+    if cls is None or "load_weights" not in cls.__dict__:
+        raise RuntimeError("GB10_FP8_DFLASH: DFlashDraftModel.load_weights not found "
+                           "(written for SGLang 0.5.20); unset GB10_FP8_DFLASH.")
+    pattern = re.compile(os.environ.get("GB10_FP8_DFLASH_LAYERS") or DFLASH_LAYERS)
+    _wrap_load_weights(cls, "DFlash draft", pattern=pattern)
+    logger.info("GB10_FP8_DFLASH: DFlash draft layers matching %s will load as FP8 (Marlin)",
+                pattern.pattern)
 
 
 def heads_after_init_lm_head(worker) -> list:

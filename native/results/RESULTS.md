@@ -519,18 +519,38 @@ draft 15 suits long code generation for one user (`DRAFT_TOKENS=15`).
 ### Decode profile of the 27B (2026-09-30)
 
 RadixArk/Qwen3.8-27B-NVFP4 + DFlash2, 11 draft tokens, cap 12,
-`bench/profile_decode.py` (40 steps, ~111 ms each under the profiler):
+`bench/profile_decode.py` (40 steps, ~111 ms each under the profiler). The
+script's first cut filed cuBLASLt's `nvjet_sm121_qqtst_*` kernels under BF16;
+`qq` are e4m3 operands (next to them `_static_quant_fp8`, 128 calls a step),
+so they are the checkpoint's FP8 W8A8 layers. Regrouped by hand (the script
+now has "dense GEMM, FP8 (cuBLASLt)"):
 
-| Kernel group | wall ms/step | share |
-|---|---:|---:|
-| BF16 dense GEMMs: cuBLAS `nvjet_sm121` (192x48 ~372 us, 64x96 ~191 us, ~62 calls a step each), sm80 WMMA (~735 us, ~20 a step) | ~52 | 48% |
-| NVFP4 dense GEMMs (CUTLASS FP4, ~339 us, ~126 a step) | ~49 | 45% |
-| GDN, norms, attention | ~6 | 6% |
+| Kernels | Calls a step | Avg | wall ms/step | Share |
+|---|---:|---:|---:|---:|
+| NVFP4 CUTLASS, the 64 MLPs (gate_up + down) | 126 | 339 us | ~43 | 38% |
+| NVFP4 CUTLASS, lm_head (verify + DFlash2 candidates) | 2 | 3.1 ms | ~6 | 6% |
+| FP8 W8A8 cuBLASLt `192x48`: GDN in_proj_qkvz / attention qkv_proj | 62 | 372 us | ~22 | 20% |
+| FP8 W8A8 cuBLASLt `64x96`: GDN out_proj / attention o_proj | 62 | 191 us | ~12 | 11% |
+| BF16 sm80 WMMA `128x1`: the DFlash2 draft (~3 GB of BF16) | 20 | 735 us | ~15 | 13% |
+| BF16 small GEMMs (`128x2` + split-K reduce): GDN in_proj_ba, 96 x 5120 | ~48 | ~66 us | ~2 | 2% |
+| GDN, norms, attention | | | ~6 | 6% |
 
-Half of the step is layers the NVFP4 checkpoint keeps in BF16. `FP8_SIDE=1`
-in `models/qwen3.8-27b.sh` (and its variants) converts the target's BF16
-linear layers to FP8 weight-only on Marlin, as on Flash-Next and Ornith;
-the model class comes from the checkpoint's config.json. To measure.
+So the target is quantized almost throughout: `FP8_SIDE=1` converts 75
+layers, 0.24 GiB -> 0.13 GiB: GDN's 48 in_proj_ba (96 x 5120, "48 with N
+padded"; the BF16 small GEMMs above) and 27 vision-tower qkv; the rest of
+the vision tower stays BF16 and never runs in text decode. At most ~2%.
+What is left to try:
+
+- the MLPs' NVFP4 GEMM runs at ~40% of the weight-read speed (gate_up is
+  ~50 MB of FP4 plus scales, ~180 us at 273 GB/s, against 339 us for the
+  average call): `FP4_GEMM_BACKEND=marlin` (W4A16) or another
+  `--fp4-gemm-backend`;
+- the draft: `FP8_DRAFT=1`, its MLPs and o_proj to FP8 weight-only
+  (halves ~13% of the step at the cost of some accept_len, if any);
+- the FP8 projections are already near the weight-read speed for
+  in_proj_qkvz (~84 MB, ~310 us ideal, 372 us); out_proj reaches ~60%.
+
+To measure.
 
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 

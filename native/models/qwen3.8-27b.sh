@@ -92,33 +92,58 @@ PREFILL_CUDA_GRAPH="${PREFILL_CUDA_GRAPH:-0}"
 # Context: 262144 is the model's native length.
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 
+# Where a decode step of RadixArk/Qwen3.8-27B-NVFP4 + DFlash2 goes
+# (bench/profile_decode.py, results/RESULTS.md "Decode profile of the 27B"):
+# the MLPs are NVFP4 (CUTLASS, ~38%), the GDN / attention projections FP8
+# W8A8 (cuBLASLt nvjet_*_qq*, ~32%), the lm_head NVFP4; BF16 is left in the
+# DFlash2 draft (~13%), GDN's small in_proj_ba (~2%) and the vision tower.
+
 # FP8 for the target's linear layers the checkpoint keeps in BF16
-# (patches/gb10_fp8_side.py, as on Flash-Next and Ornith). A decode profile
-# of RadixArk/Qwen3.8-27B-NVFP4 + DFlash2 put ~48% of a step in BF16 GEMMs
-# (cuBLAS nvjet / sm80 WMMA) next to ~45% in the NVFP4 ones. FP8_SIDE=1
-# converts the BF16 layers the patch's name pattern covers (GDN in_proj_qkvz,
+# (patches/gb10_fp8_side.py, as on Flash-Next and Ornith: GDN in_proj_qkvz,
 # in_proj_ba, out_proj; attention qkv_proj / o_proj; shared experts) to FP8
-# weight-only, one scale per output channel, on SGLang's FP8 Marlin GEMM.
-# Layers already quantized are left alone; the boot log counts both
-# ("FP8 side (target): ..."). The model class comes from the checkpoint's
-# config.json. Lossy: off until measured (Flash-Next and Ornith: HumanEval
-# unchanged).
+# weight-only on SGLang's FP8 Marlin GEMM; the boot log counts them ("FP8 side
+# (target): ..."). The model class comes from the checkpoint's config.json.
+# On RadixArk's NVFP4 it finds GDN's 48 in_proj_ba (96 x 5120, padded to
+# the tile) and 27 vision qkv: 75 layers, 0.24 -> 0.13 GiB, ~2% of a step.
 FP8_SIDE="${FP8_SIDE:-0}"
+
+# FP8 for the draft: the DFlash2 draft's MLPs and o_proj (~3 GB of BF16 read
+# every step, the only BF16 GEMMs left in a RadixArk NVFP4 decode step) to
+# FP8 weight-only on Marlin; qkv_proj stays BF16 for the fused context-KV
+# GEMM (patches/gb10_fp8_side.py, GB10_FP8_DFLASH). The boot log has
+# "FP8 side (DFlash draft): N linear layers ...". The draft only proposes: a
+# worse draft costs accept_len, never the answers. Works for the DSpark
+# variant too (its draft is a DFlash backbone). Off until measured.
+FP8_DRAFT="${FP8_DRAFT:-0}"
+
+# The dense NVFP4 GEMM kernel (--fp4-gemm-backend): empty = SGLang's auto
+# (CUTLASS here: ~339 us a call at 12 rows, ~40% of the weight-read speed).
+# marlin (W4A16: BF16 activations, FP4 weights; SGLang's own default for
+# some models on SM120), flashinfer_cudnn, flashinfer_trtllm,
+# flashinfer_cutlass, flashinfer_cutedsl. Not measured on the 27B yet.
+FP4_GEMM_BACKEND="${FP4_GEMM_BACKEND:-}"
 
 # Any other SGLang flags, appended last, so they override everything above.
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
-# The server environment for FP8_SIDE; variants that define their own
-# model_env call this too.
+# The server environment for FP8_SIDE and FP8_DRAFT; variants that define
+# their own model_env call this too.
 fp8_side_env() {
   if [ "$FP8_SIDE" = 1 ]; then
     local arch
     arch="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["architectures"][0])' \
       "$MODEL_DIR/config.json")" || { echo "FP8_SIDE: cannot read $MODEL_DIR/config.json" >&2; exit 1; }
     export GB10_FP8_SIDE=1 GB10_FP8_SIDE_TARGET="sglang.srt.models.qwen3_5:$arch"
-    export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   else
     unset GB10_FP8_SIDE GB10_FP8_SIDE_TARGET
+  fi
+  if [ "$FP8_DRAFT" = 1 ]; then
+    export GB10_FP8_DFLASH=1
+  else
+    unset GB10_FP8_DFLASH
+  fi
+  if [ "$FP8_SIDE" = 1 ] || [ "$FP8_DRAFT" = 1 ]; then
+    export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
 
@@ -142,6 +167,8 @@ model_args() {
     --tool-call-parser qwen3_coder
   )
   [ "$PREFILL_CUDA_GRAPH" = 1 ] || args+=(--disable-prefill-cuda-graph)
+  [ -n "$FP4_GEMM_BACKEND" ] && args+=(--fp4-gemm-backend "$FP4_GEMM_BACKEND")
+  return 0
 }
 
 # The speculative-decoding flags, on their own so that a variant with another
@@ -154,7 +181,15 @@ spec_args() {
   )
 }
 
+# The FP8 / FP4 knobs for the startup summary.
+fp8_summary() {
+  [ "$FP8_SIDE" = 1 ] && printf '; BF16 layers -> FP8 (Marlin)'
+  [ "$FP8_DRAFT" = 1 ] && printf '; draft -> FP8 (Marlin)'
+  [ -n "$FP4_GEMM_BACKEND" ] && printf '; FP4 GEMM %s' "$FP4_GEMM_BACKEND"
+  return 0
+}
+
 # One line for the startup summary.
 model_summary() {
-  echo "DFlash2, $DRAFT_TOKENS draft tokens; cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)$([ "$FP8_SIDE" = 1 ] && echo "; BF16 layers -> FP8 (Marlin)")"
+  echo "DFlash2, $DRAFT_TOKENS draft tokens; cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)$(fp8_summary)"
 }
