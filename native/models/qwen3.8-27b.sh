@@ -92,8 +92,39 @@ PREFILL_CUDA_GRAPH="${PREFILL_CUDA_GRAPH:-0}"
 # Context: 262144 is the model's native length.
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 
+# FP8 for the target's linear layers the checkpoint keeps in BF16
+# (patches/gb10_fp8_side.py, as on Flash-Next and Ornith). A decode profile
+# of RadixArk/Qwen3.8-27B-NVFP4 + DFlash2 put ~48% of a step in BF16 GEMMs
+# (cuBLAS nvjet / sm80 WMMA) next to ~45% in the NVFP4 ones. FP8_SIDE=1
+# converts the BF16 layers the patch's name pattern covers (GDN in_proj_qkvz,
+# in_proj_ba, out_proj; attention qkv_proj / o_proj; shared experts) to FP8
+# weight-only, one scale per output channel, on SGLang's FP8 Marlin GEMM.
+# Layers already quantized are left alone; the boot log counts both
+# ("FP8 side (target): ..."). The model class comes from the checkpoint's
+# config.json. Lossy: off until measured (Flash-Next and Ornith: HumanEval
+# unchanged).
+FP8_SIDE="${FP8_SIDE:-0}"
+
 # Any other SGLang flags, appended last, so they override everything above.
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+
+# The server environment for FP8_SIDE; variants that define their own
+# model_env call this too.
+fp8_side_env() {
+  if [ "$FP8_SIDE" = 1 ]; then
+    local arch
+    arch="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["architectures"][0])' \
+      "$MODEL_DIR/config.json")" || { echo "FP8_SIDE: cannot read $MODEL_DIR/config.json" >&2; exit 1; }
+    export GB10_FP8_SIDE=1 GB10_FP8_SIDE_TARGET="sglang.srt.models.qwen3_5:$arch"
+    export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
+  else
+    unset GB10_FP8_SIDE GB10_FP8_SIDE_TARGET
+  fi
+}
+
+model_env() {
+  fp8_side_env
+}
 
 # This model's flags, appended to the common ones in scripts/serve-sglang.sh.
 model_args() {
@@ -125,5 +156,5 @@ spec_args() {
 
 # One line for the startup summary.
 model_summary() {
-  echo "DFlash2, $DRAFT_TOKENS draft tokens; cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)"
+  echo "DFlash2, $DRAFT_TOKENS draft tokens; cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)$([ "$FP8_SIDE" = 1 ] && echo "; BF16 layers -> FP8 (Marlin)")"
 }

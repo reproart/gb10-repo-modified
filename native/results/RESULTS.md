@@ -516,6 +516,22 @@ longer draft pays only while acceptance stays high, which long, predictable
 code gives and short or varied answers do not. The base profile keeps 11;
 draft 15 suits long code generation for one user (`DRAFT_TOKENS=15`).
 
+### Decode profile of the 27B (2026-09-30)
+
+RadixArk/Qwen3.8-27B-NVFP4 + DFlash2, 11 draft tokens, cap 12,
+`bench/profile_decode.py` (40 steps, ~111 ms each under the profiler):
+
+| Kernel group | wall ms/step | share |
+|---|---:|---:|
+| BF16 dense GEMMs: cuBLAS `nvjet_sm121` (192x48 ~372 us, 64x96 ~191 us, ~62 calls a step each), sm80 WMMA (~735 us, ~20 a step) | ~52 | 48% |
+| NVFP4 dense GEMMs (CUTLASS FP4, ~339 us, ~126 a step) | ~49 | 45% |
+| GDN, norms, attention | ~6 | 6% |
+
+Half of the step is layers the NVFP4 checkpoint keeps in BF16. `FP8_SIDE=1`
+in `models/qwen3.8-27b.sh` (and its variants) converts the target's BF16
+linear layers to FP8 weight-only on Marlin, as on Flash-Next and Ornith;
+the model class comes from the checkpoint's config.json. To measure.
+
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
 `RadixArk/Qwen3.8-Flash-Next-NVFP4`, `models/qwen3.8-flash-next.sh` as
