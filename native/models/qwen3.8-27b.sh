@@ -123,7 +123,8 @@ FP8_DRAFT="${FP8_DRAFT:-1}"
 # marlin (W4A16: BF16 activations, FP4 weights; SGLang's own default for
 # some models on SM120), flashinfer_cudnn, flashinfer_trtllm,
 # flashinfer_cutlass, flashinfer_cutedsl. flashinfer_cudnn: 74.9 tok/s, no
-# gain. marlin needs SGLang's fused SiLU + FP4-quant MLP path off (it hands
+# gain. marlin: 78.5 single-stream (+2%), but -18% / -23% at 8 / 12 streams
+# (W4A16 at 132 verify rows is slower than FP4 tensor cores). marlin needs SGLang's fused SiLU + FP4-quant MLP path off (it hands
 # down_proj a packed FP4 tuple whatever the backend: "apply_fp4_marlin_linear()
 # Expected a value of type 'Tensor' ... found type 'tuple'"); set below.
 FP4_GEMM_BACKEND="${FP4_GEMM_BACKEND:-}"
