@@ -181,7 +181,10 @@ FP8_SIDE="${FP8_SIDE:-1}"
 # and the MoE is ~47% of a decode step. Files tuned on this machine go in
 # $ROOT/moe-configs/configs/triton_<version>/ (README, "Ornith"); when that
 # directory exists it is SGLANG_MOE_CONFIG_DIR, which replaces SGLang's own
-# directory (fine here: this model has one MoE shape).
+# directory (fine here: this model has one MoE shape). A file tuned for this
+# model is committed (moe-configs/configs/triton_3_7_1/, ~24 h of tuning);
+# measured within noise of the defaults (96.4 vs 97.6 tok/s single, 361.7
+# vs 353.0 at 16 streams).
 MOE_CONFIG_DIR="${MOE_CONFIG_DIR:-$ROOT/moe-configs}"
 
 # Concurrency: GDN state slots, 5 per running request with a draft (extra_buffer)

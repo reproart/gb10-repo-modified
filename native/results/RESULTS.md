@@ -973,6 +973,27 @@ Ornith is a reasoning model, and thinking off is not its mode. `FP8_SIDE=1`
 is now the profile's default: FP8 checkpoint + DFlash 8 + FP8 GDN
 projections, 97.6 tok/s.
 
+**Tuned Triton MoE config** (2026-09-30). SGLang's tuner
+(`scripts/patch-moe-tuner.py` first: v0.5.20's tuner fails on FP8
+per-channel checkpoints) over batch sizes 1-8192 took ~24 h on the Spark,
+25 min to 1 h 50 per size. The result is committed:
+`moe-configs/configs/triton_3_7_1/E=256,N=512,device_name=NVIDIA_GB10,dtype=fp8_w8a8,per_channel_quant=True.json`;
+the boot log shows "Using MoE kernel config from .../moe-configs/..." (and
+reuses it for the down projection, which this tuner does not write).
+
+| | decode tok/s | aggregate 1 / 2 / 4 / 8 / 16 streams |
+|---|---:|---|
+| default MoE config | 97.6 | 98.0 / 130.2 / 168.4 / 249.0 / 353.0 |
+| tuned, first run after boot | 93.0 | 91.1 / 116.3 / 159.8 / 236.7 / 344.2 |
+| tuned, second run | 96.4 | 92.2 / 120.2 / 167.6 / 246.4 / **361.7** |
+
+No measurable gain: single-stream moves 86-102 tok/s run to run with the
+DFlash accept length (4.1-6.3), and 16 streams gained 2.5% at most. The
+defaults SGLang picks for FP8 on this GPU (`_use_low_smem_fp8_default`)
+were already close; the MoE here reads its weights at close to what the
+memory delivers. The file stays (the tuner's pick is at least as fast per
+kernel at every size); a decode profile would show the per-call time.
+
 ## Reference comparison
 
 | Configuration | Reported | Source |
