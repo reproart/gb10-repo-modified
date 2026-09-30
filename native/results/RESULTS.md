@@ -568,7 +568,21 @@ for the NVFP4 GEMMs gains nothing. `FP4_GEMM_BACKEND=marlin` died in CUDA
 graph warmup: Qwen3.5's dense MLP fuses SiLU with the FP4 quantization of
 down_proj's input and hands it a packed (fp4, scale) tuple without checking
 the backend. The profile now sets `SGLANG_DISABLE_SILU_FP4_QUANT_FUSION=1`
-with marlin; to measure.
+with marlin, and it boots and answers correctly:
+
+| FP8_SIDE + FP8_DRAFT, NVFP4 GEMM | auto (CUTLASS W4A4) | marlin (W4A16) |
+|---|---:|---:|
+| Single-stream decode (700-token code answer) | 77.1 (74.5-78.9) | **78.5** (78.5-78.9) |
+| accept_len there | 8.2-8.9 | 8.2-9.4 |
+| Sweep, 1 / 2 / 4 streams | **74.1 / 126.9 / 221.2** | 65.2 / 119.6 / 198.4 |
+| 8 / 12 streams | **292.4 / 396.1** | 239.5 / 306.0 (-18% / -23%) |
+
+Marlin is +2% and steadier on one long answer and loses everywhere else:
+at 12 streams the verify batch is 12 x 11 = 132 rows, where W4A16 (BF16
+math on dequantized weights) is slower than CUTLASS on FP4 tensor cores.
+Both formats at once (Marlin below ~16 rows, CUTLASS above) would keep a
+second copy of the ~9 GB of MLP weights for those 2%. The profile keeps
+auto.
 
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
