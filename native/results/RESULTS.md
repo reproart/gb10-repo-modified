@@ -991,8 +991,19 @@ No measurable gain: single-stream moves 86-102 tok/s run to run with the
 DFlash accept length (4.1-6.3), and 16 streams gained 2.5% at most. The
 defaults SGLang picks for FP8 on this GPU (`_use_low_smem_fp8_default`)
 were already close; the MoE here reads its weights at close to what the
-memory delivers. The file stays (the tuner's pick is at least as fast per
-kernel at every size); a decode profile would show the per-call time.
+memory delivers. Two more runs with it: 97.9 / 94.9 tok/s single-stream,
+345.4 / 343.1 at 16 streams. Over four runs 93-98 and 343-362 against 97.6
+and 353 without it: no gain, so the profile does not load it by default
+(`MOE_TUNED=1` does); the file stays in `moe-configs/`.
+
+The 2K prompt's TTFT in section 4 went 0.34-0.36 s in the five untuned runs
+and 0.78 / 0.38 / 0.76 / 0.37 s in the four tuned ones. The slow ones: the
+first run after boot (2129 tokens, everything compiling) and a 2080-token
+prompt, the only one of the nine divisible by 16. Triton compiles a separate
+kernel variant when an integer argument is divisible by 16, so the first
+such length on a running server pays a one-time JIT (~0.4 s), whatever the
+MoE config. A reading, not yet checked: a steady-state server would not show
+it twice for the same length.
 
 ## Reference comparison
 
