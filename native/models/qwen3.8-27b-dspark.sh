@@ -49,6 +49,7 @@ spec_args() {
 
 # The card's serving environment.
 model_env() {
+  fp8_side_env
   export SGLANG_RAGGED_VERIFY_MODE="${SGLANG_RAGGED_VERIFY_MODE:-static}"
   export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 }
