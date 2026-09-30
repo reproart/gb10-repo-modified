@@ -55,5 +55,5 @@ model_env() {
 }
 
 model_summary() {
-  echo "DSpark, gamma $DSPARK_GAMMA (verify $DRAFT_TOKENS); cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)"
+  echo "DSpark, gamma $DSPARK_GAMMA (verify $DRAFT_TOKENS); cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)$(fp8_summary)"
 }

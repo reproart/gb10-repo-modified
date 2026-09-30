@@ -51,6 +51,10 @@ GROUPS = [
     ("MoE routing", r"moe_fused_gate|topk|router|route_radix|gating"),
     ("MoE experts", r"marlin_moe|moe|expert|groupproblemshape|fused_experts"),
     ("dense GEMM, FP8/FP4 Marlin", r"marlin"),
+    # cuBLASLt names its FP8 kernels nvjet_smXXX_qq... (q: e4m3 operands),
+    # e.g. a ModelOpt FP8 layer through torch._scaled_mm; tst... is BF16
+    ("dense GEMM, FP8 (cuBLASLt)", r"nvjet_sm\d+_q"),
+    ("dense GEMM, NVFP4", r"e2m1|nvfp4"),
     ("dense GEMM, BF16", r"wmma|gemvx|gemv|skinny_gemm|bf16.*gemm|gemm.*bf16|cublas|nvjet|sm\d+_xmma"),
     ("dense GEMM, other", r"gemm|cutlass|matmul|mm_"),
     ("norm / elementwise", r"norm|rms|silu|gelu|act_and_mul|elementwise|vectorized|add_|mul_|copy_kernel|cat|index"),

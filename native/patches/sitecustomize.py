@@ -31,6 +31,12 @@ if os.environ.get("GB10_FP8_SIDE") == "1" or _fp8_target_head == "load":
     if os.environ.get("GB10_FP8_SIDE") == "1" and not os.environ.get("GB10_FP8_SIDE_TARGET"):
         gb10_ple_mmap.install_import_hook(gb10_fp8_side.MTP_MODULE, gb10_fp8_side.apply_mtp)
 
+if os.environ.get("GB10_FP8_DFLASH") == "1":
+    import gb10_fp8_side
+    import gb10_ple_mmap
+
+    gb10_ple_mmap.install_import_hook(gb10_fp8_side.DFLASH_MODULE, gb10_fp8_side.apply_dflash)
+
 if os.environ.get("GB10_FP8_DRAFT_HEAD") == "1" or _fp8_target_head not in ("0", "load"):
     import gb10_fp8_side
     import gb10_ple_mmap

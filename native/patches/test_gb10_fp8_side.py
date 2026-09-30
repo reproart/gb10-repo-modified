@@ -476,6 +476,60 @@ class TargetSpecTest(unittest.TestCase):
             f.target_spec()
 
 
+@unittest.skipIf(torch is None, "torch not installed")
+class DFlashTest(unittest.TestCase):
+    def test_draft_mlp_and_o_proj_convert_qkv_stays(self):
+        import types
+
+        import gb10_fp8_side as f
+
+        class DFlashDraftModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = torch.nn.ModuleList([torch.nn.Module()])
+                layer = self.layers[0]
+                layer.self_attn = torch.nn.Module()
+                layer.self_attn.qkv_proj = Linear(384, 256)
+                layer.self_attn.o_proj = Linear(256, 256)
+                layer.mlp = torch.nn.Module()
+                layer.mlp.gate_up_proj = Linear(512, 256)
+                layer.mlp.down_proj = Linear(256, 256)
+
+            def load_weights(self, weights):
+                return "loaded"
+
+        class DFlash2DraftModel(DFlashDraftModel):   # inherits load_weights
+            pass
+
+        mod = types.ModuleType(f.DFLASH_MODULE)
+        mod.DFlashDraftModel = DFlashDraftModel
+
+        def prepare(module, size_k_first):
+            module.workspace = "ws"
+
+        parts = f._sglang_parts
+        f._sglang_parts = lambda: dict(
+            is_linear=lambda m: isinstance(m, Linear), is_unquantized=lambda q: isinstance(q, Unquant),
+            prepare_fn=prepare, apply_fn=lambda **kw: "out")
+        self.addCleanup(setattr, f, "_sglang_parts", parts)
+        f.apply_dflash(mod)
+        m = DFlash2DraftModel()
+        self.assertEqual(m.load_weights([]), "loaded")
+        layer = m.layers[0]
+        for lin in (layer.self_attn.o_proj, layer.mlp.gate_up_proj, layer.mlp.down_proj):
+            self.assertIsInstance(lin.quant_method, f.Fp8MarlinSideMethod)
+        self.assertEqual(layer.self_attn.qkv_proj.weight.dtype, torch.bfloat16)
+        self.assertIsInstance(layer.self_attn.qkv_proj.quant_method, Unquant)
+
+    def test_missing_class_fails_loudly(self):
+        import types
+
+        import gb10_fp8_side as f
+
+        with self.assertRaises(RuntimeError):
+            f.apply_dflash(types.ModuleType(f.DFLASH_MODULE))
+
+
 class HookOrderTest(unittest.TestCase):
     def test_two_hooks_on_one_module_both_run_in_order(self):
         import gb10_ple_mmap as g
