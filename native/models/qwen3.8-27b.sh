@@ -112,22 +112,27 @@ FP8_SIDE="${FP8_SIDE:-0}"
 # FP8 weight-only on Marlin; qkv_proj stays BF16 for the fused context-KV
 # GEMM (patches/gb10_fp8_side.py, GB10_FP8_DFLASH). The boot log has
 # "FP8 side (DFlash draft): N linear layers ...". The draft only proposes: a
-# worse draft costs accept_len, never the answers. Works for the DSpark
-# variant too (its draft is a DFlash backbone). Off until measured.
-FP8_DRAFT="${FP8_DRAFT:-0}"
+# worse draft costs accept_len, never the answers. RadixArk NVFP4, draft 11
+# (with FP8_SIDE=1): 77.1 tok/s single-stream against 74.1, accept_len
+# unchanged (8.2-8.9), +4-12% at 1-4 streams, the same at 8-12. The DSpark
+# variant (a DFlash backbone too) keeps it off until measured there.
+FP8_DRAFT="${FP8_DRAFT:-1}"
 
 # The dense NVFP4 GEMM kernel (--fp4-gemm-backend): empty = SGLang's auto
 # (CUTLASS here: ~339 us a call at 12 rows, ~40% of the weight-read speed).
 # marlin (W4A16: BF16 activations, FP4 weights; SGLang's own default for
 # some models on SM120), flashinfer_cudnn, flashinfer_trtllm,
-# flashinfer_cutlass, flashinfer_cutedsl. Not measured on the 27B yet.
+# flashinfer_cutlass, flashinfer_cutedsl. flashinfer_cudnn: 74.9 tok/s, no
+# gain. marlin needs SGLang's fused SiLU + FP4-quant MLP path off (it hands
+# down_proj a packed FP4 tuple whatever the backend: "apply_fp4_marlin_linear()
+# Expected a value of type 'Tensor' ... found type 'tuple'"); set below.
 FP4_GEMM_BACKEND="${FP4_GEMM_BACKEND:-}"
 
 # Any other SGLang flags, appended last, so they override everything above.
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
-# The server environment for FP8_SIDE and FP8_DRAFT; variants that define
-# their own model_env call this too.
+# The server environment for FP8_SIDE, FP8_DRAFT and FP4_GEMM_BACKEND;
+# variants that define their own model_env call this too.
 fp8_side_env() {
   if [ "$FP8_SIDE" = 1 ]; then
     local arch
@@ -141,6 +146,9 @@ fp8_side_env() {
     export GB10_FP8_DFLASH=1
   else
     unset GB10_FP8_DFLASH
+  fi
+  if [ "$FP4_GEMM_BACKEND" = marlin ]; then
+    export SGLANG_DISABLE_SILU_FP4_QUANT_FUSION=1
   fi
   if [ "$FP8_SIDE" = 1 ] || [ "$FP8_DRAFT" = 1 ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"

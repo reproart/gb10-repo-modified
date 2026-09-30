@@ -32,6 +32,9 @@ DSPARK_GAMMA="${DSPARK_GAMMA:-7}"
 # DFlash2: 8 per running request here, against 11 in the base profile.
 DRAFT_TOKENS=$((DSPARK_GAMMA + 1))
 
+# FP8 for the draft (the base profile's default) is unmeasured with DSpark.
+FP8_DRAFT="${FP8_DRAFT:-0}"
+
 # shellcheck source=qwen3.8-27b.sh
 . "$ROOT/models/qwen3.8-27b.sh"
 
