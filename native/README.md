@@ -628,6 +628,13 @@ cd ~/sglang-src/benchmark/kernels/fused_moe_triton
 
 ---
 
+## GGUF models on llama.cpp: `llamacpp/`
+
+GLM-5.3-Flash (320B) in GSQ-RCO GGUFs needs llama.cpp with PR 27773, not
+SGLang. `llamacpp/` builds it at the pinned commit and serves it on one
+Spark (3.0-bit, text only, a proof that it runs) or across two over the
+direct cable with llama.cpp RPC (3.5-bit + vision): `llamacpp/README.md`.
+
 ## Moving from the Docker toolkit / SparkStation
 
 For a Spark that runs an earlier version of this recipe. The weights and the

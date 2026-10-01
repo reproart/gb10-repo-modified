@@ -1,0 +1,17 @@
+diff --git a/ggml/src/ggml-cuda/mmf.cu b/ggml/src/ggml-cuda/mmf.cu
+index 646a5899c..d341f8ad5 100644
+--- a/ggml/src/ggml-cuda/mmf.cu
++++ b/ggml/src/ggml-cuda/mmf.cu
+@@ -132,6 +132,12 @@ void ggml_cuda_mul_mat_f(ggml_backend_cuda_context & ctx, const ggml_tensor * sr
+ 
+ bool ggml_cuda_should_use_mmf(enum ggml_type type, int cc, int warp_size, const int64_t * src0_ne,
+         const size_t * src0_nb, const int src1_ncols, bool mul_mat_id) {
++    // F32 MMF uses TF32 instructions. Disable it for strict F32 diagnostics.
++    const char * disable_f32_mmf = getenv("GGML_CUDA_MMF_F32_DISABLE");
++    if (type == GGML_TYPE_F32 && disable_f32_mmf != nullptr && std::atoi(disable_f32_mmf) != 0) {
++        return false;
++    }
++
+     if (ggml_is_quantized(type)) {
+         return false;
+     }
