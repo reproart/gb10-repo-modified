@@ -516,6 +516,29 @@ longer draft pays only while acceptance stays high, which long, predictable
 code gives and short or varied answers do not. The base profile keeps 11;
 draft 15 suits long code generation for one user (`DRAFT_TOKENS=15`).
 
+### zen6: the same 27B with YaRN x4 (2026-10-01)
+
+`zenlm/zen6`, `models/zen6.sh`: RadixArk/Qwen3.8-27B-NVFP4's weights and
+z-lab's DFlash2 draft, byte for byte (checked against the local copies),
+with YaRN factor 4 in config.json, served at a 1,048,576-token context.
+Draft 11 (the run predates the move to 15), FP8 draft, cap 12, 0.80,
+on the second Spark:
+
+| | RadixArk, draft 11 (FP8_SIDE + FP8_DRAFT) | zen6, draft 11 (FP8_DRAFT) |
+|---|---:|---:|
+| Single-stream decode (700-token code answer) | 77.1 | 80.0 (79.9-80.2) |
+| accept_len there | 8.2-8.9 | 8.3-9.6 |
+| Sweep, 1 / 2 / 4 streams | 74.1 / 126.9 / 221.2 | 68.8 / 133.5 / 171.0 |
+| 8 / 12 streams | 292.4 / 396.1 | 323.1 / 408.4 |
+| Prefill 2K / 8K / 32K / 101K | 2,724 / 1,672 / — / — | 2,759 / 2,095 / 1,785 / 1,212 tok/s |
+
+The same speed, as expected: YaRN changes the RoPE frequencies of the 16
+attention layers, not the work, and a 1M context limit only caps request
+length. The 4-stream row (171) is the dip seen at draft 11 and 12 on the
+nvidia checkpoint; one run, not chased. The 101K prefill ended at 80 °C,
+the suspend threshold, without a suspend. What YaRN x4 costs in answers at
+ordinary lengths is not measured (HumanEval against the RadixArk profile).
+
 ### Decode profile of the 27B (2026-09-30)
 
 RadixArk/Qwen3.8-27B-NVFP4 + DFlash2, 11 draft tokens, cap 12,
