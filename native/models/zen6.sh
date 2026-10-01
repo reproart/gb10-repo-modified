@@ -1,8 +1,19 @@
 # shellcheck shell=bash disable=SC2034  # read by scripts/serve-sglang.sh
 # Profile: zenlm/zen6, a repackaging of the 27B this project serves:
 # RadixArk/Qwen3.8-27B-NVFP4 (NVFP4 MLPs and lm_head, FP8 attention /
-# GDN projections; Qwen3_5ForConditionalGeneration) with YaRN factor 4 in its
-# config.json (1,048,576 tokens) and the DFlash2 draft bundled in dflash2/.
+# GDN projections, static FP8 KV scheme; ModelOpt 0.47 MIXED_PRECISION;
+# Qwen3_5ForConditionalGeneration) with YaRN factor 4 in its config.json
+# (1,048,576 tokens) and the DFlash2 draft bundled in dflash2/.
+#
+# How SGLang 0.5.20 reads that config: the YaRN sits in
+# text_config.rope_parameters next to the interleaved mrope sections, and
+# get_rope builds YaRNScalingMRotaryEmbedding from it (original 262144 x 4)
+# for the 16 full-attention layers; the 48 GDN layers have no RoPE.
+# max_position_embeddings stays 262144 and the YaRN block names
+# original_max_position_embeddings, so SGLang derives a 262144 context and
+# refuses a longer --context-length unless
+# SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1, which model_env sets when the
+# config has YaRN.
 #
 #   hf download zenlm/zen6 --local-dir /models/zenlm/zen6
 #   ./serve.sh zen6
@@ -80,8 +91,8 @@ model_env() {
       "rope scaling; past 262144 the model would read positions it was never trained on" >&2
     exit 1
   fi
-  # YaRN is in the checkpoint: let the context length go past the
-  # max_position_embeddings SGLang derives, should the config keep 262144 there
+  # YaRN is in the checkpoint, but SGLang derives the context from
+  # max_position_embeddings (262144 here): allow the longer one
   [ -n "${ZEN6_YARN_FACTOR:-}" ] && export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1
   fp8_side_env
 }
