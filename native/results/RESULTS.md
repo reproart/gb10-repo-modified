@@ -584,6 +584,25 @@ Both formats at once (Marlin below ~16 rows, CUTLASS above) would keep a
 second copy of the ~9 GB of MLP weights for those 2%. The profile keeps
 auto.
 
+**Draft length with the FP8 draft** (FP8_DRAFT=1, auto NVFP4 GEMM, cap 12;
+draft 11 is the FP8_SIDE + FP8_DRAFT row above, draft 15 a run with
+FP8_DRAFT only, on 2026-10-01):
+
+| | Draft 11 | Draft 15 |
+|---|---:|---:|
+| Single-stream decode (700-token code answer) | 77.1 | **94.2** (94.1-94.2) |
+| accept_len there | 8.2-8.9 | 9.2-10.75 |
+| Sweep, 1 / 2 / 4 streams | 74.1 / 126.9 / 221.2 | **74.9 / 138.0 / 225.0** |
+| 8 / 12 streams | 292.4 / **396.1** | **339.0** / 340.2 |
+| Prefill 2K / 8K / 32K / 101K | 2,724 / 1,672 / — / — | 2,768 / 2,147 / 1,841 / 1,223 tok/s |
+
+With the BF16 draft, 15 won only long code answers and lost the sweep's
+short ones (67 vs 71 at one stream, "draft 11 vs 15" below). Now the draft
+step costs half, and 15 is +22% single-stream, even or ahead at 1-8
+streams and -14% at 12. The base profile moved to 15; 11 stays the choice
+when 10-12 requests at once are the norm. The 101K prefill reached 79 °C,
+1 °C under the suspend threshold.
+
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
 `RadixArk/Qwen3.8-Flash-Next-NVFP4`, `models/qwen3.8-flash-next.sh` as
