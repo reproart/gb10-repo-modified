@@ -18,7 +18,7 @@
 #   hf download zenlm/zen6 --local-dir /models/zenlm/zen6
 #   ./serve.sh zen6
 #
-# Everything comes from qwen3.8-27b.sh (SGLang 0.5.20, DFlash2 at 11 draft
+# Everything comes from qwen3.8-27b.sh (SGLang 0.5.20, DFlash2 at 15 draft
 # tokens, FP8 draft, cap 12, fp8_e4m3 KV, parsers) except the paths, the
 # name and the context length. Not the card's flags: --speculative-num-steps
 # does nothing for DFLASH, and fp8_e5m2 KV keeps 2 mantissa bits where e4m3,

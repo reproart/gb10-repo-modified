@@ -181,7 +181,7 @@ settings as a local-only commit on top of them.
 | `PORT`, `HOST` | `serve.sh` | `8888`, `0.0.0.0` | |
 | `MODEL_DIR`, `DRAFT_DIR` | profile | `/models/Qwen3.8-27B-FP8`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
 | `SGLANG_VERSION` | profile | `0.5.20` | see "Trying a newer SGLang" |
-| `DRAFT_TOKENS` | profile | `11` | 16 for single-stream, 10 for cap 32 (step 8) |
+| `DRAFT_TOKENS` | profile | `15` | 11 if you mostly run 10-12 requests at once, 10 for cap 32 (step 8) |
 | `MAX_RUNNING` | profile | `12` | the most requests you run at once; sizes the GDN pool and CUDA graphs with it (step 7) |
 | `MEM_FRACTION` | profile | `0.80` | see the earlyoom trap |
 | `CHUNKED_PREFILL` | profile | `8192` | the cookbook uses 2048: smoother decode under mixed load |
@@ -286,12 +286,12 @@ instead of cap 32's ~35, with the difference (~520K tokens) in the KV pool.
 
 | Profile | For | Cap / draft | What it gives |
 |---|---|---|---|
-| `qwen3.8-27b` (default) | up to ~12 concurrent requests | 12 / 11 | ~5 full-length sessions' worth of KV at 0.85; 73.6 tok/s single-stream, 401 tok/s at 12 (nvidia NVFP4) |
+| `qwen3.8-27b` (default) | up to ~12 concurrent requests | 12 / 15 | ~5 full-length sessions' worth of KV at 0.85; 94.2 tok/s single-stream, 339 at 8, 340 at 12 (RadixArk NVFP4, FP8 draft) |
 | `qwen3.8-27b-single` | 1–2 users | 16 / 16 | 70.9 tok/s single-stream (Uncensored finetune) |
 | `qwen3.8-27b-longctx` | six 262K sessions | 6 / 10, 0.85 | see below |
 | `qwen3.8-27b-throughput` | many short requests | 32 / 10 | 597.8 tok/s peak (RadixArk NVFP4) |
 | `qwen3.8-27b-dspark` | A/B against DFlash2 | 12 / DSpark gamma 7 (verify 8) | RadixArk's DSpark draft instead of DFlash2; unmeasured here |
-| `zen6` | 1M-token context | 12 / 11 | zenlm/zen6: RadixArk's NVFP4 with YaRN x4 in its config and the DFlash2 draft in `dflash2/`; context from the checkpoint's YaRN; unmeasured here |
+| `zen6` | 1M-token context | 12 / 15 | zenlm/zen6: RadixArk's NVFP4 with YaRN x4 in its config and the DFlash2 draft in `dflash2/`; context from the checkpoint's YaRN; unmeasured here |
 
 ### Long sessions: how many 262K contexts fit
 
