@@ -84,36 +84,52 @@ def base_shards(base: Path) -> list:
     raise SystemExit(f"no model.safetensors(.index.json) in {base}")
 
 
+# Where a text-only training wrapper's names live in a multimodal checkpoint:
+# Qwen3_5ForCausalLM saves model.layers.N..., Qwen3_5ForConditionalGeneration
+# keeps the same weights under model.language_model.layers.N...
+PREFIX_MAP = (("model.", "model.language_model."),)
+# Parts of a checkpoint a language-model adapter never trains: the MTP head
+# (same layer names as layer 0..) and the vision tower.
+NOT_TRAINED = re.compile(r"^(mtp\.|model\.visual\.|visual\.|model\.vision_tower\.)")
+
+
 def resolve(pairs: dict, base_keys: set) -> dict:
-    """Adapter module -> base weight key. The adapter's names are the PEFT-wrapped
-    model's (model.language_model.layers.0.linear_attn.in_proj_qkv); the
-    checkpoint's normally match with ".weight" appended. Otherwise a unique
-    suffix match (another wrapper prefix on one side) is accepted."""
-    out, by_suffix = {}, {}
-    for k in base_keys:
+    """Adapter module -> base weight key. Tried in order: the name as is
+    (+ ".weight"); the known prefix rewrites (PREFIX_MAP); a unique suffix
+    match among the language-model weights (MTP and vision excluded, so
+    model.layers.0.mlp.down_proj cannot land on mtp.layers.0.mlp.down_proj)."""
+    lm_keys = {k for k in base_keys if not NOT_TRAINED.match(k)}
+    by_suffix = {}
+    for k in lm_keys:
         parts = k.split(".")
         for i in range(len(parts)):
             by_suffix.setdefault(".".join(parts[i:]), []).append(k)
+    out, how = {}, {}
     for module in pairs:
         key = module + ".weight"
+        found, rule = None, None
         if key in base_keys:
-            out[module] = key
-            continue
-        cands = by_suffix.get(key, [])
-        if not cands:
-            # the adapter may carry a prefix the checkpoint does not
+            found, rule = key, "as is"
+        for old, new in PREFIX_MAP:
+            if found is None and key.startswith(old) and new + key[len(old):] in lm_keys:
+                found, rule = new + key[len(old):], f"{old}* -> {new}*"
+        if found is None:
             parts = key.split(".")
-            for i in range(1, len(parts) - 1):
+            cands = []
+            for i in range(len(parts) - 1):
                 cands = by_suffix.get(".".join(parts[i:]), [])
                 if cands:
                     break
-        if len(cands) != 1:
-            raise SystemExit(f"adapter module {module}: {len(cands)} matching base weights "
-                             f"({cands[:3]}); refusing to guess")
-        out[module] = cands[0]
+            if len(cands) != 1:
+                raise SystemExit(f"adapter module {module}: {len(cands)} matching base weights "
+                                 f"({cands[:3]}); refusing to guess")
+            found, rule = cands[0], "suffix"
+        out[module] = found
+        how[rule] = how.get(rule, 0) + 1
     dup = len(out) - len(set(out.values()))
     if dup:
         raise SystemExit(f"{dup} base weights claimed by two adapter modules")
+    print("name mapping: " + ", ".join(f"{n} {r}" for r, n in how.items()))
     return out
 
 
