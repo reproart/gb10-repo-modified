@@ -64,3 +64,9 @@ if os.environ.get("GB10_NVFP4_SCALES") == "1":
     import gb10_ple_mmap
 
     gb10_ple_mmap.install_import_hook(gb10_nvfp4_scales.TARGET_MODULE, gb10_nvfp4_scales.apply)
+
+if os.environ.get("GB10_ABLATE"):
+    import gb10_ablate
+    import gb10_ple_mmap
+
+    gb10_ple_mmap.install_import_hook(gb10_ablate.TARGET_MODULE, gb10_ablate.apply_target)

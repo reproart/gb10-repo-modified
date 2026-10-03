@@ -163,6 +163,26 @@ SKINNY_BF16="${SKINNY_BF16:-0}"
 # on every build). Lossy in principle; on by default. 0 = BF16.
 FP8_HC="${FP8_HC:-1}"
 
+# Directional ablation at inference (patches/gb10_ablate.py): per-layer unit
+# vectors from an .npz (keys = layer indices), e.g. the refusal directions
+# built for RadixArk/Qwen3.8-Flash-Next-NVFP4:
+#   hf download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors \
+#     --local-dir /models/qwen3.8-flash-next-refusal-ablation-vectors
+#   ABLATE=/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz ./serve.sh qwen3.8-flash-next
+# Each listed layer's residual stream loses ABLATE_ALPHA times its
+# component along the layer's vector: h - alpha d (d . h); no weight changes,
+# empty ABLATE = the stock model. ALPHA 1 is the vectors' validated default,
+# 1.5 stronger (watch for incoherence). ABLATE_AT output|input (which side
+# of each layer; the boot log prints how alike neighbouring vectors are),
+# ABLATE_STREAMS each|mean (all 4 hyper-connection streams, or only their
+# mean, which the vectors were taken from). For the RadixArk weights only:
+# vectors are model- and quantization-specific, and pointless on the
+# abliterated checkpoint (WEIGHTS=abliterated), whose weights already have it.
+ABLATE="${ABLATE:-}"
+ABLATE_ALPHA="${ABLATE_ALPHA:-1.0}"
+ABLATE_AT="${ABLATE_AT:-output}"
+ABLATE_STREAMS="${ABLATE_STREAMS:-each}"
+
 # Concurrency is bought with GDN state slots (~113 MB each in fp32 at TP=1),
 # out of the ~12-18 GB the weights leave. The cookbook's pins: with MTP,
 # 8 requests x 5 slots (extra_buffer); without, 24 x 4 (extra_buffer_lazy).
@@ -259,7 +279,17 @@ model_env() {
   else
     unset GB10_FP8_HC
   fi
-  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_SKINNY_BF16:-}${GB10_FP8_HC:-}" ]; then
+  if [ -n "$ABLATE" ]; then
+    if [ ! -f "$ABLATE" ]; then
+      echo "ABLATE=$ABLATE: no such file" >&2
+      exit 1
+    fi
+    export GB10_ABLATE="$ABLATE" GB10_ABLATE_ALPHA="$ABLATE_ALPHA" \
+      GB10_ABLATE_AT="$ABLATE_AT" GB10_ABLATE_STREAMS="$ABLATE_STREAMS"
+  else
+    unset GB10_ABLATE GB10_ABLATE_ALPHA GB10_ABLATE_AT GB10_ABLATE_STREAMS
+  fi
+  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_SKINNY_BF16:-}${GB10_FP8_HC:-}${GB10_ABLATE:-}" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -304,5 +334,5 @@ model_summary() {
   local heads="target BF16"
   [ "$FP8_HEAD" = 1 ] && heads="target FP8"
   [ "$MTP" = 1 ] && heads="$heads, draft $([ "$FP8_DRAFT_HEAD" = 1 ] && echo FP8 || echo BF16)"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple$([ -n "$ABLATE" ] && echo "; ablation $(basename "$ABLATE") alpha $ABLATE_ALPHA at layer $ABLATE_AT, $ABLATE_STREAMS stream(s)")"
 }
