@@ -55,31 +55,64 @@ def settings() -> dict:
     return {"path": path, "alpha": alpha, "at": at, "streams": streams}
 
 
+def _unit(v, layer, hidden):
+    import numpy as np
+
+    v = np.asarray(v, dtype=np.float32).reshape(-1)
+    if v.shape[0] != hidden:
+        raise RuntimeError(f"GB10_ABLATE: layer {layer} vector has {v.shape[0]} values, "
+                           f"the model's hidden size is {hidden}: vectors for another model?")
+    n = float(np.linalg.norm(v))
+    if not n > 0:
+        raise RuntimeError(f"GB10_ABLATE: layer {layer} vector is zero")
+    if abs(n - 1.0) > 1e-3:
+        logger.info("GB10_ABLATE: layer %s vector norm %.4f, normalized", layer, n)
+    return v / n
+
+
 def load_directions(path: str, hidden: int) -> dict:
-    """{layer index: float32 numpy unit vector [hidden]} from an .npz."""
+    """{layer index: float32 numpy unit vector [hidden]} from an .npz in
+    either layout:
+      * one array per layer, keyed by the layer index ("4", "5", ...); other
+        keys (metadata such as a "layers" list) are listed and skipped;
+      * one [n, hidden] matrix next to a 1-D "layers" array of n indices."""
     import numpy as np
 
     if not os.path.isfile(path):
         raise RuntimeError(f"GB10_ABLATE={path}: no such file")
     with open(path, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()
-    out = {}
+    out, other = {}, {}
     with np.load(path) as z:
-        for key in z.files:
-            if not key.isdigit():
-                raise RuntimeError(f"GB10_ABLATE: key {key!r} in {path} is not a layer index")
-            v = np.asarray(z[key], dtype=np.float32).reshape(-1)
-            if v.shape[0] != hidden:
-                raise RuntimeError(f"GB10_ABLATE: layer {key} vector has {v.shape[0]} values, "
-                                   f"the model's hidden size is {hidden}: vectors for another model?")
-            n = float(np.linalg.norm(v))
-            if not n > 0:
-                raise RuntimeError(f"GB10_ABLATE: layer {key} vector is zero")
-            if abs(n - 1.0) > 1e-3:
-                logger.info("GB10_ABLATE: layer %s vector norm %.4f, normalized", key, n)
-            out[int(key)] = v / n
+        arrays = {k: z[k] for k in z.files}
+    for key, arr in arrays.items():
+        if key.isdigit():
+            out[int(key)] = _unit(arr, key, hidden)
+        else:
+            other[key] = arr
+    listed = other.get("layers")
     if not out:
-        raise RuntimeError(f"GB10_ABLATE: {path} holds no vectors")
+        mats = {k: a for k, a in other.items() if a.ndim == 2 and a.shape[1] == hidden}
+        if listed is not None and len(mats) == 1:
+            name, mat = next(iter(mats.items()))
+            idx = [int(i) for i in np.asarray(listed).reshape(-1)]
+            if len(idx) != mat.shape[0]:
+                raise RuntimeError(f"GB10_ABLATE: {len(idx)} layer indices for {mat.shape[0]} "
+                                   f"rows of {name!r} in {path}")
+            out = {i: _unit(row, i, hidden) for i, row in zip(idx, mat)}
+            other = {k: a for k, a in other.items() if k not in (name, "layers")}
+    elif listed is not None:
+        idx = sorted(int(i) for i in np.asarray(listed).reshape(-1))
+        if idx != sorted(out):
+            logger.warning("GB10_ABLATE: the file's 'layers' list %s differs from its vector "
+                           "keys %s; using the keys", idx, sorted(out))
+        other.pop("layers")
+    if other:
+        logger.info("GB10_ABLATE: skipped non-vector entries %s",
+                    ", ".join(f"{k} {tuple(a.shape)}" for k, a in other.items()))
+    if not out:
+        raise RuntimeError(f"GB10_ABLATE: no per-layer vectors in {path}: entries " + ", ".join(
+            f"{k} {tuple(a.shape)}" for k, a in arrays.items()))
     logger.info("GB10_ABLATE: %s (sha256 %s...), %d layers %d..%d", os.path.basename(path),
                 digest[:12], len(out), min(out), max(out))
     return out
