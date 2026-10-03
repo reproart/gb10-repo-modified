@@ -41,6 +41,23 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models
   exit 1
 fi
 
+# Unified memory: the GPU's pool is the machine's RAM. A leftover process
+# holding most of it (a server that did not exit, a llama.cpp test, a merge
+# script) shows up inside SGLang as "CUDA error: out of memory" before any
+# weight loads, even from torch.cuda.mem_get_info. Say who it is instead.
+MIN_FREE_GIB="${MIN_FREE_GIB:-40}"
+avail_gib=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1048576 }' /proc/meminfo)
+if [ "$avail_gib" -lt "$MIN_FREE_GIB" ]; then
+  echo "only $avail_gib GiB of memory available (MIN_FREE_GIB=$MIN_FREE_GIB): something else holds it." >&2
+  { nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader 2>/dev/null || true; } |
+    sed 's/^/  on the GPU: /' >&2
+  ps -eo pid,rss,args --sort=-rss | awk 'NR > 1 && NR <= 6 {
+    printf "  pid %-8s %6.1f GiB  %s\n", $1, $2 / 1048576, substr($0, index($0, $3), 90) }' >&2
+  echo "Stop it (kill <pid>; sudo systemctl stop gb10-sglang for the service), or" \
+    "MIN_FREE_GIB=0 to start anyway." >&2
+  exit 1
+fi
+
 # The venv's bin/ goes on PATH, as `activate` would do: FlashInfer's JIT runs
 # a bare `ninja`, which the venv carries (the Docker image had its venv active).
 export PATH="$VENV/bin:$PATH"
