@@ -136,6 +136,24 @@ class AblateTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_model()
 
+    def test_metadata_keys_are_skipped(self):
+        # the published file: per-layer keys plus a "layers" list
+        np.savez(self.path, layers=np.array([2, 3, 4]), **{str(i): v for i, v in self.dirs.items()})
+        dirs = self.f.load_directions(self.path, H)
+        self.assertEqual(sorted(dirs), [2, 3, 4])
+
+    def test_matrix_layout(self):
+        mat = np.stack([self.dirs[i] for i in (2, 3, 4)])
+        np.savez(self.path, layers=np.array([2, 3, 4]), directions=mat)
+        dirs = self.f.load_directions(self.path, H)
+        self.assertEqual(sorted(dirs), [2, 3, 4])
+        self.assertTrue(np.allclose(dirs[3], self.dirs[3] / np.linalg.norm(self.dirs[3])))
+
+    def test_no_vectors_lists_entries(self):
+        np.savez(self.path, layers=np.array([2]), note=np.array([1.0]))
+        with self.assertRaisesRegex(RuntimeError, "layers"):
+            self.f.load_directions(self.path, H)
+
     def test_bad_settings(self):
         os.environ["GB10_ABLATE_AT"] = "middle"
         with self.assertRaises(RuntimeError):
