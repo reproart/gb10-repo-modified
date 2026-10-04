@@ -35,6 +35,9 @@ whose optimum depends on the workload, the memory fraction that doesn't
 matter for speed but does for stability. Plus a benchmark suite that refuses
 to report numbers it can't trust.
 
+**A step-by-step manual for every model here (in Russian):
+[`MANUAL.md`](MANUAL.md).**
+
 ## Quick start
 
 ```bash
