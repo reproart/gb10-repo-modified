@@ -36,6 +36,32 @@ SGLANG_INDEX="${SGLANG_INDEX:-}"
 # Either way the server prints the revision it found at startup.
 MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
 DRAFT_DIR="${DRAFT_DIR:-/models/Qwen3.8-27B-DFlash2}"
+
+# Speculative decoding:
+#   dflash  z-lab's DFlash2 draft (DRAFT_DIR), DRAFT_TOKENS per step: the
+#           default, 94.2 tok/s single-stream at 15 on RadixArk NVFP4.
+#   mtp     the checkpoint's own MTP head (NEXTN; no draft download), as the
+#           infercrane Qwen3.8-27B-FP8 recipe serves it on an H200: 3 steps,
+#           top-1, 4 tokens verified. At most 4 tokens a step against DFlash2's
+#           ~9 accepted, so expect less on one stream here (a GB10 step is
+#           bound by reading the weights); unmeasured on GB10. The checkpoint
+#           must carry the head (config.json: mtp_num_hidden_layers).
+SPEC="${SPEC:-dflash}"
+MTP_STEPS="${MTP_STEPS:-3}"
+MTP_DRAFT_TOKENS="${MTP_DRAFT_TOKENS:-4}"
+case "$SPEC" in
+  dflash) ;;
+  mtp) DRAFT_DIR="" ;;
+  *) echo "SPEC must be dflash or mtp, not '$SPEC'" >&2; exit 2 ;;
+esac
+# flashinfer with DFlash2, as measured. MTP takes triton, as on Ornith, where
+# flashinfer + MTP rejected every proposal (accept_len 1.00; on a checkpoint
+# that was broken anyway, so try ATTENTION_BACKEND=flashinfer too).
+if [ "$SPEC" = mtp ]; then
+  ATTENTION_BACKEND="${ATTENTION_BACKEND:-triton}"
+else
+  ATTENTION_BACKEND="${ATTENTION_BACKEND:-flashinfer}"
+fi
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.8-27b-sglang}"
 
 # Draft tokens per step, the largest single-stream lever. The optima diverge:
@@ -175,7 +201,7 @@ model_args() {
     --max-mamba-cache-size "$MAMBA_CACHE"
     --max-running-requests "$MAX_RUNNING"
     --cuda-graph-max-bs-decode "$CUDA_GRAPH_BS"
-    --attention-backend flashinfer
+    --attention-backend "$ATTENTION_BACKEND"
     --chunked-prefill-size "$CHUNKED_PREFILL"
     --reasoning-parser qwen3
     --tool-call-parser qwen3_coder
@@ -188,6 +214,15 @@ model_args() {
 # The speculative-decoding flags, on their own so that a variant with another
 # draft (qwen3.8-27b-dspark.sh) replaces only these.
 spec_args() {
+  if [ "$SPEC" = mtp ]; then
+    args+=(
+      --speculative-algorithm NEXTN
+      --speculative-num-steps "$MTP_STEPS"
+      --speculative-eagle-topk 1
+      --speculative-num-draft-tokens "$MTP_DRAFT_TOKENS"
+    )
+    return 0
+  fi
   args+=(
     --speculative-algorithm DFLASH
     --speculative-draft-model-path "$DRAFT_DIR"
@@ -198,12 +233,12 @@ spec_args() {
 # The FP8 / FP4 knobs for the startup summary.
 fp8_summary() {
   [ "$FP8_SIDE" = 1 ] && printf '; BF16 layers -> FP8 (Marlin)'
-  [ "$FP8_DRAFT" = 1 ] && printf '; draft -> FP8 (Marlin)'
+  [ "$FP8_DRAFT" = 1 ] && [ "$SPEC" != mtp ] && printf '; draft -> FP8 (Marlin)'
   [ -n "$FP4_GEMM_BACKEND" ] && printf '; FP4 GEMM %s' "$FP4_GEMM_BACKEND"
   return 0
 }
 
 # One line for the startup summary.
 model_summary() {
-  echo "DFlash2, $DRAFT_TOKENS draft tokens; cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)$(fp8_summary)"
+  echo "$([ "$SPEC" = mtp ] && echo "MTP (NEXTN $MTP_STEPS/1/$MTP_DRAFT_TOKENS), attention $ATTENTION_BACKEND" || echo "DFlash2, $DRAFT_TOKENS draft tokens"); cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)$(fp8_summary)"
 }
