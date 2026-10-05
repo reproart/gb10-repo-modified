@@ -82,7 +82,7 @@ fi
 . "$ROOT/models/qwen3.8-27b.sh"
 
 model_env() {
-  if [ ! -f "$DRAFT_DIR/config.json" ]; then
+  if [ "$SPEC" != mtp ] && [ ! -f "$DRAFT_DIR/config.json" ]; then
     echo "zen6: no draft at $DRAFT_DIR (the card bundles it in dflash2/; set DRAFT_DIR)" >&2
     exit 1
   fi
@@ -98,5 +98,5 @@ model_env() {
 }
 
 model_summary() {
-  echo "zen6: YaRN $([ -n "${ZEN6_YARN_FACTOR:-}" ] && echo "x$ZEN6_YARN_FACTOR" || echo none), context $CONTEXT_LENGTH; DFlash2 (bundled), $DRAFT_TOKENS draft tokens; cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)$(fp8_summary)"
+  echo "zen6: YaRN $([ -n "${ZEN6_YARN_FACTOR:-}" ] && echo "x$ZEN6_YARN_FACTOR" || echo none), context $CONTEXT_LENGTH; $([ "$SPEC" = mtp ] && echo "MTP (NEXTN $MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo "DFlash2 (bundled), $DRAFT_TOKENS draft tokens"); cap $MAX_RUNNING requests (GDN pool $MAMBA_CACHE)$(fp8_summary)"
 }

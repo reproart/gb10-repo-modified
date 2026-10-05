@@ -190,6 +190,7 @@ settings as a local-only commit on top of them.
 | `CHUNKED_PREFILL` | profile | `8192` | the cookbook uses 2048: smoother decode under mixed load |
 | `PREFILL_CUDA_GRAPH` | profile | `0` | 1 turns prefill CUDA graphs on (untested here) |
 | `CONTEXT_LENGTH` | profile | `262144` | |
+| `SPEC` | profile | `dflash` | `mtp`: the checkpoint's own MTP head (NEXTN 3/1/4, `MTP_STEPS`, `MTP_DRAFT_TOKENS`) instead of DFlash2; unmeasured here |
 | `FP8_DRAFT` | profile | `1` (`-dspark`: `0`) | the DFlash2 draft's MLPs and o_proj in FP8 weight-only (Marlin): +4% single-stream, accept_len unchanged |
 | `FP4_GEMM_BACKEND` | profile | auto | dense NVFP4 GEMM kernel (`marlin`, `flashinfer_cudnn`, `flashinfer_trtllm`, ...); cudnn: no gain; marlin +2% single-stream, -23% at 12 streams |
 | `FP8_SIDE` | profile | `0` | 1: the target's BF16 linear layers to FP8 (Marlin); on RadixArk's NVFP4 only GDN's small in_proj_ba (~2% of a step) |

@@ -516,6 +516,33 @@ longer draft pays only while acceptance stays high, which long, predictable
 code gives and short or varied answers do not. The base profile keeps 11;
 draft 15 suits long code generation for one user (`DRAFT_TOKENS=15`).
 
+### The infercrane Qwen3.8-27B-FP8 recipe, read against this one (2026-10-05)
+
+A published recipe (`qwen38-27b-h200-nextn-k4`): the same checkpoint and
+revision (Qwen/Qwen3.8-27B-FP8 @ 017b9c7a) on the same SGLang 0.5.20 image,
+with NEXTN MTP (3 steps, top-1, 4 tokens verified), `--mem-fraction-static
+0.90`, fp8_e4m3 KV, prefill and decode CUDA-graph batch lists, and a patch
+keeping the GDN gate beta in float32. Its claim is against plain SGLang on
+the same GPU, an **H200** (4.8 TB/s against GB10's ~273 GB/s), on a
+sampled agent trace (3.9K in / 1.4K out, temperature 0.7, 4-16 streams).
+None of its speeds carry over to a Spark, and it does not compare itself
+with DFlash2. Taken from it:
+
+- **The GDN precision patch** (`scripts/patch-sglang-gdn-precision.py`):
+  the three files match its stock digests byte for byte in our 0.5.20, and
+  the edit reproduces its patched digests. Prefill (`fused_gdn_gating`) and
+  non-speculative decode round beta through BF16; DFlash2 / MTP verify
+  already keep it in float32. Opt-in; a precision fix, to judge on
+  answers, not tok/s.
+- **`SPEC=mtp`** in the 27B profile, to measure MTP against DFlash2 here: at
+  most 4 tokens a step against DFlash2's ~9, so likely slower on one stream
+  on GB10; unmeasured.
+
+Not taken: `--mem-fraction-static 0.90` (earlyoom on unified memory, see
+Traps), and prefill CUDA graphs, which SGLang turns off for the
+multimodal Qwen3_5ForConditionalGeneration ("Breakable CUDA graph is
+incompatible with multimodal model", seen in our boot logs).
+
 ### zen6: the same 27B with YaRN x4 (2026-10-01)
 
 `zenlm/zen6`, `models/zen6.sh`: RadixArk/Qwen3.8-27B-NVFP4's weights and
