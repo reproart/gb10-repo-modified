@@ -296,7 +296,7 @@ instead of cap 32's ~35, with the difference (~520K tokens) in the KV pool.
 | `qwen3.8-27b-throughput` | many short requests | 32 / 10 | 597.8 tok/s peak (RadixArk NVFP4) |
 | `qwen3.8-27b-dspark` | A/B against DFlash2 | 12 / DSpark gamma 7 (verify 8) | RadixArk's DSpark draft instead of DFlash2; unmeasured here |
 | `zen6` | 1M-token context | 12 / 15 | zenlm/zen6: RadixArk's NVFP4 with YaRN x4 in its config and the DFlash2 draft in `dflash2/`; context from the checkpoint's YaRN; 80.0 tok/s single-stream, 408 at 12 (draft 11), as RadixArk |
-| `meerkat-triz` | TRIZ fine-tune, to try | 12 / 15 | Meerkat-AI's LoRA merged into Qwen/Qwen3.8-27B with `scripts/merge-lora.py`, FP8 at load; compare answers with `bench/answers.py`; unmeasured |
+| `meerkat-triz` | TRIZ fine-tune | 12 / 15 | Meerkat-AI's LoRA merged into Qwen/Qwen3.8-27B with `scripts/merge-lora.py`, then block FP8 like Qwen's own with `scripts/fp8-like-reference.py` (or FP8 at load); compare answers with `bench/answers.py`; unmeasured |
 
 ### Long sessions: how many 262K contexts fit
 
