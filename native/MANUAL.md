@@ -221,6 +221,19 @@ $HF download Meerkat-AI/Meerkat-TRIZ-v1-Qwen3.8-27B --local-dir /models/Meerkat-
 ./serve.sh meerkat-triz
 ```
 
+- **FP8-чекпойнт вместо перевода при каждой загрузке** (рекомендуется):
+  тот же формат, что у официального `Qwen/Qwen3.8-27B-FP8` (блоки 128×128),
+  ~29 ГБ вместо 54, загрузка быстрее, ядра — те же, что у FP8-цели 27B.
+  Сначала `check`: квантует исходную BF16 Qwen и сравнивает с официальным
+  FP8 побайтно (≈100% одинаковых байт — значит, метод тот же):
+
+  ```bash
+  PY=~/spark/venv-sglang-0.5.20/bin/python3     # сервер остановлен
+  $PY scripts/fp8-like-reference.py check /models/Qwen3.8-27B /models/Qwen3.8-27B-FP8
+  $PY scripts/fp8-like-reference.py convert /models/Meerkat-TRIZ-v1-Qwen3.8-27B-merged \
+      /models/Qwen3.8-27B-FP8 /models/Meerkat-TRIZ-v1-Qwen3.8-27B-FP8
+  ./serve.sh meerkat-triz      # сам возьмёт FP8-каталог, если он есть (WEIGHTS=bf16 — по-старому)
+  ```
 - `merge-lora.py` должен напечатать `name mapping: 496 model.* ->
   model.language_model.*` и закончить на `496/496`. Он ничего не пишет, если
   хоть одна пара не нашла свой вес.
