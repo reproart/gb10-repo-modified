@@ -551,6 +551,29 @@ How to try it: `SGLANG_VERSION=0.5.21 ./serve.sh <profile> install`, then
 the same variable for the server, side by side with 0.5.20 (MANUAL.md, "Новая
 версия SGLang").
 
+**Measured, Qwen3.8-27B** (RadixArk NVFP4, DFlash2 draft 15, FP8 draft, cap
+12; three `perf.py` runs on 0.5.21 on the second Spark, against the 0.5.20
+run of the "Draft length with the FP8 draft" table and the other 0.5.20 runs
+of these days):
+
+| | 0.5.20 | 0.5.21 (3 runs) |
+|---|---:|---:|
+| Single-stream decode (700-token code answer) | 94.2 | 92.0 / 91.6 / 91.8 |
+| accept_len there | 9.2-10.75 | 9.3-10.8 |
+| TTFT, short prompt | 187 ms | 191-192 ms |
+| Sweep, 1 / 2 / 4 streams | 74.9 / 138.0 / 225.0 | 72-87 / 126-145 / 206-214 |
+| 8 / 12 streams | 339.0 / 340.2 | 311-324 / 370-383 |
+| Prefill 2K | 2,724-2,768 | 2,709-2,817 |
+| Prefill 8K / 32K | 1,672-2,210 / 1,717-1,841 | 1,559-1,864 / 1,569-1,593 |
+| Prefill 101K | 1,212-1,223 | 1,118-1,121 |
+
+Decode is the same within the ~8% boot-to-boot spread (-2% single-stream,
+accept_len unchanged, 12 streams higher, 4-8 lower). Long prefill is lower
+in all three runs: -8% at 101K and ~-10% at 32K, outside the spread of the
+0.5.20 runs; the baseline came from the other Spark, so an A/B on one box
+settles it. The patches booted unchanged. Nothing gained for the 27B: it
+stays on 0.5.20. The 101K prefill reached 82-83 C on this Spark.
+
 ### The infercrane Qwen3.8-27B-FP8 recipe, read against this one (2026-10-05)
 
 A published recipe (`qwen38-27b-h200-nextn-k4`): the same checkpoint and
