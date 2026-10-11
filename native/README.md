@@ -439,7 +439,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b  meerkat-triz  mimo-v2.6-flash  ornith-1.5-35b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next(-abliterated)  zen6
+ls models/                        # gemma4-31b  ling-3.0-flash-vl  meerkat-triz  mimo-v2.6-flash  ornith-1.5-35b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next(-abliterated)  zen6
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest
@@ -656,6 +656,22 @@ interface (`LINK_IF` to override; `NCCL_DEBUG=INFO` should show `NET/IB`).
 Knobs to measure: `DRAFT_TOKENS` (8, the cookbook's), `MOE_RUNNER_BACKEND=
 flashinfer_mxfp4`, `EP=1`, `KV_CACHE_DTYPE=fp8_e4m3`; `WEIGHTS=rl` for the
 -RL checkpoint.
+
+### Ling-3.0-flash-VL
+
+[`models/ling-3.0-flash-vl.sh`](models/ling-3.0-flash-vl.sh): inclusionAI's
+~125B vision-language MoE (5.1B active; KDA linear attention + gated MLA;
+images and video, thinking, tool calls; no draft) on one Spark, from the
+SGLang cookbook's recipe, whose DGX Spark cells are verified: the MXFP4
+export at TPOT 30.2 ms single-stream (~33 tok/s, 8K in) and 1,070 tok/s
+in+out at 16 streams, the GPTQ INT4 one at 44.2 ms. SGLang 0.5.21 picks the
+flashinfer_mxfp4 MoE path on GB10 by itself. `WEIGHTS=int4`, `YARN=0` (native
+128K instead of the recipe's 256K YaRN x2). Unmeasured here.
+
+```bash
+$HF download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-VL-fp4
+./serve.sh ling-3.0-flash-vl install && ./serve.sh ling-3.0-flash-vl
+```
 
 ## GGUF models on llama.cpp: `llamacpp/`
 

@@ -35,6 +35,7 @@
 | `ornith-1.5-35b` | Ornith 1.5 35B-A3B FP8 + драфт DFlash | ~35 ГБ + драфт | **97.6** | измерена |
 | `gemma4-31b` | Gemma 4 31B BF16 + MTP | ~62 ГБ | | не измерена |
 | `mimo-v2.6-flash` | MiMo-V2.6-Flash 309B MoE (MXFP4) + DFlash, **на двух Spark**, SGLang 0.5.21 | ~165 ГиБ на каждом | | не измерена |
+| `ling-3.0-flash-vl` | Ling-3.0-flash-VL 125B MoE (5.1B акт.), картинки и видео, SGLang 0.5.21 | ~70 ГБ (оценка) | ~33 по рецепту SGLang (FP4) | рецепт проверен на Spark, у нас не измерена |
 | `llamacpp/` | GLM-5.3-Flash 320B, GGUF 3.0/3.5 бит | 117 / 137 ГБ | | на одном Spark — проверка, на двух — рабочий вариант |
 
 Главное правило: **одна модель за раз**. Память GPU и оперативная память на
@@ -398,6 +399,32 @@ GLM на llama.cpp (QSFP-кабель, адреса из `llamacpp/README.md`). 
 и что `HEAD_ADDR` — адрес этой машины (на A) или до него есть маршрут (на B).
 Для службы systemd задайте `NODE_RANK` и `HEAD_ADDR` через `export` в
 `serve.sh` на каждой машине.
+
+### 4.9. Ling-3.0-flash-VL 125B — картинки и видео на одном Spark
+
+inclusionAI Ling-3.0-flash-VL: MoE ~125B / 5.1B активных (гибрид линейного
+внимания KDA и MLA), с энкодером для картинок и видео, размышлением и
+вызовом инструментов. Драфта нет. В рецепте SGLang для неё есть **проверенные
+ячейки DGX Spark**: FP4 — ~33 ток/с на одном потоке (TPOT 30 мс, вход 8K),
+~1070 ток/с суммарно на 16 потоках; INT4 — ~23 ток/с. Нужен SGLang 0.5.21.
+
+```bash
+$HF download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-VL-fp4
+./serve.sh ling-3.0-flash-vl install
+./serve.sh ling-3.0-flash-vl
+```
+
+- `WEIGHTS=int4` — GPTQ-версия (`/models/inclusionAI/Ling-3.0-flash-VL-int4`):
+  медленнее, на бенчмарках чуть точнее (MMMU-Pro 77.5 против 76.2).
+- `YARN=0` — родной контекст 128K без YaRN (по умолчанию 256K через YaRN ×2,
+  как в рецепте; YaRN статический и действует и на короткие запросы).
+- `MAX_RUNNING=16` — потолок одновременных запросов. Картинка 720p — ~880
+  токенов, видеоклип — несколько тысяч.
+- Размышление выключается в запросе:
+  `"chat_template_kwargs": {"enable_thinking": false}`.
+
+Картинки — `image_url`, видео — `video_url` в сообщении (формат OpenAI).
+Аудио модель не принимает.
 
 ---
 
