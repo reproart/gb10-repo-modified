@@ -367,7 +367,8 @@ Xiaomi MiMo-V2.6-Flash: MoE 309B / 15B активных, эксперты в MXF
 ```bash
 # на ОБЕИХ машинах (веса нужны целиком на каждой):
 $HF download XiaomiMiMo/MiMo-V2.6-Flash --local-dir /models/XiaomiMiMo/MiMo-V2.6-Flash
-./serve.sh mimo-v2.6-flash install          # venv SGLang 0.5.21
+sudo apt install ffmpeg                     # библиотеки FFmpeg для torchcodec
+./serve.sh mimo-v2.6-flash install          # venv SGLang 0.5.21 + torchcodec
 
 # Spark A (на нём будет API, :8888), 10.10.10.1 — его адрес на прямом линке:
 NODE_RANK=0 HEAD_ADDR=10.10.10.1 ./serve.sh mimo-v2.6-flash
@@ -501,7 +502,10 @@ python3 bench/perf.py                                   # сравнить с з
   если что-то не совпадает, сервер останавливается с сообщением, какой
   патч выключить. Молча неправильно они не работают.
 - Перед первым запуском на новой версии ядра компилируются заново —
-  первый старт долгий.
+  первый старт долгий: Flash-Next на 0.5.21 стартовал 31 минуту вместо ~10.
+- Если профилю нужны пакеты сверх SGLang, он перечисляет их в
+  `EXTRA_PACKAGES`, и `install` ставит их, не сдвигая версии из lock-файла
+  (так MiMo получает `torchcodec`, которого SGLang на aarch64 не ставит).
 - Патч точности GDN нужно применить и в новом venv (его python).
 - Старый venv удаляется вручную, когда он больше не нужен:
   `rm -rf ~/spark/venv-sglang-0.5.20` (~8 ГБ).

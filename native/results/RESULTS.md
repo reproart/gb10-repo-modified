@@ -574,6 +574,35 @@ in all three runs: -8% at 101K and ~-10% at 32K, outside the spread of the
 settles it. The patches booted unchanged. Nothing gained for the 27B: it
 stays on 0.5.20. The 101K prefill reached 82-83 C on this Spark.
 
+**Measured, Qwen3.8-Flash-Next** (`models/qwen3.8-flash-next.sh` as shipped:
+NVFP4, MTP 3/1/4, 65K draft vocabulary, FP8 side layers, both heads and HC
+mix in FP8, cap 8; every patch booted unchanged and logged its conversions
+as on 0.5.20; one `perf.py` run against the two 0.5.20 runs of the
+`FP8_HC=1` table):
+
+| | 0.5.20 (2 runs) | 0.5.21 |
+|---|---:|---:|
+| Single-stream decode (700-token code answer) | 65.9 / 65.7 | 65.2 (62.6-67.7) |
+| accept_len there | 3.42-3.75 | 3.52-3.62 |
+| TTFT, short prompt | 134-135 ms | 131 ms |
+| Sweep, 1 / 2 / 4 / 8 streams | 60.8-65.0 / 99.0-102.0 / 148.4-152.6 / 212.3-223.9 | 64.4 / 91.6 / 143.7 / 223.4 |
+| Prefill 2K / 8K | 1,444-1,458 / 1,511-1,648 | 1,525 / 1,701 |
+| Prefill 32K / 101K | 1,447-1,661 / 1,229-1,499 | 1,732 / 1,631 |
+
+Decode is the same: the verify-step PLE fusion did not show at one or eight
+streams (2 streams -8%, inside the spread at that level). Prefill is higher
+at every length, most at 101K (+9-33%), the opposite of the 27B; this run
+was also cooler (69 C at 101K against 74-76 C). No reason to move the
+profile either way on one run; it stays on 0.5.20 with the 27B.
+
+The first boot on 0.5.21 took 31 minutes (scheduler start 1,865 s): weights
+7.4 min as before, then ~22 min between the FlashInfer MoE autotune and the
+first TileLang kernel, compiling for the new FlashInfer (0.6.18) with
+JIT_JOBS=2. Later boots read the cache. The same log also showed the MiMo-V2
+multimodal processor skipped for want of torchcodec, which SGLang does not
+install on aarch64: `models/mimo-v2.6-flash.sh` now installs it
+(`EXTRA_PACKAGES`, a new install hook) and checks it before loading.
+
 ### The infercrane Qwen3.8-27B-FP8 recipe, read against this one (2026-10-05)
 
 A published recipe (`qwen38-27b-h200-nextn-k4`): the same checkpoint and
