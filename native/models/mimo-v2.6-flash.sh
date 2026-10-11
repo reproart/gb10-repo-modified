@@ -30,6 +30,16 @@
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.21}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
 
+# The MiMo-V2 multimodal processor imports torchcodec at module level, and
+# SGLang's aarch64 wheel does not pull it in (x86 gets torchcodec==0.15.0):
+# without it the processor is skipped ("Ignore import error when loading
+# ...processors.mimo_v2: No module named 'torchcodec'", seen in a 0.5.21
+# boot log here) and a MiMoV2ForCausalLM checkpoint stops at "No processor
+# registered for architecture". ./serve.sh mimo-v2.6-flash install adds the
+# version SGLang pins for x86; torchcodec also needs FFmpeg's libraries
+# (sudo apt install ffmpeg).
+EXTRA_PACKAGES="${EXTRA_PACKAGES-torchcodec==0.15.0}"
+
 # Weights, downloaded once ON BOTH SPARKS (every rank opens every shard and
 # keeps its half; ~165 GiB each, or copy it over the link with rsync):
 #   hf download XiaomiMiMo/MiMo-V2.6-Flash --local-dir /models/XiaomiMiMo/MiMo-V2.6-Flash
@@ -156,6 +166,16 @@ model_env() {
     exit 1
   fi
   export NCCL_SOCKET_IFNAME="$LINK_IF" GLOO_SOCKET_IFNAME="$LINK_IF"
+  # The multimodal architecture needs its processor, which needs torchcodec
+  # (and FFmpeg under it): say so here, not after the weights load.
+  if grep -q '"MiMoV2ForCausalLM"' "$MODEL_DIR/config.json" 2>/dev/null &&
+     ! "$VENV/bin/python" -c 'import torchcodec.decoders' >/dev/null 2>&1; then
+    echo "torchcodec does not import in $VENV; the MiMo-V2 processor needs it:" >&2
+    echo "  ./serve.sh mimo-v2.6-flash install    (adds $EXTRA_PACKAGES)" >&2
+    echo "  sudo apt install ffmpeg               (if it still fails: FFmpeg's libraries)" >&2
+    echo "  $VENV/bin/python -c 'import torchcodec.decoders'   shows the error" >&2
+    exit 1
+  fi
   # Each Spark must hold its half of the weights inside the static fraction,
   # with something left for KV: fail here, not after minutes of loading.
   local ckpt_gib mem_gib budget_gib

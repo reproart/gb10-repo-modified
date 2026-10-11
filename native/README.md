@@ -646,7 +646,8 @@ Unmeasured.
 ```bash
 # both Sparks: the whole checkpoint, and the 0.5.21 venv
 $HF download XiaomiMiMo/MiMo-V2.6-Flash --local-dir /models/XiaomiMiMo/MiMo-V2.6-Flash
-./serve.sh mimo-v2.6-flash install
+sudo apt install ffmpeg            # for torchcodec, which the MiMo-V2 processor imports
+./serve.sh mimo-v2.6-flash install  # 0.5.21 + torchcodec (EXTRA_PACKAGES)
 NODE_RANK=0 HEAD_ADDR=10.10.10.1 ./serve.sh mimo-v2.6-flash   # Spark A: the API
 NODE_RANK=1 HEAD_ADDR=10.10.10.1 ./serve.sh mimo-v2.6-flash   # Spark B: worker
 ```

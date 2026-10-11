@@ -79,6 +79,14 @@ if ! "${UV[@]}" "${index[@]}" -r "$LOCK"; then
   exit 1
 fi
 
+# Packages a profile needs beyond SGLang's own (EXTRA_PACKAGES in
+# models/<name>.sh, pinned), held to the lock so nothing in it moves.
+if [ -n "${EXTRA_PACKAGES:-}" ]; then
+  read -ra extra_pkgs <<< "$EXTRA_PACKAGES"
+  echo "== $PROFILE also needs: ${extra_pkgs[*]} =="
+  "${UV[@]}" "${index[@]}" -c "$LOCK" "${extra_pkgs[@]}"
+fi
+
 # Precompiled FlashInfer kernels, as the official image installs them. Not on
 # PyPI, so best-effort: without it the kernels are JIT-compiled on first use
 # (slower first boot, cached afterwards).
