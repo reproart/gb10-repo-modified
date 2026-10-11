@@ -516,6 +516,41 @@ longer draft pays only while acceptance stays high, which long, predictable
 code gives and short or varied answers do not. The base profile keeps 11;
 draft 15 suits long code generation for one user (`DRAFT_TOKENS=15`).
 
+### SGLang 0.5.21 against this project, read from the wheel (2026-10-11)
+
+Not run yet; what the aarch64 / cp312 wheel from PyPI shows against 0.5.20:
+
+- **Dependencies:** the same torch 2.13.0, flashinfer 0.6.18 (cu13),
+  transformers 5.12.1 and cuda-python; newer xgrammar (0.2.1 -> 0.2.7),
+  sentencepiece pinned to 0.2.1, `regex` added. The CUDA 13.0 hold
+  (`requirements/constraints-cuda130.txt`) should resolve as before.
+- **Server flags:** every flag our profiles and `scripts/serve-sglang.sh`
+  pass is still there.
+- **Patches:** every module and symbol they hook is still there with the
+  same signatures: the PLE table backend (`qwen4_exp_ple_table.py`
+  unchanged; `Qwen4ExpPinnedHostEmbedding` gather / allocate_output, the
+  `.ngram_embedding.shard_` names), the FP8 Marlin functions (only their
+  kernel import moved), `hyperconnection.fused_hc_mix*` (the kernel file
+  moved to `kernels/ops/gemm/hc_mix.py`, the code is the same), GDN's
+  `_fused_in_proj_weight`, the EAGLE workers' `init_lm_head`,
+  `DFlashDraftModel.load_weights`, the lm_head quant gate,
+  `prepare_moe_nvfp4_layer_for_marlin`, `SGLANG_DISABLE_SILU_FP4_QUANT_FUSION`.
+  The Qwen4-Exp n-gram embedding is now built on the meta device and wrapped
+  where it is created, not in `Qwen4ExpPLELayer.__init__`; the PLE patch
+  reads it after that `__init__`, so it should still find it. Each patch
+  refuses loudly at boot if it does not.
+- **GDN precision patch:** the three kernel files are byte-identical in
+  0.5.21 (the fix is not upstream yet); the script applies unchanged.
+- **New for our models:** Qwen4-Exp's PLE fusion (`SGLANG_ENABLE_QWEN4_PLE_FUSION`,
+  on by default in both) now also covers the MTP verify step (a fused
+  gate-reduce and short convolution): possibly faster Flash-Next decode.
+  Large rewrites in `qwen3_5.py`, the DFlash and EAGLE workers and the GDN
+  backend: measure before switching.
+
+How to try it: `SGLANG_VERSION=0.5.21 ./serve.sh <profile> install`, then
+the same variable for the server, side by side with 0.5.20 (MANUAL.md, "Новая
+версия SGLang").
+
 ### The infercrane Qwen3.8-27B-FP8 recipe, read against this one (2026-10-05)
 
 A published recipe (`qwen38-27b-h200-nextn-k4`): the same checkpoint and

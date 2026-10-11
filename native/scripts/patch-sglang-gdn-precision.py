@@ -11,7 +11,9 @@ of every gated-delta-net (GDN) layer. The fixes upstream keep it in float32
 (sgl-project/sglang#38977 for the packed and ReplaySSM decode kernels, #40362
 for fused_gdn_gating, which every GDN prefill runs). The edits and file
 digests are the ones the infercrane Qwen3.8-27B recipe applies to the same
-pinned 0.5.20.
+pinned 0.5.20. SGLang 0.5.21 ships the same three files byte for byte
+(the fix is not in it yet), so the script applies there unchanged; run it
+with that venv's python.
 
 Which of our paths it touches: GDN prefill (fused_gdn_gating) for every
 hybrid model here (Qwen3.8-27B, zen6, Meerkat-TRIZ, Ornith, Flash-Next), and
