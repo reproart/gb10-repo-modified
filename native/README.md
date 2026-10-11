@@ -439,7 +439,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b  ornith-1.5-35b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next(-abliterated)
+ls models/                        # gemma4-31b  meerkat-triz  mimo-v2.6-flash  ornith-1.5-35b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next(-abliterated)  zen6
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest
@@ -631,6 +631,31 @@ cd ~/sglang-src/benchmark/kernels/fused_moe_triton
 ```
 
 ---
+
+### MiMo-V2.6-Flash on two Sparks
+
+[`models/mimo-v2.6-flash.sh`](models/mimo-v2.6-flash.sh): Xiaomi's 309B MoE
+(15B active; MXFP4 routed experts, block FP8 elsewhere, BF16 routers; DFlash
+draft in `dflash/`), from the SGLang cookbook's MiMo-V2.6 recipe. The
+checkpoint is ~165 GiB, so it runs tensor-parallel over two Sparks (TP=EP=2,
+~83 GiB each) on the direct ConnectX-7 link, on SGLang 0.5.21 (the first
+release with MiMo's MXFP4 expert loading). Kernels changed for GB10: Marlin
+MoE (W4A16), Triton attention (sink bias + sliding window), no DeepEP.
+Unmeasured.
+
+```bash
+# both Sparks: the whole checkpoint, and the 0.5.21 venv
+$HF download XiaomiMiMo/MiMo-V2.6-Flash --local-dir /models/XiaomiMiMo/MiMo-V2.6-Flash
+./serve.sh mimo-v2.6-flash install
+NODE_RANK=0 HEAD_ADDR=10.10.10.1 ./serve.sh mimo-v2.6-flash   # Spark A: the API
+NODE_RANK=1 HEAD_ADDR=10.10.10.1 ./serve.sh mimo-v2.6-flash   # Spark B: worker
+```
+
+`HEAD_ADDR` is Spark A's address on the link; NCCL / Gloo are pinned to its
+interface (`LINK_IF` to override; `NCCL_DEBUG=INFO` should show `NET/IB`).
+Knobs to measure: `DRAFT_TOKENS` (8, the cookbook's), `MOE_RUNNER_BACKEND=
+flashinfer_mxfp4`, `EP=1`, `KV_CACHE_DTYPE=fp8_e4m3`; `WEIGHTS=rl` for the
+-RL checkpoint.
 
 ## GGUF models on llama.cpp: `llamacpp/`
 
