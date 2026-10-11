@@ -577,23 +577,26 @@ stays on 0.5.20. The 101K prefill reached 82-83 C on this Spark.
 **Measured, Qwen3.8-Flash-Next** (`models/qwen3.8-flash-next.sh` as shipped:
 NVFP4, MTP 3/1/4, 65K draft vocabulary, FP8 side layers, both heads and HC
 mix in FP8, cap 8; every patch booted unchanged and logged its conversions
-as on 0.5.20; one `perf.py` run against the two 0.5.20 runs of the
-`FP8_HC=1` table):
+as on 0.5.20; three `perf.py` runs back to back on one boot, against the two
+0.5.20 runs of the `FP8_HC=1` table):
 
-| | 0.5.20 (2 runs) | 0.5.21 |
+| | 0.5.20 (2 runs) | 0.5.21 (3 runs) |
 |---|---:|---:|
-| Single-stream decode (700-token code answer) | 65.9 / 65.7 | 65.2 (62.6-67.7) |
-| accept_len there | 3.42-3.75 | 3.52-3.62 |
-| TTFT, short prompt | 134-135 ms | 131 ms |
-| Sweep, 1 / 2 / 4 / 8 streams | 60.8-65.0 / 99.0-102.0 / 148.4-152.6 / 212.3-223.9 | 64.4 / 91.6 / 143.7 / 223.4 |
-| Prefill 2K / 8K | 1,444-1,458 / 1,511-1,648 | 1,525 / 1,701 |
-| Prefill 32K / 101K | 1,447-1,661 / 1,229-1,499 | 1,732 / 1,631 |
+| Single-stream decode (700-token code answer) | 65.9 / 65.7 | 65.2 / 66.1 / 66.8 |
+| accept_len there | 3.42-3.75 | 3.15-3.77 |
+| TTFT, short prompt | 134-135 ms | 131-132 ms |
+| Sweep, 1 / 2 streams | 60.8-65.0 / 99.0-102.0 | 63.4-64.4 / 91.6-108.9 |
+| 4 / 8 streams | 148.4-152.6 / 212.3-223.9 | 141.0-143.7 / 214.4-223.4 |
+| Prefill 2K / 8K | 1,444-1,458 / 1,511-1,648 | 1,525-1,745 / 1,513-1,728 |
+| Prefill 32K / 101K | 1,447-1,661 / 1,229-1,499 | 1,483-1,732 / 1,293-1,631 |
 
-Decode is the same: the verify-step PLE fusion did not show at one or eight
-streams (2 streams -8%, inside the spread at that level). Prefill is higher
-at every length, most at 101K (+9-33%), the opposite of the 27B; this run
-was also cooler (69 C at 101K against 74-76 C). No reason to move the
-profile either way on one run; it stays on 0.5.20 with the 27B.
+Decode is the same (+0-1% single-stream): the verify-step PLE fusion does
+not show. 4 streams is ~5% lower in all three runs, 8 streams the same.
+Prefill is the same or higher: the first two runs above every 0.5.20 figure
+(101K +3-9% over the better 0.5.20 run), the third, which started warm
+(61 C) and reached 70 C, back inside the 0.5.20 range. So, unlike the 27B,
+no prefill loss here. Before switching the default: a HumanEval run on
+0.5.21 (97.6% / 99.4% on 0.5.20), since the GDN and MoE kernels changed.
 
 The first boot on 0.5.21 took 31 minutes (scheduler start 1,865 s): weights
 7.4 min as before, then ~22 min between the FlashInfer MoE autotune and the
