@@ -595,8 +595,9 @@ not show. 4 streams is ~5% lower in all three runs, 8 streams the same.
 Prefill is the same or higher: the first two runs above every 0.5.20 figure
 (101K +3-9% over the better 0.5.20 run), the third, which started warm
 (61 C) and reached 70 C, back inside the 0.5.20 range. So, unlike the 27B,
-no prefill loss here. Before switching the default: a HumanEval run on
-0.5.21 (97.6% / 99.4% on 0.5.20), since the GDN and MoE kernels changed.
+no prefill loss here. HumanEval on 0.5.21 did not drop against 97.6% /
+99.4% on 0.5.20 (reported by the operator), so the profile now defaults to
+0.5.21 (2026-10-15); `SGLANG_VERSION=0.5.20` goes back.
 
 The first boot on 0.5.21 took 31 minutes (scheduler start 1,865 s): weights
 7.4 min as before, then ~22 min between the FlashInfer MoE autotune and the
