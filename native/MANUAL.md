@@ -15,7 +15,7 @@
 
 Два движка:
 
-- **SGLang 0.5.20** (нативно, без Docker; MiMo — на 0.5.21) — почти все модели. Одна
+- **SGLang 0.5.20** (нативно, без Docker; Flash-Next, MiMo и Ling — на 0.5.21) — почти все модели. Одна
   команда `./serve.sh <профиль>`; профиль — это файл `models/<профиль>.sh`
   с путями к весам и флагами модели.
 - **llama.cpp** (отдельная сборка в `llamacpp/`) — только GLM-5.3-Flash в
@@ -289,7 +289,7 @@ abliterated-весами смысла не имеет. Содержимое фа
 проверить до шестиминутной загрузки:
 
 ```bash
-~/spark/venv-sglang-0.5.20/bin/python3 -c "import numpy as np; z=np.load('/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz'); print({k: z[k].shape for k in z.files})"
+~/spark/venv-sglang-0.5.21/bin/python3 -c "import numpy as np; z=np.load('/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz'); print({k: z[k].shape for k in z.files})"
 ```
 
 ### 4.5. Ornith 1.5 35B-A3B — быстрая MoE с размышлением

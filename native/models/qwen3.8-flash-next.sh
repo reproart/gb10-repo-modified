@@ -22,7 +22,11 @@
 # MIXED_PRECISION loader (#38121), and the router PDL ordering behind the "GB10
 # NEXTN collapse" (NaN routing, output stuck on token 0: #36811, and #38290 in
 # both moe_fused_gate and route_radix; checked in the 0.5.20 wheel).
-SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
+# 0.5.21 since 2026-10-15: every patch here boots unchanged on it; three
+# perf.py runs gave the same decode and the same or faster prefill, and
+# HumanEval did not drop (results/RESULTS.md, "SGLang 0.5.21").
+# SGLANG_VERSION=0.5.20 goes back.
+SGLANG_VERSION="${SGLANG_VERSION:-0.5.21}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
 
 # Weights, downloaded once (README, "Qwen3.8-Flash-Next"):
