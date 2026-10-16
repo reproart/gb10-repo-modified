@@ -34,7 +34,7 @@ otherwise. Knobs (config.sh, each overridable from the shell):
 | `PLE_OFFLOAD` | disk | n-gram table: `disk` (io_uring, the card's Spark setting), `cpu` (pinned host RAM, the card's RTX PRO setup; on a Spark it eats into the same memory), `none` (in the GPU budget) |
 | `PORT`, `HOST`, `API_KEY` | 8888, 0.0.0.0, none | as for `../serve.sh` |
 | `PROFILE`, `PROFILE_DIR` | 0, /tmp/gb10-profile | vLLM's profiler endpoints and trace directory, for `../bench/profile_decode.py` (no Python stacks, no summary table: those blocked the engine for minutes) |
-| `EXTRA_ARGS`, `EXTRA_ENV` | | more `vllm serve` flags; more `NAME=value` for the container |
+| `EXTRA_ARGS`, `EXTRA_ENV` | | more `vllm serve` flags; more `NAME=value` for the container, replacing a card value of the same name (`EXTRA_ENV=VLLM_B12X_MOE_FP4_FORCE_A16=0`) |
 
 How the container controls the table (`./show-env.sh`): `VLLM_PLE_CPU_OFFLOAD`
 (default 1, offloaded) and `VLLM_PLE_TABLE_MEMORY` ram | disk | shared. So
