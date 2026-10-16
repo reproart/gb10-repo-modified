@@ -1178,7 +1178,9 @@ checked `os.environ` in the container (`0`).
   ~119.7 GiB Spark. At 0.85 with MTP 4 and 262144 the kernel OOM-killed vLLM
   twice, ~10 min after the weights loaded (`dmesg`: global_oom, then NVRM
   NV_ERR_NO_MEMORY). vllm-b12x now starts `none` with MTP off and a 65536
-  context.
+  context; not measured further: a 64K context without MTP to save the disk
+  reads of a table that `disk` already serves at ~2,200 tok/s of prefill to
+  101K is not a trade worth having. `disk` stays.
 
 ## Ornith-1.5-35B-A3B, one Spark (2026-09-29)
 
