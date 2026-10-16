@@ -8,6 +8,7 @@
 #   ./serve.sh
 #   MAX_NUM_SEQS=4 MTP_TOKENS=3 ./serve.sh
 #   EXTRA_ARGS='--max-cudagraph-capture-size 16' ./serve.sh
+#   PLE_OFFLOAD=none ./serve.sh        n-gram table in GPU memory (card: works on a Spark)
 #   YARN=1 ./serve.sh                  past 262144: YaRN x4, context 1048576
 #
 # Then, as for the SGLang server (same port, bench/ unchanged):
@@ -41,6 +42,16 @@ fi
 if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models" 2>/dev/null)" != 000 ]; then
   echo "something already serves :$PORT" >&2
   exit 1
+fi
+# Where the n-gram table goes, and the memory budget that follows from it.
+case "$PLE_OFFLOAD" in
+  disk) ple_env=(VLLM_PLE_TABLE_MEMORY=disk B12X_DISK_BACKEND=io_uring); GPU_UTIL="${GPU_UTIL:-0.8}" ;;
+  cpu)  ple_env=(VLLM_PLE_CPU_OFFLOAD=1); GPU_UTIL="${GPU_UTIL:-0.8}" ;;
+  none) ple_env=(); GPU_UTIL="${GPU_UTIL:-0.9}" ;;
+  *) echo "PLE_OFFLOAD must be disk, cpu or none, not '$PLE_OFFLOAD'" >&2; exit 2 ;;
+esac
+if [ -z "$MIN_FREE_GIB" ]; then
+  MIN_FREE_GIB=$(awk -v u="$GPU_UTIL" '/^MemTotal:/ { printf "%d", u * $2 / 1048576 + 2 }' /proc/meminfo)
 fi
 avail_gib=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1048576 }' /proc/meminfo)
 if [ "$avail_gib" -lt "$MIN_FREE_GIB" ]; then
@@ -91,8 +102,7 @@ mkdir -p "$CACHE_DIR"/{vllm,flashinfer,triton,b12x}
 
 # The card's environment for DGX Spark.
 envs=(
-  VLLM_PLE_TABLE_MEMORY="$PLE_MEMORY"
-  B12X_DISK_BACKEND=io_uring
+  "${ple_env[@]}"
   CUTE_DSL_ARCH=sm_121a
   SAFETENSORS_FAST_GPU=1
   VLLM_WORKER_MULTIPROC_METHOD=spawn
@@ -158,7 +168,7 @@ args=(
 echo "image   $ref"
 echo "model   $MODEL_DIR (revision $(head -1 "$MODEL_DIR/.cache/huggingface/download/config.json.metadata" 2>/dev/null || echo unknown))"
 echo "serve   ctx $MAX_MODEL_LEN$([ "$YARN" = 1 ] && echo " (YaRN x$YARN_FACTOR)"), $MAX_NUM_SEQS seqs, chunk $MAX_BATCHED_TOKENS, mem $GPU_UTIL, KV $KV_CACHE_DTYPE," \
-  "MTP $([ "$MTP_TOKENS" -gt 0 ] && echo "$MTP_TOKENS tokens" || echo off), PLE table $PLE_MEMORY"
+  "MTP $([ "$MTP_TOKENS" -gt 0 ] && echo "$MTP_TOKENS tokens" || echo off), PLE table $([ "$PLE_OFFLOAD" = none ] && echo "in GPU memory (no offload)" || echo "offloaded: $PLE_OFFLOAD")"
 echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\""
 echo
 exec docker run "${docker_args[@]}" "$ref" "${args[@]}"

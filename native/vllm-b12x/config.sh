@@ -59,20 +59,33 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
 # The card's DGX Spark command, as knobs:
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"            # concurrent requests
 MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-4096}"  # prefill chunk
-GPU_UTIL="${GPU_UTIL:-0.8}"                  # --gpu-memory-utilization
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 # MTP draft tokens with the checkpoint's own head (NVFP4 experts); 0 = off.
 MTP_TOKENS="${MTP_TOKENS:-4}"
-# Where the n-gram table lives: disk (read through io_uring, the card's Spark
-# setting, as our SGLang profile reads it in place) or whatever else the
-# container's VLLM_PLE_TABLE_MEMORY accepts.
-PLE_MEMORY="${PLE_MEMORY:-disk}"
+# Where the n-gram (PLE) table lives. The card: "DGX Spark: can run with or
+# without PLE offload", 1M tokens of fp8 KV with it.
+#   disk  read from the checkpoint's files through io_uring
+#         (VLLM_PLE_TABLE_MEMORY=disk, B12X_DISK_BACKEND=io_uring): the card's
+#         Spark command, and how our SGLang profile reads it (in place)
+#   cpu   in host memory, gathered from there (VLLM_PLE_CPU_OFFLOAD=1, the
+#         card's RTX PRO 6000 setting); on a Spark that is the same physical
+#         memory, outside the GPU_UTIL budget
+#   none  no offload: the table (NVFP4, ~29 GB) loads with the weights into
+#         the GPU_UTIL budget, so less KV is left; neither variable is set,
+#         so the container's default applies (./show-env.sh PLE lists what
+#         its vLLM accepts)
+PLE_OFFLOAD="${PLE_OFFLOAD:-disk}"
+# --gpu-memory-utilization. Empty = 0.8 (the card's) with the table offloaded,
+# 0.9 without: the ~96 GiB of weights and table then sit inside the budget
+# and 0.8 (~97 GiB) would leave almost nothing for KV. 0.9 leaves ~12 GiB to
+# the OS, near DGX OS earlyoom's margin: watch MemAvailable.
+GPU_UTIL="${GPU_UTIL:-}"
 REASONING_PARSER="${REASONING_PARSER:-qwen3}"
 TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-qwen3_xml}"
 
-# Refuse to start without this much MemAvailable (GiB): the container takes
-# GPU_UTIL of the ~121 GiB pool at once.
-MIN_FREE_GIB="${MIN_FREE_GIB:-100}"
+# Refuse to start without this much MemAvailable (GiB). Empty = what
+# GPU_UTIL takes of the pool, plus 2: the container claims it at once.
+MIN_FREE_GIB="${MIN_FREE_GIB:-}"
 
 # Anything else: vllm serve flags, appended last so they win; and extra
 # environment for the container, as space-separated NAME=value pairs.

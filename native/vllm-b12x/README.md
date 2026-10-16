@@ -29,11 +29,18 @@ otherwise. Knobs (config.sh, each overridable from the shell):
 | `MAX_MODEL_LEN` | 262144 | context (1048576 with `YARN=1`) |
 | `YARN`, `YARN_FACTOR` | 0, 4 | YaRN past the native 262144: the checkpoint's own RoPE settings with `rope_type` yarn, via `--hf-overrides` |
 | `MAX_BATCHED_TOKENS` | 4096 | prefill chunk |
-| `GPU_UTIL` | 0.8 | `--gpu-memory-utilization` |
+| `GPU_UTIL` | 0.8 / 0.9 | `--gpu-memory-utilization`; 0.9 with `PLE_OFFLOAD=none` |
 | `KV_CACHE_DTYPE` | fp8 | |
-| `PLE_MEMORY` | disk | n-gram table read from disk (io_uring) |
+| `PLE_OFFLOAD` | disk | n-gram table: `disk` (io_uring, the card's Spark setting), `cpu` (host memory, the card's RTX PRO setting), `none` (in GPU memory) |
 | `PORT`, `HOST`, `API_KEY` | 8888, 0.0.0.0, none | as for `../serve.sh` |
 | `EXTRA_ARGS`, `EXTRA_ENV` | | more `vllm serve` flags; more `NAME=value` for the container |
+
+`PLE_OFFLOAD=none` puts the table (NVFP4, ~29 GB) inside the GPU budget
+with the weights, so less KV is left; GPU_UTIL then defaults to 0.9
+(~12 GiB left to the OS, close to earlyoom's margin), and `serve.sh` wants
+that much free memory before it starts. `none` sets neither PLE variable and
+leaves the container's default; `./show-env.sh PLE` prints which PLE
+variables the container's vLLM defines and their defaults, to confirm.
 
 YaRN is static (every request is scaled, short ones too), so `YARN=1` only
 for sessions that need more than 262144 tokens; `YARN=1 MAX_MODEL_LEN=524288`
