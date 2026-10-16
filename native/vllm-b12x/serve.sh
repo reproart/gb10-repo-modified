@@ -122,8 +122,17 @@ envs=(
   B12X_W4A16_A4_PREFILL=1
   HF_HUB_OFFLINE=1
 )
+# EXTRA_ENV replaces a value above of the same name instead of adding a second
+# one: docker passes both, and Python's os.environ (and getenv) keep the first,
+# so VLLM_B12X_MOE_FP4_FORCE_A16=0 appended after the card's =1 did nothing.
 # shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list, split on purpose
-[ -n "$EXTRA_ENV" ] && envs+=($EXTRA_ENV)
+extra_env=($EXTRA_ENV)
+for e in "${extra_env[@]}"; do
+  for i in "${!envs[@]}"; do
+    [ "${envs[$i]%%=*}" = "${e%%=*}" ] && unset 'envs[i]'
+  done
+  envs+=("$e")
+done
 
 docker_args=(
   --rm --init --name "$CONTAINER_NAME"
