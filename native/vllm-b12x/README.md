@@ -33,6 +33,7 @@ otherwise. Knobs (config.sh, each overridable from the shell):
 | `KV_CACHE_DTYPE` | fp8 | |
 | `PLE_OFFLOAD` | disk | n-gram table: `disk` (io_uring, the card's Spark setting), `cpu` (host memory, the card's RTX PRO setting), `none` (in GPU memory) |
 | `PORT`, `HOST`, `API_KEY` | 8888, 0.0.0.0, none | as for `../serve.sh` |
+| `PROFILE`, `PROFILE_DIR` | 0, /tmp/gb10-profile | vLLM's profiler endpoints and trace directory, for `../bench/profile_decode.py` |
 | `EXTRA_ARGS`, `EXTRA_ENV` | | more `vllm serve` flags; more `NAME=value` for the container |
 
 `PLE_OFFLOAD=none` puts the table (NVFP4, ~29 GB) inside the GPU budget
@@ -73,4 +74,4 @@ table_memory='device'` with `PLE_OFFLOAD=disk`: still to be read against
 Notes: the container runs as root, so `~/.cache/gb10-vllm-b12x` (kernel and
 compile caches, kept between runs) ends up root-owned; the weights are
 mounted read-only (`MODEL_RO=0` if the b12x loader wants to write beside
-them). Nothing here is measured yet.
+them). First measurements: results/RESULTS.md, "Qwen3.8-Flash-Next-FP4-Local".

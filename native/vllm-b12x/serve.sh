@@ -9,6 +9,7 @@
 #   MAX_NUM_SEQS=4 MTP_TOKENS=3 ./serve.sh
 #   EXTRA_ARGS='--max-cudagraph-capture-size 16' ./serve.sh
 #   PLE_OFFLOAD=none ./serve.sh        n-gram table in GPU memory (card: works on a Spark)
+#   PROFILE=1 ./serve.sh               profiler endpoints on, for bench/profile_decode.py
 #   YARN=1 ./serve.sh                  past 262144: YaRN x4, context 1048576
 #
 # Then, as for the SGLang server (same port, bench/ unchanged):
@@ -133,6 +134,10 @@ docker_args=(
   -v "$CACHE_DIR/b12x:/root/.cache/b12x"
   --entrypoint vllm
 )
+if [ "$PROFILE" = 1 ]; then
+  mkdir -p "$PROFILE_DIR"
+  docker_args+=(-v "$PROFILE_DIR:$PROFILE_DIR")
+fi
 [ -t 0 ] && [ -t 1 ] && docker_args+=(-it)
 for e in "${envs[@]}"; do docker_args+=(-e "$e"); done
 
@@ -158,6 +163,7 @@ args=(
   --gpu-memory-utilization "$GPU_UTIL"
 )
 [ -n "$yarn_override" ] && args+=(--hf-overrides "$yarn_override")
+[ "$PROFILE" = 1 ] && args+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$PROFILE_DIR\"}")
 [ "$MTP_TOKENS" -gt 0 ] && args+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_TOKENS}")
 [ -n "$REASONING_PARSER" ] && args+=(--reasoning-parser "$REASONING_PARSER")
 [ -n "$TOOL_CALL_PARSER" ] && args+=(--tool-call-parser "$TOOL_CALL_PARSER" --enable-auto-tool-choice)
@@ -170,5 +176,6 @@ echo "model   $MODEL_DIR (revision $(head -1 "$MODEL_DIR/.cache/huggingface/down
 echo "serve   ctx $MAX_MODEL_LEN$([ "$YARN" = 1 ] && echo " (YaRN x$YARN_FACTOR)"), $MAX_NUM_SEQS seqs, chunk $MAX_BATCHED_TOKENS, mem $GPU_UTIL, KV $KV_CACHE_DTYPE," \
   "MTP $([ "$MTP_TOKENS" -gt 0 ] && echo "$MTP_TOKENS tokens" || echo off), PLE table $([ "$PLE_OFFLOAD" = none ] && echo "in GPU memory (no offload)" || echo "offloaded: $PLE_OFFLOAD")"
 echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\""
+[ "$PROFILE" = 1 ] && echo "profile torch profiler on, traces to $PROFILE_DIR (python3 ../bench/profile_decode.py)"
 echo
 exec docker run "${docker_args[@]}" "$ref" "${args[@]}"
