@@ -674,6 +674,15 @@ $HF download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/L
 ./serve.sh ling-3.0-flash-vl install && ./serve.sh ling-3.0-flash-vl
 ```
 
+## NVIDIA's QAD Flash-Next on vLLM: `vllm-b12x/`
+
+[`vllm-b12x/`](vllm-b12x/README.md) serves `nvidia/Qwen3.8-Flash-Next-FP4-Local`
+(QAD NVFP4, ~96 GiB; GPQA 91.5% against 92.2% for BF16 on its card), which
+SGLang cannot load, in the card's community vLLM container
+(`eugr/spark-vllm-b12x`, pinned by digest in `image.lock`) with the card's
+DGX Spark flags as knobs, on :8888 so `bench/` works unchanged. For an A/B on
+answers against the RadixArk build. Unmeasured.
+
 ## GGUF models on llama.cpp: `llamacpp/`
 
 GLM-5.3-Flash (320B) in GSQ-RCO GGUFs needs llama.cpp with PR 27773, not

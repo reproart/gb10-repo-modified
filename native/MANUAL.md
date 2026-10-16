@@ -36,6 +36,7 @@
 | `gemma4-31b` | Gemma 4 31B BF16 + MTP | ~62 ГБ | | не измерена |
 | `mimo-v2.6-flash` | MiMo-V2.6-Flash 309B MoE (MXFP4) + DFlash, **на двух Spark**, SGLang 0.5.21 | ~165 ГиБ на каждом | | не измерена |
 | `ling-3.0-flash-vl` | Ling-3.0-flash-VL 125B MoE (5.1B акт.), картинки и видео, SGLang 0.5.21 | ~70 ГБ (оценка) | ~33 по рецепту SGLang (FP4) | рецепт проверен на Spark, у нас не измерена |
+| `vllm-b12x/` | Qwen3.8-Flash-Next-FP4-Local (QAD от NVIDIA), vLLM в Docker | ~96 ГиБ | | не измерена |
 | `llamacpp/` | GLM-5.3-Flash 320B, GGUF 3.0/3.5 бит | 117 / 137 ГБ | | на одном Spark — проверка, на двух — рабочий вариант |
 
 Главное правило: **одна модель за раз**. Память GPU и оперативная память на
@@ -426,6 +427,28 @@ $HF download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/L
 
 Картинки — `image_url`, видео — `video_url` в сообщении (формат OpenAI).
 Аудио модель не принимает.
+
+### 4.10. Qwen3.8-Flash-Next-FP4-Local на vLLM (Docker)
+
+Версия Flash-Next от NVIDIA, квантованная с дообучением (QAD): по карточке
+почти без потерь (GPQA 91.5 против 92.2 у BF16). SGLang её не загружает
+(новый сжатый формат масштабов NVFP4 и таблица n-грамм в NVFP4), поэтому
+запуск — в контейнере vLLM с ядрами b12x, как в карточке
+(подробно — [`vllm-b12x/README.md`](vllm-b12x/README.md)). Порт тот же,
+8888, так что `bench/` работает без изменений. Сервер SGLang перед этим
+остановите.
+
+```bash
+cd vllm-b12x
+$HF download nvidia/Qwen3.8-Flash-Next-FP4-Local --local-dir /models/nvidia/Qwen3.8-Flash-Next-FP4-Local
+./pull.sh                  # контейнер, закрепляется по дайджесту в image.lock
+./serve.sh                 # Ctrl-C останавливает
+MAX_NUM_SEQS=4 MTP_TOKENS=3 ./serve.sh     # параметры — как у serve.sh
+```
+
+`image.lock` стоит закоммитить: тогда `serve.sh` всегда запускает ту же
+сборку, даже если `:latest` на Docker Hub обновится. Перейти на новую
+сборку — `rm image.lock && ./pull.sh`.
 
 ---
 
