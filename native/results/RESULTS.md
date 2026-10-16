@@ -1110,10 +1110,16 @@ each step is ~64 ms against ~54. Prefill holds ~2,200 tok/s from 8K to
 101K, +30-70% at long prompts, and TTFT on short ones is 2.5x lower; the KV
 pool is 2.4x larger. The speed is close either way; whether to switch rests
 on answers (HumanEval, `answers.py`, thinking length), not measured yet.
-Open: the boot log reads `Resolved Engram configuration: cpu_offload=True,
-table_memory='device'` under `PLE_OFFLOAD=disk` (where the table really
-sits), and `profile_decode.py` needed vLLM support (now: `PROFILE=1
-./serve.sh`, start/stop around one answer).
+The table: `Resolved Engram configuration: ... table_memory='device'` in
+the boot log is DeepSeek V4.1's Engram config; this model's is
+`VLLM_PLE_CPU_OFFLOAD` (default on) and `VLLM_PLE_TABLE_MEMORY` (here disk),
+and `free -g` (102 GiB used, 19 available, 2 in page cache) puts the ~25 GiB
+table neither in RAM nor in the page cache. `PLE_OFFLOAD=none` in vllm-b12x
+had left the container's default (offloaded); it now sets
+VLLM_PLE_CPU_OFFLOAD=0. Profiling: the first `PROFILE=1` run blocked the
+engine for minutes in the profiler's CUDA-time summary (with Python stacks,
+both this build's defaults); both are off now. MTP per-position acceptance
+in that run: 0.95 / 0.65 / 0.51 / 0.41, so `MTP_TOKENS=3` is worth a run.
 
 ## Ornith-1.5-35B-A3B, one Spark (2026-09-29)
 

@@ -29,19 +29,23 @@ otherwise. Knobs (config.sh, each overridable from the shell):
 | `MAX_MODEL_LEN` | 262144 | context (1048576 with `YARN=1`) |
 | `YARN`, `YARN_FACTOR` | 0, 4 | YaRN past the native 262144: the checkpoint's own RoPE settings with `rope_type` yarn, via `--hf-overrides` |
 | `MAX_BATCHED_TOKENS` | 4096 | prefill chunk |
-| `GPU_UTIL` | 0.8 / 0.9 | `--gpu-memory-utilization`; 0.9 with `PLE_OFFLOAD=none` |
+| `GPU_UTIL` | 0.8 / 0.6 / 0.85 | `--gpu-memory-utilization` for `PLE_OFFLOAD` disk / cpu / none |
 | `KV_CACHE_DTYPE` | fp8 | |
-| `PLE_OFFLOAD` | disk | n-gram table: `disk` (io_uring, the card's Spark setting), `cpu` (host memory, the card's RTX PRO setting), `none` (in GPU memory) |
+| `PLE_OFFLOAD` | disk | n-gram table: `disk` (io_uring, the card's Spark setting), `cpu` (pinned host RAM, the card's RTX PRO setup; on a Spark it eats into the same memory), `none` (in the GPU budget) |
 | `PORT`, `HOST`, `API_KEY` | 8888, 0.0.0.0, none | as for `../serve.sh` |
-| `PROFILE`, `PROFILE_DIR` | 0, /tmp/gb10-profile | vLLM's profiler endpoints and trace directory, for `../bench/profile_decode.py` |
+| `PROFILE`, `PROFILE_DIR` | 0, /tmp/gb10-profile | vLLM's profiler endpoints and trace directory, for `../bench/profile_decode.py` (no Python stacks, no summary table: those blocked the engine for minutes) |
 | `EXTRA_ARGS`, `EXTRA_ENV` | | more `vllm serve` flags; more `NAME=value` for the container |
 
-`PLE_OFFLOAD=none` puts the table (NVFP4, ~29 GB) inside the GPU budget
-with the weights, so less KV is left; GPU_UTIL then defaults to 0.9
-(~12 GiB left to the OS, close to earlyoom's margin), and `serve.sh` wants
-that much free memory before it starts. `none` sets neither PLE variable and
-leaves the container's default; `./show-env.sh PLE` prints which PLE
-variables the container's vLLM defines and their defaults, to confirm.
+How the container controls the table (`./show-env.sh`): `VLLM_PLE_CPU_OFFLOAD`
+(default 1, offloaded) and `VLLM_PLE_TABLE_MEMORY` ram | disk | shared. So
+`none` sets `VLLM_PLE_CPU_OFFLOAD=0` and loads the table (~25 GiB) with the
+weights inside the budget: GPU_UTIL 0.85, ~5 GiB of KV (~300K fp8 tokens),
+~13 GiB left to the OS. `cpu` pins it in host RAM, which on a Spark is the
+same memory, so the budget drops to 0.6: there for comparison. The boot line
+`Resolved Engram configuration: ... table_memory='device'` is DeepSeek V4.1's
+Engram table, not this one. With `disk`, `free -g` at 0.8 showed 102 GiB
+used, 19 available and 2 in page cache: the table is neither in RAM nor in
+the page cache (io_uring reads around it).
 
 YaRN is static (every request is scaled, short ones too), so `YARN=1` only
 for sessions that need more than 262144 tokens; `YARN=1 MAX_MODEL_LEN=524288`
@@ -67,9 +71,9 @@ read for the target, 4.1 GB for MTP), then b12x kernel autotuning in two
 phases of ~4.7 min each (6,429 and 1,504 candidates, nothing cached yet) and
 45 s of JIT warmup. Weights take 70.3 GiB in the pool; at GPU_UTIL 0.8 that
 leaves 18.6 GiB of fp8 KV, 987,930 tokens (3.77 requests of 262,144). vLLM
-logs the table setting as `Resolved Engram configuration: ... cpu_offload=True,
-table_memory='device'` with `PLE_OFFLOAD=disk`: still to be read against
-`./show-env.sh` before trusting what each mode does.
+logs `Resolved Engram configuration: ... table_memory='device'`, which is
+DeepSeek V4.1's table, not this model's (see above). Second boot: 4 minutes
+(autotuning cached).
 
 Notes: the container runs as root, so `~/.cache/gb10-vllm-b12x` (kernel and
 compile caches, kept between runs) ends up root-owned; the weights are
