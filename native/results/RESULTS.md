@@ -1121,6 +1121,28 @@ engine for minutes in the profiler's CUDA-time summary (with Python stacks,
 both this build's defaults); both are off now. MTP per-position acceptance
 in that run: 0.95 / 0.65 / 0.51 / 0.41, so `MTP_TOKENS=3` is worth a run.
 
+**Where a vLLM step goes** (`PROFILE=1`, `profile_decode.py`, one 160-token
+code answer, ~44 MTP steps, ~68 ms a step under the profiler; GPU busy 92%;
+regrouped with the b12x kernel names), against the SGLang profile of the
+`FP8_HC` step above:
+
+| Kernels | vLLM b12x, ms/step | SGLang, ms/step |
+|---|---:|---:|
+| Dense block-scaled GEMMs (b12x CuTe: MXFP8 attention / GDN / shared expert, MXFP8 lm_head) | ~24 | ~24 (FP8 Marlin side layers + FP8 heads) |
+| MoE experts (b12x W4A16, `VLLM_B12X_MOE_FP4_FORCE_A16=1`) | ~18-19.5 | ~18.4 (NVFP4 W4A4 cutlass) |
+| BF16 cuBLAS `wmma 128x2` + `gemvx` + `dot` | **~11** (~253 calls a step) | ~2.9 (~64: routers, indexer) |
+| Hyper-connection mix | (inside the BF16 row) | ~4.9 (FP8, patched kernel) |
+| GDN, QSA, MTP head, quant, routing | ~5 | ~4 |
+| GPU idle | **~5 (8%)** | ~1 (2%) |
+
+The big blocks cost the same on both. The ~10 ms a step vLLM loses is the
+hyper-connection mixes run as ~190 BF16 cuBLAS GEMMs a step (97 mixes x down
+/ up: what `FP8_HC` replaced on SGLang) and idle gaps between graphs
+(breakable CUDA graphs are on). To try, without touching the checkpoint:
+`EXTRA_ARGS=--async-scheduling` (the card's RTX PRO command has it) for the
+gaps, and `EXTRA_ENV=VLLM_B12X_MOE_FP4_FORCE_A16=0` for W4A4 experts, the
+format the checkpoint's input scales were distilled for.
+
 ## Ornith-1.5-35B-A3B, one Spark (2026-09-29)
 
 r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 (W4A16 on every Linear, BF16 heads

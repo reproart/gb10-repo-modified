@@ -53,12 +53,19 @@ from collections import defaultdict
 GROUPS = [
     ("ple gather", r"gather_ple|ple_rows|qwen4_ple|ngram"),
     ("norm / elementwise", r"rmsnorm|layer_norm|layernorm"),
-    ("hyper-connections", r"hc_mix|hc_combine|hyper_conn"),
+    ("hyper-connections", r"hc_mix|hc_combine|hyper_?conn"),
+    # vLLM b12x: the MTP head's own prefill GEMMs (BF16) before any GEMM rule
+    ("MTP draft", r"mtp_feedback|mtpprefill"),
     ("GDN (linear attn)", r"delta_rule|chunk_gated|gated_delta|fused_recurrent|fla_|deltanet|causal_conv|conv1d|gdn|mamba|ssm"),
     ("QSA / attention", r"qsa|indexer|persistent_topk|flash|attn|attention|xqa|paged|merge_state"),
     ("MoE routing", r"moe_fused_gate|topk|router|route_radix|gating"),
     ("MoE experts", r"marlin_moe|moe|expert|groupproblemshape|fused_experts"),
     ("dense GEMM, FP8/FP4 Marlin", r"marlin"),
+    # vLLM b12x's CuTe DSL dense GEMM and its weight-only split-K reduce: the
+    # block-scaled linear layers (on FP4-Local the MXFP8 attention / GDN /
+    # shared-expert projections and the MXFP8 lm_head). Its names carry
+    # "bf16" (the activations), so it must come before the BF16 rule.
+    ("dense GEMM, b12x block-scaled", r"b12x_libdense_gemm|b12xgemmblockscaled|weightonlysplitk"),
     # cuBLASLt names its FP8 kernels nvjet_smXXX_qq... (q: e4m3 operands),
     # e.g. a ModelOpt FP8 layer through torch._scaled_mm; tst... is BF16
     ("dense GEMM, FP8 (cuBLASLt)", r"nvjet_sm\d+_q"),
