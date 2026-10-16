@@ -63,22 +63,24 @@ KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 # MTP draft tokens with the checkpoint's own head (NVFP4 experts); 0 = off.
 MTP_TOKENS="${MTP_TOKENS:-4}"
 # Where the n-gram (PLE) table lives. The card: "DGX Spark: can run with or
-# without PLE offload", 1M tokens of fp8 KV with it.
-#   disk  read from the checkpoint's files through io_uring
-#         (VLLM_PLE_TABLE_MEMORY=disk, B12X_DISK_BACKEND=io_uring): the card's
-#         Spark command, and how our SGLang profile reads it (in place)
-#   cpu   in host memory, gathered from there (VLLM_PLE_CPU_OFFLOAD=1, the
-#         card's RTX PRO 6000 setting); on a Spark that is the same physical
-#         memory, outside the GPU_UTIL budget
-#   none  no offload: the table (NVFP4, ~29 GB) loads with the weights into
-#         the GPU_UTIL budget, so less KV is left; neither variable is set,
-#         so the container's default applies (./show-env.sh PLE lists what
-#         its vLLM accepts)
+# without PLE offload", 1M tokens of fp8 KV with it. The container's vLLM
+# (./show-env.sh): VLLM_PLE_CPU_OFFLOAD (default 1: offloaded) and
+# VLLM_PLE_TABLE_MEMORY ram | disk | shared (default unset, "resolved by vLLM
+# for b12x"). Its boot line "Resolved Engram configuration: ...
+# table_memory='device'" is DeepSeek V4.1's Engram table, not this one.
+#   disk  read from the checkpoint's files through io_uring (the card's Spark
+#         command). Measured: 71.7 GB loaded into the pool, ~25 GiB less than
+#         the checkpoint, and `free` showed it neither in RAM nor page cache.
+#   cpu   pinned in host memory (VLLM_PLE_TABLE_MEMORY=ram, the card's RTX PRO
+#         setup). A Spark has one memory: the ~25 GiB come out of what the
+#         GPU budget leaves, so GPU_UTIL drops to 0.6 (little KV). For
+#         comparison only.
+#   none  no offload (VLLM_PLE_CPU_OFFLOAD=0): the table loads with the
+#         weights into the GPU budget, ~95 GiB together, so GPU_UTIL rises
+#         to 0.85: ~5 GiB of KV (~300K fp8 tokens) and ~13 GiB left to the OS.
+#         Saves the disk reads per prefill / decode step.
 PLE_OFFLOAD="${PLE_OFFLOAD:-disk}"
-# --gpu-memory-utilization. Empty = 0.8 (the card's) with the table offloaded,
-# 0.9 without: the ~96 GiB of weights and table then sit inside the budget
-# and 0.8 (~97 GiB) would leave almost nothing for KV. 0.9 leaves ~12 GiB to
-# the OS, near DGX OS earlyoom's margin: watch MemAvailable.
+# --gpu-memory-utilization. Empty = per PLE_OFFLOAD above (0.8 / 0.6 / 0.85).
 GPU_UTIL="${GPU_UTIL:-}"
 REASONING_PARSER="${REASONING_PARSER:-qwen3}"
 TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-qwen3_xml}"

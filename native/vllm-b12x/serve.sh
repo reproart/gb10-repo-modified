@@ -46,13 +46,17 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models
 fi
 # Where the n-gram table goes, and the memory budget that follows from it.
 case "$PLE_OFFLOAD" in
-  disk) ple_env=(VLLM_PLE_TABLE_MEMORY=disk B12X_DISK_BACKEND=io_uring); GPU_UTIL="${GPU_UTIL:-0.8}" ;;
-  cpu)  ple_env=(VLLM_PLE_CPU_OFFLOAD=1); GPU_UTIL="${GPU_UTIL:-0.8}" ;;
-  none) ple_env=(); GPU_UTIL="${GPU_UTIL:-0.9}" ;;
+  disk) ple_env=(VLLM_PLE_CPU_OFFLOAD=1 VLLM_PLE_TABLE_MEMORY=disk B12X_DISK_BACKEND=io_uring)
+        GPU_UTIL="${GPU_UTIL:-0.8}" ;;
+  cpu)  ple_env=(VLLM_PLE_CPU_OFFLOAD=1 VLLM_PLE_TABLE_MEMORY=ram); GPU_UTIL="${GPU_UTIL:-0.6}" ;;
+  # The container defaults to VLLM_PLE_CPU_OFFLOAD=1: no offload has to say so.
+  none) ple_env=(VLLM_PLE_CPU_OFFLOAD=0); GPU_UTIL="${GPU_UTIL:-0.85}" ;;
   *) echo "PLE_OFFLOAD must be disk, cpu or none, not '$PLE_OFFLOAD'" >&2; exit 2 ;;
 esac
 if [ -z "$MIN_FREE_GIB" ]; then
-  MIN_FREE_GIB=$(awk -v u="$GPU_UTIL" '/^MemTotal:/ { printf "%d", u * $2 / 1048576 + 2 }' /proc/meminfo)
+  # cpu: the table (~25 GiB) also sits in host memory, outside the budget
+  extra=2; [ "$PLE_OFFLOAD" = cpu ] && extra=27
+  MIN_FREE_GIB=$(awk -v u="$GPU_UTIL" -v x="$extra" '/^MemTotal:/ { printf "%d", u * $2 / 1048576 + x }' /proc/meminfo)
 fi
 avail_gib=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1048576 }' /proc/meminfo)
 if [ "$avail_gib" -lt "$MIN_FREE_GIB" ]; then
@@ -163,7 +167,12 @@ args=(
   --gpu-memory-utilization "$GPU_UTIL"
 )
 [ -n "$yarn_override" ] && args+=(--hf-overrides "$yarn_override")
-[ "$PROFILE" = 1 ] && args+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$PROFILE_DIR\"}")
+# This build's ProfilerConfig defaults record Python stacks and dump a
+# CUDA-time summary table at stop: on a 160-token answer that summary kept
+# the engine blocked for minutes (profiler_util.device_time_total). Neither
+# is needed for the Chrome trace; ignore_frontend skips the API server's
+# CPU-only trace.
+[ "$PROFILE" = 1 ] && args+=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$PROFILE_DIR\",\"torch_profiler_with_stack\":false,\"torch_profiler_dump_cuda_time_total\":false,\"ignore_frontend\":true}")
 [ "$MTP_TOKENS" -gt 0 ] && args+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_TOKENS}")
 [ -n "$REASONING_PARSER" ] && args+=(--reasoning-parser "$REASONING_PARSER")
 [ -n "$TOOL_CALL_PARSER" ] && args+=(--tool-call-parser "$TOOL_CALL_PARSER" --enable-auto-tool-choice)

@@ -165,9 +165,11 @@ def summarize(trace: dict, top: int = 20) -> str:
 
 
 def newest_trace(directory: str, since: float) -> str | None:
+    """The largest trace written since `since`: the engine's, when the server
+    also leaves a smaller CPU-only one (vLLM's API process)."""
     files = [f for f in glob.glob(os.path.join(directory, "**", "*.trace.json*"), recursive=True)
              if os.path.getmtime(f) >= since]
-    return max(files, key=os.path.getmtime) if files else None
+    return max(files, key=os.path.getsize) if files else None
 
 
 def main():
@@ -197,10 +199,10 @@ def main():
     common.chat(common.CODE_PROMPT, 64, stream=True)
     started = time.time()
 
-    def post(path, body=None):
+    def post(path, body=None, timeout=600):
         req = urllib.request.Request(f"{common.ENGINE_ROOT}{path}", data=body or b"",
                                      headers=common.HEADERS, method="POST")
-        return urllib.request.urlopen(req, timeout=600).read()
+        return urllib.request.urlopen(req, timeout=timeout).read()
 
     if sglang:
         tokens = args.tokens or 400
@@ -226,7 +228,10 @@ def main():
         t.join(timeout=600)
     else:
         print("stopping the profiler (vLLM writes the trace now)...", flush=True)
-        post("/stop_profile")
+        try:
+            post("/stop_profile")
+        except (TimeoutError, urllib.error.URLError) as e:
+            print(f"/stop_profile did not answer ({e}); looking for the trace anyway", flush=True)
     print("waiting for the trace file...", flush=True)
     path = None
     for _ in range(120):
