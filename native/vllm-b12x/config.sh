@@ -53,7 +53,8 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.8-flash-next-fp4-local}"
 # FP8 KV with the table on disk); one such request takes most of the pool.
 YARN="${YARN:-0}"
 YARN_FACTOR="${YARN_FACTOR:-4}"
-# Empty = 262144, or factor x native with YARN=1.
+# Empty = 262144, or factor x native with YARN=1, or 65536 with
+# PLE_OFFLOAD=none (little KV left there).
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
 
 # The card's DGX Spark command, as knobs:
@@ -62,8 +63,9 @@ MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-4096}"  # prefill chunk
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 # MTP draft tokens with the checkpoint's own head (NVFP4 experts); 0 = off.
 # The card says 4; 3 measured the same on one stream and 4-9% more at 4-8
-# requests (results/RESULTS.md, "Launch variants").
-MTP_TOKENS="${MTP_TOKENS:-3}"
+# requests (results/RESULTS.md, "Launch variants"). Empty = 3, or 0 with
+# PLE_OFFLOAD=none (the MTP head is 4.1 GB more of a full pool).
+MTP_TOKENS="${MTP_TOKENS:-}"
 # Where the n-gram (PLE) table lives. The card: "DGX Spark: can run with or
 # without PLE offload", 1M tokens of fp8 KV with it. The container's vLLM
 # (./show-env.sh): VLLM_PLE_CPU_OFFLOAD (default 1: offloaded) and
@@ -78,9 +80,12 @@ MTP_TOKENS="${MTP_TOKENS:-3}"
 #         GPU budget leaves, so GPU_UTIL drops to 0.6 (little KV). For
 #         comparison only.
 #   none  no offload (VLLM_PLE_CPU_OFFLOAD=0): the table loads with the
-#         weights into the GPU budget, ~95 GiB together, so GPU_UTIL rises
-#         to 0.85: ~5 GiB of KV (~300K fp8 tokens) and ~13 GiB left to the OS.
-#         Saves the disk reads per prefill / decode step.
+#         weights into the GPU budget. Measured: 100.5 GB for the target
+#         (the table is ~27 GiB, not 25), 4.1 GB more for the MTP head, ~97.5
+#         GiB together; at 0.85 with MTP 4 and 262144 the kernel OOM-killed
+#         vLLM ~10 min after the weights loaded. So here MTP defaults to 0
+#         and the context to 65536 (~1.2 GiB of fp8 KV): a mode for
+#         measuring what the disk reads cost, not for work.
 PLE_OFFLOAD="${PLE_OFFLOAD:-disk}"
 # --gpu-memory-utilization. Empty = per PLE_OFFLOAD above (0.8 / 0.6 / 0.85).
 GPU_UTIL="${GPU_UTIL:-}"

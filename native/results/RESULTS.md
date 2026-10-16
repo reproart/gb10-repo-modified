@@ -1173,6 +1173,12 @@ checked `os.environ` in the container (`0`).
   at 4-32 than W4A16. At these batch sizes the experts are bound by reading
   the 4-bit weights, which both paths do; A4 only adds the activation quant.
   The card's `=1` stays.
+- **`PLE_OFFLOAD=none`** (table in the pool): 100.54 GB for the target
+  against 71.7 (the table ~27 GiB), plus 4.1 GB of MTP head, ~97.5 GiB of a
+  ~119.7 GiB Spark. At 0.85 with MTP 4 and 262144 the kernel OOM-killed vLLM
+  twice, ~10 min after the weights loaded (`dmesg`: global_oom, then NVRM
+  NV_ERR_NO_MEMORY). vllm-b12x now starts `none` with MTP off and a 65536
+  context.
 
 ## Ornith-1.5-35B-A3B, one Spark (2026-09-29)
 
