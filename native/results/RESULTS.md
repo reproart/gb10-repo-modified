@@ -1082,6 +1082,39 @@ thinking), which HumanEval, near its ceiling here, barely shows. Postponed
 until a runtime reads the NVFP4 table, or answers on the RadixArk build
 give a reason.
 
+## Qwen3.8-Flash-Next-FP4-Local (NVIDIA QAD) on vLLM b12x, one Spark (2026-10-16)
+
+`nvidia/Qwen3.8-Flash-Next-FP4-Local` @ b9ce18a6 (the QAD line of the
+checkpoint postponed above, now ~96 GiB with compressed NVFP4 scales), in
+`vllm-b12x/` as shipped: image sha256:03a956544e9f...3595, the card's DGX
+Spark command (MTP 4, 8 sequences, chunk 4096, fp8 KV, 0.8, table
+`PLE_OFFLOAD=disk`). Boot 15.5 min the first time (two b12x autotuning
+phases); 70.3 GiB of weights, 18.6 GiB of fp8 KV = 987,930 tokens.
+
+One `perf.py` run, against the three 0.5.21 runs of the SGLang profile
+(RadixArk PTQ + our FP8 patches, MTP 3/1/4, bf16 KV 413,120 tokens):
+
+| | SGLang, RadixArk | vLLM b12x, FP4-Local |
+|---|---:|---:|
+| TTFT, short prompt | 131-132 ms | **51 ms** |
+| Single-stream decode | **65.2-66.8** | 60.7 (all five 60.6-60.7) |
+| Tokens per step | 3.5-3.6 (accept_len) | **3.86** (72% of 4 accepted) |
+| Sweep, 1 / 2 / 4 / 8 streams | 63-64 / 92-109 / 141-144 / 214-223 | 55.7 / 87.4 / 132.5 / 200.9 |
+| 16 / 24 / 32 streams (cap 8, queued) | — | 192.0 / 188.7 / 179.5 |
+| Prefill 2K / 8K | 1,525-1,745 / 1,513-1,728 | 1,714 / **2,201** |
+| Prefill 32K / 101K | 1,483-1,732 / 1,293-1,631 | **2,241 / 2,173** |
+| KV pool | 413K tokens (bf16) | **988K tokens (fp8)** |
+
+Decode is 7-10% lower: more tokens accepted a step (3.86 against ~3.6), but
+each step is ~64 ms against ~54. Prefill holds ~2,200 tok/s from 8K to
+101K, +30-70% at long prompts, and TTFT on short ones is 2.5x lower; the KV
+pool is 2.4x larger. The speed is close either way; whether to switch rests
+on answers (HumanEval, `answers.py`, thinking length), not measured yet.
+Open: the boot log reads `Resolved Engram configuration: cpu_offload=True,
+table_memory='device'` under `PLE_OFFLOAD=disk` (where the table really
+sits), and `profile_decode.py` needed vLLM support (now: `PROFILE=1
+./serve.sh`, start/stop around one answer).
+
 ## Ornith-1.5-35B-A3B, one Spark (2026-09-29)
 
 r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 (W4A16 on every Linear, BF16 heads

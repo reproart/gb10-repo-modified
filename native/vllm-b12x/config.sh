@@ -87,6 +87,14 @@ TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-qwen3_xml}"
 # GPU_UTIL takes of the pool, plus 2: the container claims it at once.
 MIN_FREE_GIB="${MIN_FREE_GIB:-}"
 
+# PROFILE=1: start vLLM's torch profiler endpoints (/start_profile,
+# /stop_profile; off unless configured at launch) and write traces to
+# PROFILE_DIR, mounted at the same path in the container so
+# bench/profile_decode.py finds them on the host. Off by default: tracing
+# costs nothing until started, but keeps the endpoints open.
+PROFILE="${PROFILE:-0}"
+PROFILE_DIR="${PROFILE_DIR:-/tmp/gb10-profile}"
+
 # Anything else: vllm serve flags, appended last so they win; and extra
 # environment for the container, as space-separated NAME=value pairs.
 EXTRA_ARGS="${EXTRA_ARGS:-}"

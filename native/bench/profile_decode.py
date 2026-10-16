@@ -4,9 +4,9 @@
     python3 bench/profile_decode.py                 # profile the running server
     python3 bench/profile_decode.py --trace FILE    # summarize an existing trace
 
-Asks the server (SGLang /start_profile) to record `--steps` scheduler steps
-with the torch profiler, runs one streaming code answer while it records,
-then reads the Chrome trace the server wrote and prints:
+Asks the server to record with the torch profiler while it runs one
+streaming code answer, then reads the Chrome trace the server wrote and
+prints:
 
   * GPU busy time per kernel group (MoE experts, GDN, QSA / attention, the
     n-gram table gather, dense GEMMs, lm_head / sampling, copies, ...) and the
@@ -25,6 +25,14 @@ overlapped, and a faster kernel there buys little.
 A kernel that reads host memory through the page tables (the PLE gather on
 GB10) shows its fault time inside its own duration, so a slow table read
 lands in the "ple gather" row.
+
+SGLang (/get_server_info answers): /start_profile records `--steps`
+scheduler steps into --output-dir. vLLM: the profiler endpoints exist only
+when the server was started with a profiler config, which also fixes the
+trace directory (vllm-b12x: PROFILE=1 ./serve.sh, traces to
+/tmp/gb10-profile on the host); this script brackets the answer with
+/start_profile and /stop_profile, so `--tokens` sets the length (with MTP,
+~4 tokens a step: 160 tokens ~ 40 steps).
 
 The trace is written by the server process, so this script must run on the
 same machine (the default output dir is /tmp/gb10-profile). Profiling slows
@@ -167,7 +175,8 @@ def main():
     ap.add_argument("--trace", help="summarize this trace file instead of profiling")
     ap.add_argument("--steps", type=int, default=40, help="scheduler steps to record (default 40)")
     ap.add_argument("--output-dir", default="/tmp/gb10-profile")
-    ap.add_argument("--tokens", type=int, default=400, help="answer length while recording")
+    ap.add_argument("--tokens", type=int, default=None,
+                    help="answer length while recording (default 400 on SGLang, 160 on vLLM)")
     ap.add_argument("--top", type=int, default=20)
     args = ap.parse_args()
 
@@ -176,27 +185,48 @@ def main():
         return
 
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import urllib.error
     import urllib.request
 
     import common
 
     common.print_header()
+    sglang = bool(common.server_info())
     os.makedirs(args.output_dir, exist_ok=True)
     print("warmup...", flush=True)
     common.chat(common.CODE_PROMPT, 64, stream=True)
     started = time.time()
-    body = json.dumps({"output_dir": args.output_dir, "num_steps": args.steps,
-                       "activities": ["CPU", "GPU"]}).encode()
-    req = urllib.request.Request(f"{common.ENGINE_ROOT}/start_profile", data=body,
-                                 headers=common.HEADERS, method="POST")
-    # start_profile returns when profiling starts; the request below provides the steps.
-    t = threading.Thread(target=lambda: urllib.request.urlopen(req, timeout=600).read(), daemon=True)
-    t.start()
-    time.sleep(1.0)
-    r = common.chat(common.CODE_PROMPT, args.tokens, stream=True)
+
+    def post(path, body=None):
+        req = urllib.request.Request(f"{common.ENGINE_ROOT}{path}", data=body or b"",
+                                     headers=common.HEADERS, method="POST")
+        return urllib.request.urlopen(req, timeout=600).read()
+
+    if sglang:
+        tokens = args.tokens or 400
+        body = json.dumps({"output_dir": args.output_dir, "num_steps": args.steps,
+                           "activities": ["CPU", "GPU"]}).encode()
+        # start_profile returns when profiling starts; the request below provides the steps.
+        t = threading.Thread(target=lambda: post("/start_profile", body), daemon=True)
+        t.start()
+        time.sleep(1.0)
+    else:
+        tokens = args.tokens or 160
+        try:
+            post("/start_profile")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                sys.exit("the server has no /start_profile: vLLM opens it only with a profiler "
+                         "config at launch (vllm-b12x: PROFILE=1 ./serve.sh)")
+            raise
+    r = common.chat(common.CODE_PROMPT, tokens, stream=True)
     print(f"answer while profiling: {r['completion_tokens']} tokens in {r['e2e']:.1f} s "
           "(slowed by the profiler)")
-    t.join(timeout=600)
+    if sglang:
+        t.join(timeout=600)
+    else:
+        print("stopping the profiler (vLLM writes the trace now)...", flush=True)
+        post("/stop_profile")
     print("waiting for the trace file...", flush=True)
     path = None
     for _ in range(120):
