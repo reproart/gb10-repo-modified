@@ -4,7 +4,7 @@
 # this checkpoint: its NVFP4 scale factors use a new lossless compression and
 # its n-gram (PLE) table is NVFP4, neither of which SGLang 0.5.21 or upstream
 # vLLM loads. Source it, don't run it. Every value is "${VAR:-default}":
-#   MAX_NUM_SEQS=4 MTP_TOKENS=3 ./serve.sh
+#   MAX_NUM_SEQS=4 MTP_TOKENS=4 ./serve.sh
 
 B12X_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -61,7 +61,9 @@ MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"            # concurrent requests
 MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-4096}"  # prefill chunk
 KV_CACHE_DTYPE="${KV_CACHE_DTYPE:-fp8}"
 # MTP draft tokens with the checkpoint's own head (NVFP4 experts); 0 = off.
-MTP_TOKENS="${MTP_TOKENS:-4}"
+# The card says 4; 3 measured the same on one stream and 4-9% more at 4-8
+# requests (results/RESULTS.md, "Launch variants").
+MTP_TOKENS="${MTP_TOKENS:-3}"
 # Where the n-gram (PLE) table lives. The card: "DGX Spark: can run with or
 # without PLE offload", 1M tokens of fp8 KV with it. The container's vLLM
 # (./show-env.sh): VLLM_PLE_CPU_OFFLOAD (default 1: offloaded) and

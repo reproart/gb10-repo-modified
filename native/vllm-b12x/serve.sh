@@ -2,11 +2,12 @@
 # Serve nvidia/Qwen3.8-Flash-Next-FP4-Local (NVIDIA's QAD NVFP4 build of
 # Qwen3.8-Flash-Next) on one DGX Spark with vLLM in the b12x container, in
 # the foreground (Ctrl-C stops it). The card's DGX Spark command, with its
-# values as knobs (config.sh):
+# values as knobs (config.sh; MTP 3 draft tokens here, the card's 4 measured
+# slower with several requests):
 #
 #   ./pull.sh                          once: the container, pinned
 #   ./serve.sh
-#   MAX_NUM_SEQS=4 MTP_TOKENS=3 ./serve.sh
+#   MAX_NUM_SEQS=4 MTP_TOKENS=4 ./serve.sh   the card's 4 draft tokens
 #   EXTRA_ARGS='--max-cudagraph-capture-size 16' ./serve.sh
 #   PLE_OFFLOAD=none ./serve.sh        n-gram table in GPU memory (card: works on a Spark)
 #   PROFILE=1 ./serve.sh               profiler endpoints on, for bench/profile_decode.py

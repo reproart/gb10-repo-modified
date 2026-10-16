@@ -1143,6 +1143,37 @@ hyper-connection mixes run as ~190 BF16 cuBLAS GEMMs a step (97 mixes x down
 gaps, and `EXTRA_ENV=VLLM_B12X_MOE_FP4_FORCE_A16=0` for W4A4 experts, the
 format the checkpoint's input scales were distilled for.
 
+**Launch variants** (same day, `perf.py` sections 1-2 and the sweep, table
+on disk; aggregate tok/s, 300 tokens a stream, cap 8 so 16-32 queue):
+
+| Variant | Single stream | 1 / 2 / 4 / 8 streams | 16 / 24 / 32 | Tokens a step, accepted |
+|---|---:|---:|---:|---:|
+| MTP 4 (the card) | 60.7 | 55.7 / 87.4 / 132.5 / 200.9 | 192.0 / 188.7 / 179.5 | 3.86, 72% |
+| MTP 4, again (*) | 58.6 | 56.2 / 81.7 / 127.1 / 200.8 | 182.1 / 185.0 / 176.2 | 3.86, 72% |
+| MTP 4, `--async-scheduling` | 58.9 | — | — | 3.80, 70% |
+| **MTP 3** | **61.0** | 55.8 / 85.9 / **138.1 / 209.9** | **198.0 / 195.8 / 192.9** | 3.48, 83% |
+| MTP 3, `FORCE_A16=0` (2 runs) | — | 55.0 / 84.6 / 128.5-133.4 / 191.4-200.0 | 186-192 / 179-187 / 178 | — |
+
+(*) Meant as `EXTRA_ENV=VLLM_B12X_MOE_FP4_FORCE_A16=0`, but serve.sh then
+appended EXTRA_ENV after the card's `=1`: docker passes both and Python's
+`os.environ` (and libc `getenv`) keep the first, so it ran the card's
+setting. EXTRA_ENV now replaces a variable of the same name; the MTP 3 runs
+checked `os.environ` in the container (`0`).
+
+- **MTP 3** is a tie on one stream (3.48 tokens a step against 3.86, but a
+  step ~57 ms against ~64, TTFT 46 ms against 51) and +4-5% at 4-8 streams,
+  +3-9% when the queue keeps 8 running (GPU 65-71°C against 57-67°C for the
+  MTP 4 runs): with 8 requests MTP 4 verifies 40 positions a step and MTP 3
+  32, and the 4th draft token, accepted 41% of the time, no longer pays for
+  itself once the verify is not free. vllm-b12x defaults to 3 now.
+- **`--async-scheduling`**: no gain on one stream (58.9 against 60.7), so the
+  ~5 ms of gaps are not host scheduling; dropped.
+- **W4A4 experts** (`FORCE_A16=0`, the activations quantized to NVFP4 with
+  the checkpoint's input scales): the same on 1-2 streams and 4-9% lower
+  at 4-32 than W4A16. At these batch sizes the experts are bound by reading
+  the 4-bit weights, which both paths do; A4 only adds the activation quant.
+  The card's `=1` stays.
+
 ## Ornith-1.5-35B-A3B, one Spark (2026-09-29)
 
 r0b0tlab/Ornith-1.5-35B-A3B-NVFP4-W4A16 (W4A16 on every Linear, BF16 heads
