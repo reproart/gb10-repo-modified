@@ -26,13 +26,18 @@ otherwise. Knobs (config.sh, each overridable from the shell):
 |---|---|---|
 | `MAX_NUM_SEQS` | 8 | concurrent requests |
 | `MTP_TOKENS` | 4 | MTP draft tokens, 0 = off |
-| `MAX_MODEL_LEN` | 262144 | context |
+| `MAX_MODEL_LEN` | 262144 | context (1048576 with `YARN=1`) |
+| `YARN`, `YARN_FACTOR` | 0, 4 | YaRN past the native 262144: the checkpoint's own RoPE settings with `rope_type` yarn, via `--hf-overrides` |
 | `MAX_BATCHED_TOKENS` | 4096 | prefill chunk |
 | `GPU_UTIL` | 0.8 | `--gpu-memory-utilization` |
 | `KV_CACHE_DTYPE` | fp8 | |
 | `PLE_MEMORY` | disk | n-gram table read from disk (io_uring) |
 | `PORT`, `HOST`, `API_KEY` | 8888, 0.0.0.0, none | as for `../serve.sh` |
 | `EXTRA_ARGS`, `EXTRA_ENV` | | more `vllm serve` flags; more `NAME=value` for the container |
+
+YaRN is static (every request is scaled, short ones too), so `YARN=1` only
+for sessions that need more than 262144 tokens; `YARN=1 MAX_MODEL_LEN=524288`
+for a shorter cap. One 1M-token request takes most of the fp8 KV pool.
 
 Pinning: `pull.sh` without `image.lock` pulls `:latest`, compares its digest
 with the `03a956544e9f...` Docker Hub showed for linux/arm64 on 2026-10-16

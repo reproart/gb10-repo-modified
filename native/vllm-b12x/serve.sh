@@ -8,6 +8,7 @@
 #   ./serve.sh
 #   MAX_NUM_SEQS=4 MTP_TOKENS=3 ./serve.sh
 #   EXTRA_ARGS='--max-cudagraph-capture-size 16' ./serve.sh
+#   YARN=1 ./serve.sh                  past 262144: YaRN x4, context 1048576
 #
 # Then, as for the SGLang server (same port, bench/ unchanged):
 #   python3 ../bench/perf.py
@@ -46,6 +47,43 @@ if [ "$avail_gib" -lt "$MIN_FREE_GIB" ]; then
   echo "only $avail_gib GiB available (MIN_FREE_GIB=$MIN_FREE_GIB): something else holds memory" >&2
   ps -eo pid,rss,args --sort=-rss | awk 'NR > 1 && NR <= 6 {
     printf "  pid %-8s %6.1f GiB  %s\n", $1, $2 / 1048576, substr($0, index($0, $3), 90) }' >&2
+  exit 1
+fi
+
+# YaRN from the checkpoint's own RoPE settings (mrope sections, theta and
+# partial rotary factor kept as they are), and the context it allows.
+yarn_override=""
+if [ "$YARN" = 1 ]; then
+  if ! out="$(python3 - "$MODEL_DIR/config.json" "$YARN_FACTOR" <<'EOF'
+import json, sys
+
+cfg = json.load(open(sys.argv[1]))
+factor = float(sys.argv[2])
+nested = isinstance(cfg.get("text_config"), dict)
+tc = cfg["text_config"] if nested else cfg
+key = "rope_parameters" if "rope_parameters" in tc or "rope_scaling" not in tc else "rope_scaling"
+rope = dict(tc.get(key) or {})
+if "yarn" in (rope.get("rope_type"), rope.get("type")):
+    sys.exit("the checkpoint already declares YaRN; run with YARN=0")
+native = int(tc.get("max_position_embeddings") or 262144)
+if "rope_theta" not in rope and "rope_theta" in tc:
+    rope["rope_theta"] = tc["rope_theta"]
+rope.update(rope_type="yarn", factor=factor, original_max_position_embeddings=native)
+override = {key: rope}
+if nested:
+    override = {"text_config": override}
+print(json.dumps(override, separators=(",", ":")), int(native * factor))
+EOF
+  )"; then
+    echo "YARN=1: could not build the override from $MODEL_DIR/config.json" >&2
+    exit 1
+  fi
+  yarn_override="${out% *}"
+  MAX_MODEL_LEN="${MAX_MODEL_LEN:-${out##* }}"
+fi
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
+if [ "$YARN" != 1 ] && [ "$MAX_MODEL_LEN" -gt 262144 ]; then
+  echo "MAX_MODEL_LEN=$MAX_MODEL_LEN is past the native 262144: set YARN=1" >&2
   exit 1
 fi
 
@@ -109,6 +147,7 @@ args=(
   --compilation-config '{"pass_config":{"fuse_act_quant":true}}'
   --gpu-memory-utilization "$GPU_UTIL"
 )
+[ -n "$yarn_override" ] && args+=(--hf-overrides "$yarn_override")
 [ "$MTP_TOKENS" -gt 0 ] && args+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_TOKENS}")
 [ -n "$REASONING_PARSER" ] && args+=(--reasoning-parser "$REASONING_PARSER")
 [ -n "$TOOL_CALL_PARSER" ] && args+=(--tool-call-parser "$TOOL_CALL_PARSER" --enable-auto-tool-choice)
@@ -118,7 +157,7 @@ args=(
 
 echo "image   $ref"
 echo "model   $MODEL_DIR (revision $(head -1 "$MODEL_DIR/.cache/huggingface/download/config.json.metadata" 2>/dev/null || echo unknown))"
-echo "serve   ctx $MAX_MODEL_LEN, $MAX_NUM_SEQS seqs, chunk $MAX_BATCHED_TOKENS, mem $GPU_UTIL, KV $KV_CACHE_DTYPE," \
+echo "serve   ctx $MAX_MODEL_LEN$([ "$YARN" = 1 ] && echo " (YaRN x$YARN_FACTOR)"), $MAX_NUM_SEQS seqs, chunk $MAX_BATCHED_TOKENS, mem $GPU_UTIL, KV $KV_CACHE_DTYPE," \
   "MTP $([ "$MTP_TOKENS" -gt 0 ] && echo "$MTP_TOKENS tokens" || echo off), PLE table $PLE_MEMORY"
 echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\""
 echo

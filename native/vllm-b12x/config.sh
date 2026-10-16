@@ -42,8 +42,21 @@ PORT="${PORT:-8888}"
 API_KEY="${API_KEY:-}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-qwen3.8-flash-next-fp4-local}"
 
+# Context. Native 262144; YARN=1 extends it with YaRN (Qwen: up to ~1M),
+# built from the checkpoint's own config.json (its rope_parameters with
+# rope_type yarn, YARN_FACTOR and original_max_position_embeddings = its
+# max_position_embeddings), passed as --hf-overrides; MAX_MODEL_LEN then
+# defaults to factor x native (4 x 262144 = 1048576). YaRN is static: every
+# request is scaled the same way, short ones included, which can cost a
+# little quality at ordinary lengths, so leave it off unless a session needs
+# more than 262144. KV for 1M fits a Spark in fp8 (the card: 1M tokens of
+# FP8 KV with the table on disk); one such request takes most of the pool.
+YARN="${YARN:-0}"
+YARN_FACTOR="${YARN_FACTOR:-4}"
+# Empty = 262144, or factor x native with YARN=1.
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
+
 # The card's DGX Spark command, as knobs:
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-8}"            # concurrent requests
 MAX_BATCHED_TOKENS="${MAX_BATCHED_TOKENS:-4096}"  # prefill chunk
 GPU_UTIL="${GPU_UTIL:-0.8}"                  # --gpu-memory-utilization
