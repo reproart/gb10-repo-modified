@@ -51,9 +51,12 @@ case "$PLE_OFFLOAD" in
         GPU_UTIL="${GPU_UTIL:-0.8}" ;;
   cpu)  ple_env=(VLLM_PLE_CPU_OFFLOAD=1 VLLM_PLE_TABLE_MEMORY=ram); GPU_UTIL="${GPU_UTIL:-0.6}" ;;
   # The container defaults to VLLM_PLE_CPU_OFFLOAD=1: no offload has to say so.
-  none) ple_env=(VLLM_PLE_CPU_OFFLOAD=0); GPU_UTIL="${GPU_UTIL:-0.85}" ;;
+  # ~97.5 GiB of weights with the MTP head: OOM-killed at MTP 4 / 262144.
+  none) ple_env=(VLLM_PLE_CPU_OFFLOAD=0); GPU_UTIL="${GPU_UTIL:-0.85}"
+        MTP_TOKENS="${MTP_TOKENS:-0}"; [ "$YARN" = 1 ] || MAX_MODEL_LEN="${MAX_MODEL_LEN:-65536}" ;;
   *) echo "PLE_OFFLOAD must be disk, cpu or none, not '$PLE_OFFLOAD'" >&2; exit 2 ;;
 esac
+MTP_TOKENS="${MTP_TOKENS:-3}"
 if [ -z "$MIN_FREE_GIB" ]; then
   # cpu: the table (~25 GiB) also sits in host memory, outside the budget
   extra=2; [ "$PLE_OFFLOAD" = cpu ] && extra=27

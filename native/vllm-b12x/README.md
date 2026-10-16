@@ -25,8 +25,8 @@ otherwise. Knobs (config.sh, each overridable from the shell):
 | Variable | Default | |
 |---|---|---|
 | `MAX_NUM_SEQS` | 8 | concurrent requests |
-| `MTP_TOKENS` | 3 | MTP draft tokens, 0 = off; the card's 4 ties on one stream and is 4-9% slower at 4-8 requests |
-| `MAX_MODEL_LEN` | 262144 | context (1048576 with `YARN=1`) |
+| `MTP_TOKENS` | 3 (0 with `PLE_OFFLOAD=none`) | MTP draft tokens, 0 = off; the card's 4 ties on one stream and is 4-9% slower at 4-8 requests |
+| `MAX_MODEL_LEN` | 262144 | context (1048576 with `YARN=1`, 65536 with `PLE_OFFLOAD=none`) |
 | `YARN`, `YARN_FACTOR` | 0, 4 | YaRN past the native 262144: the checkpoint's own RoPE settings with `rope_type` yarn, via `--hf-overrides` |
 | `MAX_BATCHED_TOKENS` | 4096 | prefill chunk |
 | `GPU_UTIL` | 0.8 / 0.6 / 0.85 | `--gpu-memory-utilization` for `PLE_OFFLOAD` disk / cpu / none |
@@ -38,9 +38,12 @@ otherwise. Knobs (config.sh, each overridable from the shell):
 
 How the container controls the table (`./show-env.sh`): `VLLM_PLE_CPU_OFFLOAD`
 (default 1, offloaded) and `VLLM_PLE_TABLE_MEMORY` ram | disk | shared. So
-`none` sets `VLLM_PLE_CPU_OFFLOAD=0` and loads the table (~25 GiB) with the
-weights inside the budget: GPU_UTIL 0.85, ~5 GiB of KV (~300K fp8 tokens),
-~13 GiB left to the OS. `cpu` pins it in host RAM, which on a Spark is the
+`none` sets `VLLM_PLE_CPU_OFFLOAD=0` and loads the table with the weights
+inside the budget: 100.5 GB for the target (the table ~27 GiB) and 4.1 GB
+for the MTP head, ~97.5 GiB of a ~119.7 GiB Spark. At GPU_UTIL 0.85 with MTP
+4 and 262144 the kernel OOM-killed vLLM ~10 minutes after the weights
+loaded, so `none` defaults to MTP off and a 65536 context: a mode to measure
+what the disk reads cost, not one to work in. `cpu` pins it in host RAM, which on a Spark is the
 same memory, so the budget drops to 0.6: there for comparison. The boot line
 `Resolved Engram configuration: ... table_memory='device'` is DeepSeek V4.1's
 Engram table, not this one. With `disk`, `free -g` at 0.8 showed 102 GiB
