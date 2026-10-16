@@ -443,7 +443,7 @@ cd vllm-b12x
 $HF download nvidia/Qwen3.8-Flash-Next-FP4-Local --local-dir /models/nvidia/Qwen3.8-Flash-Next-FP4-Local
 ./pull.sh                  # контейнер, закрепляется по дайджесту в image.lock
 ./serve.sh                 # Ctrl-C останавливает
-MAX_NUM_SEQS=4 MTP_TOKENS=3 ./serve.sh     # параметры — как у serve.sh
+MAX_NUM_SEQS=4 MTP_TOKENS=4 ./serve.sh     # параметры — как у serve.sh (MTP 3 по умолчанию)
 YARN=1 ./serve.sh          # контекст больше 262144: YaRN ×4, до 1 048 576
 PLE_OFFLOAD=none ./serve.sh   # таблица n-грамм в памяти GPU (по умолчанию disk; ещё cpu)
 ./show-env.sh PLE          # какие переменные PLE понимает vLLM в контейнере

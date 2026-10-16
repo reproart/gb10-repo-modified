@@ -25,7 +25,7 @@ otherwise. Knobs (config.sh, each overridable from the shell):
 | Variable | Default | |
 |---|---|---|
 | `MAX_NUM_SEQS` | 8 | concurrent requests |
-| `MTP_TOKENS` | 4 | MTP draft tokens, 0 = off |
+| `MTP_TOKENS` | 3 | MTP draft tokens, 0 = off; the card's 4 ties on one stream and is 4-9% slower at 4-8 requests |
 | `MAX_MODEL_LEN` | 262144 | context (1048576 with `YARN=1`) |
 | `YARN`, `YARN_FACTOR` | 0, 4 | YaRN past the native 262144: the checkpoint's own RoPE settings with `rope_type` yarn, via `--hf-overrides` |
 | `MAX_BATCHED_TOKENS` | 4096 | prefill chunk |
