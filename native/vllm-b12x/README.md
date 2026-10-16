@@ -60,6 +60,16 @@ on the same questions for both builds, then `answers.py compare`. Worth
 watching besides tok/s: how many tokens the thinking takes (QAD trained the
 end-of-thinking decision).
 
+First boot here (2026-10-16, image sha256:03a956544e9f...3595, model
+revision b9ce18a6, defaults): 15.5 minutes to ready — weights 2 min (71.7 GB
+read for the target, 4.1 GB for MTP), then b12x kernel autotuning in two
+phases of ~4.7 min each (6,429 and 1,504 candidates, nothing cached yet) and
+45 s of JIT warmup. Weights take 70.3 GiB in the pool; at GPU_UTIL 0.8 that
+leaves 18.6 GiB of fp8 KV, 987,930 tokens (3.77 requests of 262,144). vLLM
+logs the table setting as `Resolved Engram configuration: ... cpu_offload=True,
+table_memory='device'` with `PLE_OFFLOAD=disk`: still to be read against
+`./show-env.sh` before trusting what each mode does.
+
 Notes: the container runs as root, so `~/.cache/gb10-vllm-b12x` (kernel and
 compile caches, kept between runs) ends up root-owned; the weights are
 mounted read-only (`MODEL_RO=0` if the b12x loader wants to write beside
