@@ -49,7 +49,7 @@ cd gb10-repo-modified/native      # this directory is the whole project
 sudo apt install python3.12-venv python3.12-dev build-essential
 sudo mkdir -p /models && sudo chown $USER /models
 
-./serve.sh install     # venv with stock SGLang 0.5.20 + the hf CLI, no Docker (~10 GB)
+./serve.sh install     # venv with stock SGLang 0.5.21 + the hf CLI, no Docker (~10 GB)
 
 # The weights (one-time, ~35 GB), at the revisions the results were measured on:
 HF=~/spark/venv/bin/hf
@@ -91,11 +91,13 @@ checks that the venv's torch sees the GPU.
 ./serve.sh install
 ```
 
-Creates `~/spark/venv-sglang-0.5.20` (`GB10_WORKDIR` in `serve.sh`,
+Creates `~/spark/venv-sglang-0.5.21` (`GB10_WORKDIR` in `serve.sh`,
 `SGLANG_VERSION` in the model profile), installs SGLang into it, and points `~/spark/venv` at it. The
 venv carries the `hf` CLI too.
 
-It installs the exact versions in
+It installs the exact versions in `requirements/sglang-<version>-aarch64-py312.txt`
+(a version without one yet, as 0.5.21 until its lock is committed, is
+resolved on install and its lock written there), as
 [`requirements/sglang-0.5.20-aarch64-py312.txt`](requirements/sglang-0.5.20-aarch64-py312.txt):
 all 206 packages have prebuilt aarch64 wheels, so nothing compiles at install
 time. (At first boot Triton compiles small C launchers, which is what
@@ -185,11 +187,11 @@ settings as a local-only commit on top of them.
 | `CPUSET` | `serve.sh` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
 | `PORT`, `HOST` | `serve.sh` | `8888`, `0.0.0.0` | |
 | `MODEL_DIR`, `DRAFT_DIR` | profile | `/models/RadixArk/Qwen3.8-27B-NVFP4`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
-| `SGLANG_VERSION` | profile | `0.5.20` | see "Trying a newer SGLang" |
+| `SGLANG_VERSION` | profile | `0.5.21` | `0.5.20` goes back; see "Trying a newer SGLang" |
 | `DRAFT_TOKENS` | profile | `15` | 11 if you mostly run 10-12 requests at once, 10 for cap 32 (step 8) |
-| `MAX_RUNNING` | profile | `12` | the most requests you run at once; sizes the GDN pool and CUDA graphs with it (step 7) |
+| `MAX_RUNNING` | profile | `16` | the most requests you run at once; sizes the GDN pool and CUDA graphs with it (step 7) |
 | `MEM_FRACTION` | profile | `0.80` | see the earlyoom trap |
-| `CHUNKED_PREFILL` | profile | `8192` | the cookbook uses 2048: smoother decode under mixed load |
+| `CHUNKED_PREFILL`, `PREFILL_DECODE_INTERVAL` | profile | `2048`, `1` | one decode round after each prefill chunk: streams already generating pause ~1-2 s instead of the whole long prompt (`perf.py --only interference`); 8192 / 0 before 2026-10-17 |
 | `PREFILL_CUDA_GRAPH` | profile | `0` | 1 turns prefill CUDA graphs on (untested here) |
 | `CONTEXT_LENGTH` | profile | `262144` | |
 | `SPEC` | profile | `dflash` | `mtp`: the checkpoint's own MTP head (NEXTN 3/1/4, `MTP_STEPS`, `MTP_DRAFT_TOKENS`) instead of DFlash2; unmeasured here |
@@ -287,12 +289,13 @@ For a single interactive user, `MAX_RUNNING=4` gives the memory back to KV at
 ### Which cap: set it to the load you actually have
 
 The cap reserves GDN state up front, used or not, and does nothing for speed
-below it. So the default profile uses **cap 12**: ~14 GiB of GDN state
-instead of cap 32's ~35, with the difference (~520K tokens) in the KV pool.
+below it. So the default profile uses **cap 16** (12 before 2026-10-17): ~19
+GiB of GDN state and verify buffer instead of cap 32's ~35, with the
+difference in the KV pool (~985K fp8 tokens at 0.80).
 
 | Profile | For | Cap / draft | What it gives |
 |---|---|---|---|
-| `qwen3.8-27b` (default) | up to ~12 concurrent requests | 12 / 15 | ~5 full-length sessions' worth of KV at 0.85; 94.2 tok/s single-stream, 339 at 8, 340 at 12 (RadixArk NVFP4, FP8 draft) |
+| `qwen3.8-27b` (default) | up to ~16 concurrent requests | 16 / 15 | ~985K tokens of KV at 0.80; 88-94 tok/s single-stream, 321-330 at 8, 410-436 at 16 (RadixArk NVFP4, FP8 draft, SGLang 0.5.21) |
 | `qwen3.8-27b-single` | 1–2 users | 16 / 16 | 70.9 tok/s single-stream (Uncensored finetune) |
 | `qwen3.8-27b-longctx` | six 262K sessions | 6 / 10, 0.85 | see below |
 | `qwen3.8-27b-throughput` | many short requests | 32 / 10 | 597.8 tok/s peak (RadixArk NVFP4) |
@@ -354,7 +357,7 @@ as memory: prefill runs one sequence at a time at ~1,200 tok/s, so filling a
 over 8; a second machine measured +41.6%), 10 for concurrent serving at cap
 32 (the throughput profile). You cannot have both.
 
-**At cap 12, the default, 11 is the middle that wins most.** Three runs each
+**At cap 12, then the default, 11 is the middle that wins most.** Three runs each
 on `nvidia/Qwen3.8-27B-NVFP4`, aggregate tok/s
 ([RESULTS](results/RESULTS.md#draft-10--11--12-at-cap-12-2026-092526)):
 
