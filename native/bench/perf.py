@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Full performance suite: TTFT, single-stream decode, concurrency, prefill.
+"""Full performance suite: TTFT, single-stream decode, concurrency, prefill,
+decode during a long prefill.
 
     python3 bench/perf.py
     GB10_BASE_URL=http://127.0.0.1:8888/v1 GB10_MODEL=qwen3.8-27b-sglang \\
@@ -37,6 +38,15 @@ What the columns mean (and the traps they avoid):
   * the run header records the engine's effective settings (SGLang
     /get_server_info: revision, draft tokens, request cap ...), and the whole
     output is saved under results/runs/ (GB10_RUN_DIR).
+  * decode during a long prefill: what the streams already running see while
+    another request's long prompt is prefilled (an agent sending a big
+    context while others generate): their tok/s before / during / after it,
+    and the longest pause between two chunks of text. SGLang schedules a
+    prefill batch before decode whenever one is ready and turns mixed
+    prefill+decode batches off with speculative decoding, so the chunks of
+    one prompt can run back to back and the decode wait for all of them
+    whatever --chunked-prefill-size is; --prefill-decode-interval N runs N
+    decode rounds after each prefill batch. This section measures which.
   * PLE ms/op (patched vLLM only, GB10_METRICS_PORT) comes from the
     engine-side metrics sidecar as a delta around each section; each closing
     read waits one sidecar refresh (~6 s per row).
@@ -206,6 +216,122 @@ def prefill(targets):
     print()
 
 
+LONG_PROMPT = (
+    "Write a long, complete Python module implementing a small SQL engine: a "
+    "tokenizer, a recursive-descent parser for SELECT / WHERE / JOIN / GROUP BY / "
+    "ORDER BY, a planner and an executor over in-memory tables, with docstrings, "
+    "type hints and a full unittest suite. Write all of the code; do not stop early."
+)
+
+
+def _tokens_at(series, t):
+    """Completion tokens a stream had reached at time t (its last chunk at or
+    before t; 0 before its first)."""
+    n = 0
+    for ts, k in series:
+        if ts > t:
+            break
+        n = k
+    return n
+
+
+def _window_rate(all_series, a, b):
+    """Aggregate tok/s of the streams over [a, b]."""
+    if b <= a:
+        return None
+    return sum(_tokens_at(s, b) - _tokens_at(s, a) for s in all_series) / (b - a)
+
+
+def prefill_interference(prompt_tokens, levels, base=4.0, after=3.0, max_tokens=16384):
+    print(f"## 5. Decode during a long prefill (one ~{prompt_tokens // 1000}K prompt "
+          "while N streams generate)")
+    print(f"   {'streams':>7} {'prompt':>8} {'TTFT':>8} {'prefill':>10}   "
+          f"{'decode before':>13} {'during':>8} {'after':>8}   {'longest pause':>13} {'step':>7}")
+    print("   " + "-" * 96)
+    for n in levels:
+        series = [[] for _ in range(n)]
+        stop_after = [None]
+        no_usage = [False]
+
+        def recorder(i):
+            def cb(t, k):
+                if k is None:          # no per-chunk usage: count chunks instead
+                    no_usage[0] = True
+                    k = len(series[i]) + 1
+                series[i].append((t, k))
+                return stop_after[0] is not None and t > stop_after[0]
+            return cb
+
+        box = []
+        bg = threading.Thread(target=lambda: box.append(_parallel(n, lambda i: chat(
+            f"[{uuid.uuid4().hex[:8]}] {LONG_PROMPT} Variant {i}.", max_tokens, stream=True,
+            ignore_eos=True, on_chunk=recorder(i)))))
+        bg.start()
+        deadline = time.perf_counter() + 300
+        while not all(series) and bg.is_alive() and time.perf_counter() < deadline:
+            time.sleep(0.05)
+        if not all(series):
+            stop_after[0] = 0.0
+            bg.join()
+            errors = box[0][1] if box else []
+            print(f"   {n:>7}  the decode streams did not start"
+                  f"{', e.g. ' + errors[0][:120] if errors else ''}")
+            continue
+        time.sleep(base)
+        t_send = time.perf_counter()
+        try:
+            with GpuWatch() as gpu:
+                r = chat(unique_prompt(uuid.uuid4().hex, prompt_tokens), 8, stream=True)
+        except Exception as e:  # noqa: BLE001
+            stop_after[0] = 0.0
+            bg.join()
+            print(f"   {n:>7}  the long prompt failed: {e!r:.120}")
+            continue
+        t_first = t_send + (r["ttft"] or r["e2e"])
+        stop_after[0] = t_first + after
+        bg.join()
+        _, errors, _ = box[0]
+        hits = r["cached_tokens"] or 0
+        rate = (r["prompt_tokens"] - hits) / (t_first - t_send)
+
+        before = _window_rate(series, t_send - (base - 0.5), t_send)
+        during = _window_rate(series, t_send, t_first)
+        end = min(s[-1][0] for s in series)
+        after_rate = _window_rate(series, t_first, min(end, t_first + after))
+        # Gaps between chunks: the longest that overlaps the prefill, and the
+        # usual one before it (one decode step, or a few with spec decoding).
+        longest, usual = 0.0, []
+        for s in series:
+            ts = [t for t, _ in s]
+            for a, b in zip(ts, ts[1:]):
+                if b > t_send and a < t_first:
+                    longest = max(longest, b - a)
+                elif b <= t_send:
+                    usual.append(b - a)
+        unit = " chunks/s" if no_usage[0] else ""
+        print(f"   {n:>7} {r['prompt_tokens']:>8} {t_first - t_send:>7.2f}s {rate:>6.0f} t/s   "
+              f"{_fmt(before, '>9.1f', ' t/s')} {_fmt(during, '>8.1f')} {_fmt(after_rate, '>8.1f')}   "
+              f"{longest:>12.2f}s {_fmt(_med(usual), '>6.2f', 's')}")
+        notes = []
+        if errors:
+            notes.append(f"{len(errors)} decode stream(s) failed, e.g. {errors[0][:100]}")
+        if end < t_first:
+            notes.append("a decode stream ended before the prompt's first token: "
+                         "the numbers above undercount")
+        if no_usage[0]:
+            notes.append(f"no per-chunk usage from the server: rates are{unit}, not tokens")
+        if cache_hit_significant(hits, r["prompt_tokens"]):
+            notes.append("prefix-cache hit on the unique prompt — the prefill rate excludes it")
+        for note in notes:
+            print(f"   {'':>7} !! {note}")
+        if str(gpu):
+            print(f"   {'':>7} {gpu}")
+        time.sleep(3)
+    print("   (during: the streams' aggregate while the prompt is prefilled; longest pause:"
+          " the longest gap between two chunks of any stream in that time; step: the usual"
+          " gap before it)\n")
+
+
 LEVELS = (1, 2, 4, 8, 16, 24, 32)
 
 
@@ -230,7 +356,12 @@ def main():
                          "request cap, the cap, and 1.5x the cap; 1 2 4 8 16 24 32 if unknown)")
     ap.add_argument("--prefill", nargs="+", type=int, default=[2000, 8000, 32000, 100000],
                     help="approx. prompt sizes for the prefill section")
-    ap.add_argument("--only", choices=["warmup", "ttft", "decode", "concurrency", "prefill"],
+    ap.add_argument("--interference-prompt", type=int, default=32000,
+                    help="approx. size of the long prompt in the decode-during-prefill section")
+    ap.add_argument("--interference-streams", nargs="+", type=int, default=[1, 4],
+                    help="decode streams running while it is prefilled (default: 1 4)")
+    ap.add_argument("--only", choices=["warmup", "ttft", "decode", "concurrency", "prefill",
+                                       "interference"],
                     help="run a single section (warmup alone: prime a freshly started server)")
     ap.add_argument("--no-warmup", action="store_true",
                     help="skip the warmup pass (measure first-use JIT stalls on purpose)")
@@ -257,6 +388,8 @@ def main():
         "decode": single_stream,
         "concurrency": lambda: concurrency(args.levels),
         "prefill": lambda: prefill(args.prefill),
+        "interference": lambda: prefill_interference(args.interference_prompt,
+                                                     args.interference_streams),
     }
     for name, fn in sections.items():
         if args.only in (None, name):
