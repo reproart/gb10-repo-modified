@@ -633,6 +633,34 @@ decoding, never mixes the two, so the four 8192 chunks run back to back.
 `--chunked-prefill-size 2048` alone would only make it sixteen chunks in a
 row; `--prefill-decode-interval N` is what lets decode in between.
 
+**Chunk 4096 / 2048 with `--prefill-decode-interval 1`** (cap 16, 0.80, one
+run each; the 8192 column is the 0.80 run above, no interval):
+
+| | 8192, interval 0 | 4096, interval 1 | 2048, interval 1 |
+|---|---:|---:|---:|
+| Single-stream decode | 88.8 | 89.1 | 87.6 |
+| Sweep, 1 / 2 / 4 / 8 / 16 | 80.7 / 143.6 / 231.7 / 321.4 / 435.5 | 80.1 / 129.9 / 217.3 / 298.6 / 414.2 | 81.6 / 130.3 / 221.4 / 329.7 / 422.5 |
+| Sweep TTFT p50 at 4 / 16 streams | 0.23 / 0.43 s | 0.33 / 0.55 s | 0.36 / 0.52 s |
+| Prefill alone 2K / 8K | 2,792 / 2,111 | 2,745 / 2,363 | 2,465 / **2,588** |
+| Prefill alone 32K / 101K | 1,793 / 1,201 | 1,905 / 1,268 | **2,052 / 1,334** |
+| 32K prompt under decode: TTFT (1 / 4 streams) | 18.4 / 18.3 s | 17.5 / 17.7 s | 18.4 / 17.9 s |
+| Their decode during it (1 / 4 streams) | 0.2 / 3.2 tok/s | 2.2 / 10.6 | 5.3 / 16.2 |
+| Longest pause (1 / 4 streams) | 14.4 / 14.3 s | 2.50 / 2.53 s | 2.13 / 1.32 s |
+
+The interval does what it says: the pause drops from the whole prefill to
+about one chunk (~2.2 s of 4096, ~1.1 s of 2048 at these rates), and the
+long prompt's TTFT under load stays where it was. Decode during the prefill
+is still slow, one step per chunk (~4 tokens a stream with this text), but
+no stream freezes. The surprise is the chunk itself: 2048 prefills faster
+than 8192 on its own, +9-23% from 8K to 101K, outside the spread of every
+8192 run (32K 1,765-1,821, 101K 1,198-1,224), so the old "8192 favours
+prefill" was never measured and is wrong here; only a 2K prompt, two chunks
+at 2048, is ~10% slower. The sweep is the same within the spread, its TTFT
++0.1 s (an extra decode round between arrivals' prefills). HumanEval on
+0.5.21 unchanged (operator). The profile now defaults to 0.5.21, cap 16,
+0.80, chunk 2048, interval 1 (2026-10-17); a larger interval gives the
+running streams more and the long prompt a longer TTFT, not measured.
+
 **Measured, Qwen3.8-Flash-Next** (`models/qwen3.8-flash-next.sh` as shipped:
 NVFP4, MTP 3/1/4, 65K draft vocabulary, FP8 side layers, both heads and HC
 mix in FP8, cap 8; every patch booted unchanged and logged its conversions

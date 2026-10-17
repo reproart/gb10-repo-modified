@@ -10,15 +10,18 @@
 # Each value is "${VAR:-default}", so a one-off override from the shell works:
 #   DRAFT_TOKENS=16 MAX_RUNNING=16 ./serve.sh
 
-# SGLang version. 0.5.20 is the one this recipe was built against: its lock is
-# in requirements/ and every flag below exists there. To try a newer one: set
+# SGLang version. 0.5.21 since 2026-10-17: decode and prefill the same as
+# 0.5.20 or better, HumanEval unchanged (results/RESULTS.md, "Cap 16 on
+# 0.5.21"); this profile's variants (-single, -throughput, -longctx, -dspark,
+# zen6, meerkat-triz) follow. SGLANG_VERSION=0.5.20 goes back: the recipe was
+# built against it and its lock is in requirements/. To try a newer one: set
 # it, ./serve.sh install, ./serve.sh. Its own venv leaves the working one
 # untouched, so rolling back is setting this back. A version with no lock yet
 # is resolved on install and its lock written to requirements/; commit it once
 # that version has served and benchmarked well. If a newer SGLang renames a
 # flag, the boot fails with "unrecognized arguments": adjust model_args.
 # Releases: https://pypi.org/project/sglang/#history
-SGLANG_VERSION="${SGLANG_VERSION:-0.5.20}"
+SGLANG_VERSION="${SGLANG_VERSION:-0.5.21}"
 # Extra package index, for nightly builds (then use the exact nightly version
 # string above): https://docs.sglang.ai/whl/cu130/  Empty = PyPI only.
 SGLANG_INDEX="${SGLANG_INDEX:-}"
@@ -95,10 +98,12 @@ DRAFT_TOKENS="${DRAFT_TOKENS:-15}"
 # ~35 GiB of it, cap 12 ~14 GiB; the difference goes to the KV pool (~+520K
 # tokens, room for about five 262K sessions at 0.85). Below the cap, speed does
 # not depend on it; the cap only limits how many requests run at once.
-# 12 fits "up to ~12 concurrent requests"; qwen3.8-27b-throughput keeps 32
-# (578 tok/s peak natively), qwen3.8-27b-longctx trades down to 6 x 262K.
-# 48 (~47 GB of state) failed to boot on 128 GB.
-MAX_RUNNING="${MAX_RUNNING:-12}"
+# 16 since 2026-10-17: +10% at the peak against 12 on 0.5.21 (410-436 tok/s
+# at 16 streams against 370-383 at 12), the rest the same, and still ~985K
+# tokens of fp8 KV at 0.80. qwen3.8-27b-throughput keeps 32 (578 tok/s peak
+# natively), qwen3.8-27b-longctx trades down to 6 x 262K. 48 (~47 GB of
+# state) failed to boot on 128 GB.
+MAX_RUNNING="${MAX_RUNNING:-16}"
 # 5 slots per running request, plus one per request so a finished turn's GDN
 # state can stay cached for the next turn of the same conversation.
 MAMBA_CACHE="${MAMBA_CACHE:-$((MAX_RUNNING * 6))}"
@@ -114,15 +119,21 @@ CUDA_GRAPH_BS="${CUDA_GRAPH_BS:-$MAX_RUNNING}"
 # a bigger KV pool goes unused and the lost headroom cost 18% at 32 streams.
 MEM_FRACTION="${MEM_FRACTION:-0.80}"
 
-# Prefill chunk. 8192 is what everything in results/ was measured with and
-# favours prefill throughput; the cookbook's 2048 is meant to keep decode
-# smoother while long prompts are prefilled alongside it. In SGLang a ready
-# prefill batch runs before decode and, with speculative decoding, the two
-# are never mixed, so the chunks of one prompt may run back to back either
-# way: bench/perf.py --only interference measures the pause, and
-# EXTRA_ARGS='--prefill-decode-interval N' (N decode rounds between prefill
-# batches) is the knob to try with a smaller chunk.
-CHUNKED_PREFILL="${CHUNKED_PREFILL:-8192}"
+# Prefill chunk and how decode gets in between (results/RESULTS.md, "Decode
+# during a long prefill"). SGLang runs a ready prefill batch before decode
+# and, with speculative decoding, never mixes the two, so with no interval
+# the chunks of a long prompt run back to back and every stream already
+# generating stops for the whole prefill (14 s for 32K at 8192, ~80 s for
+# 101K). PREFILL_DECODE_INTERVAL=N (--prefill-decode-interval) runs N decode
+# rounds after each prefill batch: at 2048 / 1 the longest pause is 1.3-2.1 s
+# and decode keeps 5-16 tok/s through it. 2048 also prefills faster alone
+# than 8192 (2,052 against 1,765-1,821 tok/s at 32K, 1,334 against
+# 1,198-1,224 at 101K; 2K prompts ~10% slower, two chunks), and the sweep is
+# the same. A larger N gives the running streams more of the time and the
+# long prompt a longer TTFT (each round is one decode step, ~0.1 s, per
+# chunk). 8192 / 0 was everything in results/ before 2026-10-17.
+CHUNKED_PREFILL="${CHUNKED_PREFILL:-2048}"
+PREFILL_DECODE_INTERVAL="${PREFILL_DECODE_INTERVAL:-1}"
 # Prefill CUDA graphs: 0 = off, as measured here; 1 = on, as in the cookbook's
 # GB10 cell. Not benchmarked here.
 PREFILL_CUDA_GRAPH="${PREFILL_CUDA_GRAPH:-0}"
@@ -210,6 +221,7 @@ model_args() {
     --cuda-graph-max-bs-decode "$CUDA_GRAPH_BS"
     --attention-backend "$ATTENTION_BACKEND"
     --chunked-prefill-size "$CHUNKED_PREFILL"
+    --prefill-decode-interval "$PREFILL_DECODE_INTERVAL"
     --reasoning-parser qwen3
     --tool-call-parser qwen3_coder
   )
