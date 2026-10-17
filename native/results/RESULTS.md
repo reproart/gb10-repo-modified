@@ -574,6 +574,33 @@ in all three runs: -8% at 101K and ~-10% at 32K, outside the spread of the
 settles it. The patches booted unchanged. Nothing gained for the 27B: it
 stays on 0.5.20. The 101K prefill reached 82-83 C on this Spark.
 
+**Cap 16 on 0.5.21** (2026-10-17, the same second Spark, operator's runs):
+the same server with `MAX_RUNNING=16` (GDN pool 96) and `MEM_FRACTION=0.85`,
+three `perf.py` runs back to back on one boot, against the three cap-12 runs
+above:
+
+| | 0.5.21, cap 12, 0.80 | 0.5.21, cap 16, 0.85 |
+|---|---:|---:|
+| Single-stream decode (700-token code answer) | 91.6-92.0 | **93.0-93.3** |
+| accept_len there | 9.3-10.8 | 9.2-10.8 |
+| TTFT, short prompt | 191-192 ms | 185-188 ms |
+| Sweep, 1 / 2 / 4 streams | 72-87 / 126-145 / 206-214 | 77-88 / 129-137 / **219-243** |
+| 8 streams | 311-324 | 325-328 |
+| Peak without queueing | 370-383 (12 streams) | **410-426 (16 streams)** |
+| 24 streams (queued past the cap) | — | 394-398 |
+| Prefill 2K / 8K | 2,709-2,817 / 1,559-1,864 | 2,721-2,785 / 1,468-2,142 |
+| Prefill 32K / 101K | 1,569-1,593 / 1,118-1,121 | **1,765-1,821 / 1,198-1,206** |
+| GPU at the end of the 101K prompt | 82-83 °C | 79-80 °C |
+
+The cap buys what it should: +10% at the peak (16 requests at once instead
+of 12), 4 streams +6-14%, the rest within the spread. The surprise is
+prefill: 32K +12% and 101K +7%, back inside the 0.5.20 range (1,717-1,841 /
+1,212-1,223). Neither the cap nor the memory fraction changes a prefill
+kernel, so the "-8% at 101K on 0.5.21" above most likely was this box
+running 3 °C hotter, not the version: 0.5.21 loses nothing on the 27B
+either. Not yet switched: HumanEval on 0.5.21 for the 27B is still open, and
+0.85 is the setting the profile warns about (earlyoom keeps ~8 GB).
+
 **Measured, Qwen3.8-Flash-Next** (`models/qwen3.8-flash-next.sh` as shipped:
 NVFP4, MTP 3/1/4, 65K draft vocabulary, FP8 side layers, both heads and HC
 mix in FP8, cap 8; every patch booted unchanged and logged its conversions
