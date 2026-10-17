@@ -289,13 +289,13 @@ For a single interactive user, `MAX_RUNNING=4` gives the memory back to KV at
 ### Which cap: set it to the load you actually have
 
 The cap reserves GDN state up front, used or not, and does nothing for speed
-below it. So the default profile uses **cap 16** (12 before 2026-10-17): ~19
-GiB of GDN state and verify buffer instead of cap 32's ~35, with the
-difference in the KV pool (~985K fp8 tokens at 0.80).
+below it. So the default profile uses **cap 16** (12 before 2026-10-17): ~25
+GiB of GDN state and verify buffer at draft 15 instead of cap 32's ~35 at
+draft 10, with the difference in the KV pool (~995K fp8 tokens at 0.80).
 
 | Profile | For | Cap / draft | What it gives |
 |---|---|---|---|
-| `qwen3.8-27b` (default) | up to ~16 concurrent requests | 16 / 15 | ~985K tokens of KV at 0.80; 88-94 tok/s single-stream, 321-330 at 8, 410-436 at 16 (RadixArk NVFP4, FP8 draft, SGLang 0.5.21) |
+| `qwen3.8-27b` (default) | up to ~16 concurrent requests | 16 / 15 | ~995K tokens of KV at 0.80 (three 262K sessions); 88-94 tok/s single-stream, 321-330 at 8, 410-436 at 16 (RadixArk NVFP4, FP8 draft, SGLang 0.5.21) |
 | `qwen3.8-27b-single` | 1–2 users | 16 / 16 | 70.9 tok/s single-stream (Uncensored finetune) |
 | `qwen3.8-27b-longctx` | six 262K sessions | 6 / 10, 0.85 | see below |
 | `qwen3.8-27b-throughput` | many short requests | 32 / 10 | 597.8 tok/s peak (RadixArk NVFP4) |
@@ -310,23 +310,30 @@ From the native boot logs:
 
 | Per token of context | Per GDN slot | Pools get |
 |---|---|---|
-| 42 KiB of KV: 32 target + 10 draft (fp8) | ~0.0735 GiB; a request holds 5, plus `DRAFT_TOKENS` in the verify buffer | free at start − weights − (1 − `MEM_FRACTION`) × 121.6 GiB |
+| 42 KiB of KV: 32 target + 10 draft (fp8) | ~0.0735 GiB; the cap reserves `MAMBA_CACHE` slots (6 per request) plus `MAX_RUNNING` × `DRAFT_TOKENS` in the verify buffer | free at start − weights − (1 − `MEM_FRACTION`) × 121.6 GiB |
 
-So one 262K session is 10.5 GiB of KV plus ~1.1 GiB of GDN state (draft
-10). With the FP4-head RadixArk checkpoint (~25.9 GiB with the draft) and
-~115 GiB free at start:
+So one 262K session is 10.5 GiB of KV, and the cap's state comes off the top
+whether or not it is used. Anchored on the default profile's boot at 0.85
+(cap 16, draft 15, pool 96, RadixArk NVFP4, 2026-10-17): `KV Cache is
+allocated ... #tokens: 1146098`, 35.0 GiB target + 10.9 GiB draft, next to
+7.1 GiB of GDN slots and 17.6 GiB of verify buffer, ~70.6 GiB of pools. Each
+0.05 of `MEM_FRACTION` moves the pools by ~6.1 GiB:
 
-| `MEM_FRACTION` | Pools | 262K sessions, draft 10 | draft 16 |
-|---:|---:|---:|---:|
-| 0.80 | 65.2 GiB | 5 | 5 |
-| 0.85 | 71.3 GiB | **6** | 5 |
-| 0.90 | 77.3 GiB | 6 | 6 |
+| `MEM_FRACTION` | Pools | KV, default profile | 262K sessions: default (cap 16, draft 15) | `-longctx` (cap 6, draft 10) | `-longctx`, draft 15 |
+|---:|---:|---:|---:|---:|---:|
+| **0.80** (default) | 64.5 GiB | 39.8 GiB, ~995K tokens | **3** (3.8) | 5 (5.5) | 5 (5.3) |
+| 0.85 | 70.6 GiB | 45.9 GiB, 1,146,098 (boot log) | 4 (4.4) | **6** (6.05, on the edge) | 5 (5.8) |
+| 0.90 | 76.7 GiB | 52.0 GiB, ~1.30M | 4 (4.95) | 6 (6.6) | 6 (6.4) |
 
-Six is the ceiling; a seventh would need ~0.94. The lever is `MAX_RUNNING`
-more than `MEM_FRACTION`: the throughput profile's cap of 32 spends ~35 GiB on
-GDN state, six requests need ~7. `./serve.sh qwen3.8-27b-longctx` is that
-setting (cap 6, draft 10, a GDN slot per session to keep its state cached
-between turns, 0.85). Untested as a whole; check it:
+The default profile holds three full-length sessions, or its ~995K tokens
+spread over more requests (16 of ~62K each). Six is the ceiling of any
+profile; a seventh would need ~0.94. The lever is `MAX_RUNNING` (with
+`DRAFT_TOKENS`) more than `MEM_FRACTION`: the default's cap 16 at draft 15
+reserves ~25 GiB, the throughput profile's cap 32 ~35, six requests at draft
+10 ~7. `./serve.sh qwen3.8-27b-longctx` is that setting (cap 6, draft 10, a
+GDN slot per session to keep its state cached between turns, 0.85; the rest,
+SGLang 0.5.21 and chunk 2048 with a decode round between chunks, from the
+default). Untested as a whole; check it:
 
 ```bash
 ./serve.sh qwen3.8-27b-longctx      # boot log: "KV Cache is allocated ... #tokens: N"; N / 262144 = sessions
@@ -336,8 +343,10 @@ python3 bench/longctx.py --ctx 250000 --streams 2 4 6 --gen 1000   # holds each 
 At 0.85 watch earlyoom (`journalctl -u earlyoom`): if it kills the scheduler
 (exit code -15) during a long prefill, lower its `-m` threshold
 (`systemctl cat earlyoom`) or use `MEM_FRACTION=0.82`. And budget time as well
-as memory: prefill runs one sequence at a time at ~1,200 tok/s, so filling a
-262K context takes ~3.5 minutes, six of them over 20.
+as memory: prefill runs one sequence at a time at ~1,300 tok/s (101K, chunk
+2048; lower further out), so filling a 262K context takes ~3.5-4 minutes, six
+of them over 20. With the decode round between chunks the other sessions keep
+generating meanwhile (slowly) instead of stopping for those minutes.
 
 ## 8. Tune draft tokens: the largest single-stream lever
 

@@ -94,9 +94,9 @@ DRAFT_TOKENS="${DRAFT_TOKENS:-15}"
 # on this hybrid model is bought with GDN state, not KV, and the cap reserves
 # that state up front whether or not it is used: ~0.0735 GiB per slot, 5 slots
 # per request (4, plus 1 for the DFlash2 verify; SGLang clamps the cap to
-# pool / 5), plus the verify buffer (requests x draft tokens). Cap 32 holds
-# ~35 GiB of it, cap 12 ~14 GiB; the difference goes to the KV pool (~+520K
-# tokens, room for about five 262K sessions at 0.85). Below the cap, speed does
+# pool / 5), plus the verify buffer (requests x draft tokens). Cap 32 at draft
+# 10 holds ~35 GiB of it, cap 16 at draft 15 ~25 GiB (~995K tokens of KV left
+# at 0.80, three full 262K sessions; README, "Long sessions"). Below the cap, speed does
 # not depend on it; the cap only limits how many requests run at once.
 # 16 since 2026-10-17: +10% at the peak against 12 on 0.5.21 (410-436 tok/s
 # at 16 streams against 370-383 at 12), the rest the same, and still ~985K
