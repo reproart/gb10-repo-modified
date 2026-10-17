@@ -153,10 +153,17 @@ def cache_hit_significant(hits, prompt_tokens):
 # ---- chat --------------------------------------------------------------------
 
 def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=None,
-         ignore_eos=False):
+         ignore_eos=False, on_chunk=None):
     """One chat completion -> dict(e2e, ttft, completion_tokens, prompt_tokens,
-    cached_tokens, finish_reason, content). ttft is None when not streaming;
-    content is only collected when not streaming.
+    cached_tokens, finish_reason, content, stopped). ttft is None when not
+    streaming; content is only collected when not streaming.
+
+    on_chunk(t, completion_tokens) (streaming only) is called on every chunk
+    that carries text, with its perf_counter() time and the completion tokens
+    so far (per-chunk usage, `continuous_usage_stats`, which SGLang and vLLM
+    both send; None if the server does not). Returning True stops reading:
+    the connection closes, the server aborts the request, and the result has
+    stopped=True with the counts of the last chunk.
 
     `effort` maps to the template's reasoning_effort kwarg (xhigh is the
     template default; medium and low also exist, "high" does not). Ignored by
@@ -178,6 +185,8 @@ def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=
     }
     if stream:
         body["stream_options"] = {"include_usage": True}
+        if on_chunk:
+            body["stream_options"]["continuous_usage_stats"] = True
     if ignore_eos:
         body["ignore_eos"] = True
     req = urllib.request.Request(CHAT_URL, json.dumps(body).encode(), HEADERS)
@@ -187,7 +196,7 @@ def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"HTTP {e.code}: {e.read()[:300]!r}") from None
 
-    ttft, usage, finish, content = None, {}, None, ""
+    ttft, usage, finish, content, stopped = None, {}, None, "", False
     with resp:
         if not stream:
             d = json.loads(resp.read())
@@ -211,15 +220,22 @@ def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=
                     # SSE event; ignoring it would count a dead request as a
                     # successful one with zero tokens.
                     raise RuntimeError(f"stream error: {json.dumps(d['error'])[:300]}")
+                text = False
                 for ch in d.get("choices") or []:
                     delta = ch.get("delta") or {}
-                    if ttft is None and (delta.get("content") or delta.get("reasoning_content")
-                                         or delta.get("reasoning")):
-                        ttft = time.perf_counter() - t0
+                    if (delta.get("content") or delta.get("reasoning_content")
+                            or delta.get("reasoning")):
+                        text = True
+                        if ttft is None:
+                            ttft = time.perf_counter() - t0
                     finish = ch.get("finish_reason") or finish
                 if d.get("usage"):
                     usage = d["usage"]
-    if not usage:
+                if on_chunk and text and on_chunk(time.perf_counter(),
+                                                  (d.get("usage") or {}).get("completion_tokens")):
+                    stopped = True
+                    break
+    if not usage and not stopped:
         raise RuntimeError("response carried no `usage` — token counts would read as 0 "
                            "(does the endpoint pass stream_options.include_usage through?)")
     details = usage.get("prompt_tokens_details") or {}
@@ -234,6 +250,7 @@ def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=
         "cached_tokens": details.get("cached_tokens"),
         "finish_reason": finish,
         "content": content,
+        "stopped": stopped,
     }
 
 

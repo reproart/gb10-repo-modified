@@ -555,6 +555,7 @@ python3 bench/perf.py                                   # сравнить с з
 ```bash
 python3 bench/perf.py                    # TTFT, один поток, 1–18 потоков, prefill до 101K
 python3 bench/perf.py --only decode      # только один поток
+python3 bench/perf.py --only interference  # декод других потоков, пока идёт префилл промпта ~32K
 python3 bench/longctx.py                 # несколько длинных контекстов разом
 python3 bench/profile_decode.py          # куда уходит шаг декода (по группам ядер)
 ../scripts/run-humaneval.sh              # HumanEval без размышления

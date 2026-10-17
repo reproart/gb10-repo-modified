@@ -848,6 +848,15 @@ default `<server>/metrics`; the server is started with them enabled. Behind a ga
 at the engine.
 
 `perf.py` takes `--levels`, `--prefill`, `--only <section>` and `--no-warmup`.
+Section 5 (`--only interference`, `--interference-prompt 32000`,
+`--interference-streams 1 4`) starts N long generations, sends one long
+unique prompt while they run, and prints their aggregate tok/s before /
+during / after its prefill and the longest pause between two chunks of
+text: what agents already generating see when another sends a big context.
+SGLang runs a ready prefill batch before decode, and with speculative
+decoding never mixes the two, so the pause can last the whole prefill
+whatever `--chunked-prefill-size` is; `EXTRA_ARGS='--prefill-decode-interval
+N'` (N decode rounds after each prefill batch) is the knob to try with it.
 Without `--levels` the concurrency sweep follows the server's request cap:
 1 2 4 8 16 24 32 up to it, the cap itself, and one burst row at 1.5x the cap
 (flagged as queued, left out of the peak). Cap 12 gives 1 2 4 8 12 18.

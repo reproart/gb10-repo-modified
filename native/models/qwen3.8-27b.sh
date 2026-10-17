@@ -113,8 +113,13 @@ CUDA_GRAPH_BS="${CUDA_GRAPH_BS:-$MAX_RUNNING}"
 MEM_FRACTION="${MEM_FRACTION:-0.80}"
 
 # Prefill chunk. 8192 is what everything in results/ was measured with and
-# favours prefill throughput; the cookbook's 2048 keeps decode smoother
-# while long prompts are being prefilled alongside it.
+# favours prefill throughput; the cookbook's 2048 is meant to keep decode
+# smoother while long prompts are prefilled alongside it. In SGLang a ready
+# prefill batch runs before decode and, with speculative decoding, the two
+# are never mixed, so the chunks of one prompt may run back to back either
+# way: bench/perf.py --only interference measures the pause, and
+# EXTRA_ARGS='--prefill-decode-interval N' (N decode rounds between prefill
+# batches) is the knob to try with a smaller chunk.
 CHUNKED_PREFILL="${CHUNKED_PREFILL:-8192}"
 # Prefill CUDA graphs: 0 = off, as measured here; 1 = on, as in the cookbook's
 # GB10 cell. Not benchmarked here.
