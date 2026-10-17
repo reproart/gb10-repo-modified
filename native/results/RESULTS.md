@@ -601,6 +601,38 @@ running 3 °C hotter, not the version: 0.5.21 loses nothing on the 27B
 either. Not yet switched: HumanEval on 0.5.21 for the 27B is still open, and
 0.85 is the setting the profile warns about (earlyoom keeps ~8 GB).
 
+KV pool at 0.85: 1,146,098 fp8 tokens (target 35.0 GB, draft 10.9 GB, ~40 KB
+a token), 19.2 GB left after the pools. **0.85 against 0.80** at cap 16, one
+run each on the new `perf.py`; the operator reports the same split over
+several full restarts, the machine's included:
+
+| | 0.85 | 0.80 |
+|---|---:|---:|
+| Single-stream decode (the 700-token code answer, 5 runs) | **93.7-94.2** | 88.8-89.0 |
+| accept_len there | 9.72-10.90 | 9.80 in all five |
+| Sweep, 1 / 2 / 4 / 8 / 16 streams | 81.0 / 130.8 / 227.5 / 328.4 / 421.6 | 80.7 / **143.6** / 231.7 / 321.4 / **435.5** |
+| Prefill 2K / 8K / 32K / 101K | 2,737 / 1,873 / 1,822 / 1,224 | 2,792 / 2,111 / 1,793 / 1,201 |
+
+The single-stream gap is all in accept_len (10.4 / 9.8 = 1.06, the same
+ratio as the speeds): the step costs the same. That section repeats one
+prompt, so it is one text; on the sweep's varied prompts one stream is the
+same at both (81.0 / 80.7) and 0.80 is ahead at 2 and 16. At temperature 0,
+0.80 produced the identical acceptance five times over, 0.85 a different one
+each run: the memory split changes the numerics (likely the order of some
+reduction), and with it which draft tokens this one text accepts. Not a
+speed lever, as before; 0.80 keeps the headroom.
+
+**Decode during a long prefill** (`perf.py` section 5, new; chunk 8192, both
+memory settings): while one ~32K prompt is prefilled (TTFT 18.0-18.4 s), the
+streams already generating stop. 1 stream: 0.2 tok/s during the prefill
+(36-44 before), longest pause 14.1-14.4 s; 4 streams: 3.2-3.4 tok/s (121-135
+before), longest pause 14.0-14.3 s. The pause is the whole prefill (the rest
+of the TTFT is tokenizing and queueing the prompt, while decode still runs):
+SGLang runs a ready prefill batch before decode and, with speculative
+decoding, never mixes the two, so the four 8192 chunks run back to back.
+`--chunked-prefill-size 2048` alone would only make it sixteen chunks in a
+row; `--prefill-decode-interval N` is what lets decode in between.
+
 **Measured, Qwen3.8-Flash-Next** (`models/qwen3.8-flash-next.sh` as shipped:
 NVFP4, MTP 3/1/4, 65K draft vocabulary, FP8 side layers, both heads and HC
 mix in FP8, cap 8; every patch booted unchanged and logged its conversions
