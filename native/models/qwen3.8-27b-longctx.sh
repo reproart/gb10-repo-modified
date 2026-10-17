@@ -9,11 +9,13 @@
 # The budget (README, "Long sessions"), from the native boot logs:
 #   pools = free at start - weights - (1 - MEM_FRACTION) x 121.6 GiB
 #   one 262K session = 10.5 GiB of KV (32 KiB/token target + 10 KiB/token
-#     draft, fp8) + ~0.0735 GiB per GDN slot x (slots + draft tokens)
-# With the FP4-head RadixArk checkpoint (~25.9 GiB with the draft) and ~115 GiB
-# free at start, 0.85 gives ~71 GiB of pools: 6 sessions at draft 10, 5 at
-# draft 16. A 7th needs ~0.94, which the machine cannot give. The throughput
-# profile's cap of 32 spends ~35 GiB on GDN state; 6 requests need ~7.
+#     draft, fp8); the cap reserves ~0.0735 GiB per GDN slot x (MAMBA_CACHE
+#     + MAX_RUNNING x DRAFT_TOKENS) up front
+# The default profile's boot at 0.85 (cap 16, draft 15, RadixArk NVFP4,
+# 2026-10-17) had ~70.6 GiB of pools; here 6 x (6 + 10) slots take ~7 GiB of
+# them, leaving 6.05 sessions' worth of KV: 6, on the edge (5 at draft 15, 5
+# at 0.80, 6 at 0.90). A 7th needs ~0.94, which the machine cannot give. The
+# default profile (cap 16, draft 15) reserves ~25 GiB and holds 3 at 0.80.
 #
 # Untested as a whole: check the "KV Cache is allocated ... #tokens" boot line
 # (tokens / 262144 = sessions that fit), then bench/longctx.py (README).
