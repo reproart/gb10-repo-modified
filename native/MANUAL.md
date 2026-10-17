@@ -137,12 +137,12 @@ DFlash2: маленький драфт предлагает до 15 токено
 **Веса** (две цели на выбор + драфт):
 
 ```bash
+# по умолчанию: быстрее (~40% на одном потоке, в 2.5 раза быстрее prefill), 93.9–95.1% без размышления:
+$HF download RadixArk/Qwen3.8-27B-NVFP4 --revision 554ebba9b5f1b79dc11246341960360e6ef05ef4 \
+  --local-dir /models/RadixArk/Qwen3.8-27B-NVFP4
 # точнее (HumanEval 97.6% без размышления), медленнее:
 $HF download Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
   --local-dir /models/Qwen3.8-27B-FP8
-# быстрее (~40% на одном потоке, в 2.5 раза быстрее prefill), 93.9–95.1% без размышления:
-$HF download RadixArk/Qwen3.8-27B-NVFP4 --revision 554ebba9b5f1b79dc11246341960360e6ef05ef4 \
-  --local-dir /models/RadixArk/Qwen3.8-27B-NVFP4
 # драфт (обязателен):
 $HF download z-lab/Qwen3.8-27B-DFlash2 --revision 50307d4c4cde6860d4eee73e2547cd786fe8e8a4 \
   --local-dir /models/Qwen3.8-27B-DFlash2
@@ -154,11 +154,11 @@ $HF download z-lab/Qwen3.8-27B-DFlash2 --revision 50307d4c4cde6860d4eee73e2547cd
 **Запуск:**
 
 ```bash
-./serve.sh qwen3.8-27b                                              # цель FP8 по умолчанию
-MODEL_DIR=/models/RadixArk/Qwen3.8-27B-NVFP4 ./serve.sh qwen3.8-27b # цель NVFP4
+./serve.sh qwen3.8-27b                                  # цель NVFP4 (RadixArk) по умолчанию
+MODEL_DIR=/models/Qwen3.8-27B-FP8 ./serve.sh qwen3.8-27b # цель FP8 Qwen
 ```
 
-Чтобы NVFP4 была целью всегда — поменяйте `MODEL_DIR` в
+Чтобы целью всегда была FP8 — поменяйте `MODEL_DIR` в
 `models/qwen3.8-27b.sh`; варианты `-single`, `-throughput`, `-longctx`,
 `-dspark`, а также `zen6` берут остальное оттуда же.
 

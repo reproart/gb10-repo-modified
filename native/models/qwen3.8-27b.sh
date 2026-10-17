@@ -25,16 +25,18 @@ SGLANG_INDEX="${SGLANG_INDEX:-}"
 
 # Required: the target checkpoint and the DFlash2 draft, downloaded once with
 # a pinned --revision (README, "Weights"). Targets measured here:
-#   Qwen/Qwen3.8-27B-FP8 @ 017b9c7a (default): Qwen's own checkpoint and the
-#     more accurate one (HumanEval 97.6% with thinking off, vs 93.9%).
-#   RadixArk/Qwen3.8-27B-NVFP4 @ 554ebba9: ~40% faster single-stream, 2.5x
-#     faster prefill (results/RESULTS.md, "FP8 target").
+#   RadixArk/Qwen3.8-27B-NVFP4 @ 554ebba9 (default since 2026-10-17): ~40%
+#     faster single-stream, 2.5x faster prefill (results/RESULTS.md, "FP8
+#     target"); every recent table in results/ is on it.
+#   Qwen/Qwen3.8-27B-FP8 @ 017b9c7a: Qwen's own checkpoint and the more
+#     accurate one with thinking off (HumanEval 97.6% vs 93.9%; with thinking
+#     on both make at most one error). MODEL_DIR=/models/Qwen3.8-27B-FP8.
 # Draft: z-lab/Qwen3.8-27B-DFlash2 @ 50307d4c (incoai/Qwen3.8-27B-DFlash2, the
 # SGLang cookbook's name, mirrors the same weights).
 # Already in an HF cache? Point at the snapshot directory instead of copying,
-# e.g. ~/.cache/huggingface/hub/models--Qwen--Qwen3.8-27B-FP8/snapshots/017b9c7a...
+# e.g. ~/.cache/huggingface/hub/models--RadixArk--Qwen3.8-27B-NVFP4/snapshots/554ebba9...
 # Either way the server prints the revision it found at startup.
-MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-27B-FP8}"
+MODEL_DIR="${MODEL_DIR:-/models/RadixArk/Qwen3.8-27B-NVFP4}"
 DRAFT_DIR="${DRAFT_DIR:-/models/Qwen3.8-27B-DFlash2}"
 
 # Speculative decoding:

@@ -17,7 +17,7 @@ where that can be avoided.
 `hf download --local-dir` directories hold real files, so any copy works:
 
 ```bash
-tar -C / -cpf /media/root/2TB/gb10-models.tar models/Qwen3.8-27B-FP8 models/Qwen3.8-27B-DFlash2
+tar -C / -cpf /media/root/2TB/gb10-models.tar models/RadixArk/Qwen3.8-27B-NVFP4 models/Qwen3.8-27B-DFlash2
 # optional, same lock file on both machines only:
 # tar -C "$HOME" -cpf /media/root/2TB/gb10-kernels.tar .cache/flashinfer .triton
 ```
@@ -67,8 +67,8 @@ boot on a machine without network behaves the same as one with it.
 
 | Checkpoint | Revision | Note |
 |---|---|---|
-| `Qwen/Qwen3.8-27B-FP8` | `017b9c7a…` | the default target; the FP8 leg in `results/` |
-| `RadixArk/Qwen3.8-27B-NVFP4` | `554ebba9…` | behind every earlier table in `results/` |
+| `Qwen/Qwen3.8-27B-FP8` | `017b9c7a…` | the FP8 leg in `results/` |
+| `RadixArk/Qwen3.8-27B-NVFP4` | `554ebba9…` | the default target (since 2026-10-17); behind most tables in `results/` |
 | `RadixArk/Qwen3.8-27B-NVFP4` | `319f741c…` | upstream default since 2026-08-22; the 2026-08-27 FP8-comparison leg |
 | `orcarouter/Qwen3.8-27B-Uncensored-NVFP4` | `69d21348…` | side measurement |
 | `orcarouter/Qwen3.8-27B-Uncensored-FP8` | `0f3cdb83…` | not benchmarked here |
