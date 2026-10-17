@@ -12,15 +12,16 @@ not depend on it:
 
 | Target | Single-stream | Peak aggregate | TTFT | HumanEval, thinking off |
 |---|---:|---:|---:|---:|
-| `Qwen/Qwen3.8-27B-FP8` (default) | 49.5–51.3 tok/s | 494–514 tok/s @ 32 | 273–293 ms | **97.6%** |
-| `RadixArk/Qwen3.8-27B-NVFP4` | **70.1 tok/s** | **572 tok/s** @ 32 | 197 ms | 93.9% |
+| `RadixArk/Qwen3.8-27B-NVFP4` (default) | **70.1 tok/s** | **572 tok/s** @ 32 | 197 ms | 93.9% |
+| `Qwen/Qwen3.8-27B-FP8` | 49.5–51.3 tok/s | 494–514 tok/s @ 32 | 273–293 ms | **97.6%** |
 
 Tuned for one stream (draft 16), NVFP4 reaches **78.6 tok/s**, and 97.0% on
 HumanEval with thinking on. **Pick by what you need:** FP8 is Qwen's own
 checkpoint and the more accurate one with thinking off, NVFP4 is ~40% faster
 on single-stream and 2.5× faster on prefill. With thinking on (medium effort)
 both make at most one HumanEval error, so there the faster one wins
-([Quality](#quality)). On single-stream alone both are 1.5–2.5× the
+([Quality](#quality)). NVFP4 is the default target (since 2026-10-17);
+`MODEL_DIR=/models/Qwen3.8-27B-FP8` serves FP8. On single-stream alone both are 1.5–2.5× the
 widely-shared "FP8 on vLLM at ~32 tok/s" recipe.
 
 **These numbers come from the earlier Docker build** (a patched SGLang
@@ -52,13 +53,14 @@ sudo mkdir -p /models && sudo chown $USER /models
 
 # The weights (one-time, ~35 GB), at the revisions the results were measured on:
 HF=~/spark/venv/bin/hf
-$HF download Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
-  --local-dir /models/Qwen3.8-27B-FP8
+$HF download RadixArk/Qwen3.8-27B-NVFP4 --revision 554ebba9b5f1b79dc11246341960360e6ef05ef4 \
+  --local-dir /models/RadixArk/Qwen3.8-27B-NVFP4
 $HF download z-lab/Qwen3.8-27B-DFlash2 --revision 50307d4c4cde6860d4eee73e2547cd786fe8e8a4 \
   --local-dir /models/Qwen3.8-27B-DFlash2
-# option: the NVFP4 target instead (~40% faster, less accurate; see the table above):
-#   $HF download RadixArk/Qwen3.8-27B-NVFP4 --revision 554ebba9b5f1b79dc11246341960360e6ef05ef4 \
-#     --local-dir /models/Qwen3.8-27B-NVFP4
+# option: Qwen's FP8 target instead (more accurate with thinking off, ~40% slower;
+# see the table above; then MODEL_DIR=/models/Qwen3.8-27B-FP8):
+#   $HF download Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a \
+#     --local-dir /models/Qwen3.8-27B-FP8
 # (already in an HF cache? skip this, see "Weights" below)
 
 # Point MODEL_DIR / DRAFT_DIR in models/qwen3.8-27b.sh at those dirs, then:
@@ -154,8 +156,8 @@ model profile (`models/qwen3.8-27b.sh`), and never touches the Hub (`HF_OFFLINE=
 
 | Checkpoint | Revision | Size |
 |---|---|---:|
-| `Qwen/Qwen3.8-27B-FP8` (default target) | `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a` | ~29 GB |
-| `RadixArk/Qwen3.8-27B-NVFP4` | `554ebba9b5f1b79dc11246341960360e6ef05ef4` | ~22 GB |
+| `RadixArk/Qwen3.8-27B-NVFP4` (default target) | `554ebba9b5f1b79dc11246341960360e6ef05ef4` | ~22 GB |
+| `Qwen/Qwen3.8-27B-FP8` | `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a` | ~29 GB |
 | `z-lab/Qwen3.8-27B-DFlash2` (draft) | `50307d4c4cde6860d4eee73e2547cd786fe8e8a4` | ~3 GB |
 
 At startup the server prints each directory with the revision it holds (the
@@ -182,7 +184,7 @@ settings as a local-only commit on top of them.
 | `HF_OFFLINE` | `serve.sh` | `1` | no Hub access while serving |
 | `CPUSET` | `serve.sh` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
 | `PORT`, `HOST` | `serve.sh` | `8888`, `0.0.0.0` | |
-| `MODEL_DIR`, `DRAFT_DIR` | profile | `/models/Qwen3.8-27B-FP8`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
+| `MODEL_DIR`, `DRAFT_DIR` | profile | `/models/RadixArk/Qwen3.8-27B-NVFP4`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
 | `SGLANG_VERSION` | profile | `0.5.20` | see "Trying a newer SGLang" |
 | `DRAFT_TOKENS` | profile | `15` | 11 if you mostly run 10-12 requests at once, 10 for cap 32 (step 8) |
 | `MAX_RUNNING` | profile | `12` | the most requests you run at once; sizes the GDN pool and CUDA graphs with it (step 7) |
