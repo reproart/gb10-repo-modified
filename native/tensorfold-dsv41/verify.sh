@@ -2,10 +2,10 @@
 # A 1-minute check after start.sh: a plain reply, a thinking reply, a strict json_schema reply, a forced tool call and
 # a regex. Every check must PASS. For the full 32-test suite see tests/README.md.
 set -uo pipefail
-# shellcheck source=scripts/common.sh
-. "$(dirname "$0")/scripts/common.sh"
+# shellcheck source=config.sh
+. "$(dirname "$0")/config.sh"
 
-python3 -I - "$API" "$SERVED_NAME" "$(auth)" <<'EOF'
+python3 -I - "$API" "$SERVED_MODEL_NAME" "$(auth)" <<'EOF'
 import json, sys, time, urllib.request
 
 api, model, auth = sys.argv[1], sys.argv[2], sys.argv[3]

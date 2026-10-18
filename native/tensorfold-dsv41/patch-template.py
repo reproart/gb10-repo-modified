@@ -16,7 +16,6 @@ It uses the Python standard library only.
 import argparse
 import hashlib
 import os
-import re
 import shlex
 import subprocess
 import sys
@@ -124,41 +123,18 @@ def read_kit(local_file):
     return data
 
 
-# --- Settings: MODEL_VIEW and WORKER_SSH, from the environment or from the .env file of the repo ---
-def expand(value, known):
-    """Expand $NAME, ${NAME} and a leading ~ the way the shell does for the .env file."""
-
-    def replace(match):
-        name = match.group(1) or match.group(2)
-        return known.get(name, os.environ.get(name, match.group(0)))
-
-    return os.path.expanduser(re.sub(r"\$(?:(\w+)|\{(\w+)\})", replace, value))
-
-
-def read_env_file(path):
-    """Read KEY=VALUE lines of a simple .env file. Return a dict. Return {} when the file is missing."""
-    values = {}
+# --- Settings: MODEL_VIEW and WORKER_SSH, as config.sh resolves them (shell, then config.local.sh, then defaults) ---
+def settings(root):
+    """Return (MODEL_VIEW, WORKER_SSH) from config.sh next to this script."""
+    script = '. "$1/config.sh" >/dev/null && printf "%s\\0%s" "$MODEL_VIEW" "$WORKER_SSH"'
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return values
-    for line in text.splitlines():
-        match = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
-        if not match:
-            continue
-        key, raw = match.group(1), match.group(2).strip()
-        if raw[:1] in ("'", '"'):
-            end = raw.find(raw[0], 1)
-            value = raw[1:end] if end > 0 else raw[1:]
-            values[key] = value if raw[0] == "'" else expand(value, values)
-        else:
-            values[key] = expand(re.split(r"\s+#", raw, maxsplit=1)[0].strip(), values)
-    return values
-
-
-def setting(name, env_file_values):
-    """Return a setting from the environment first, then from the .env file, else ''."""
-    return os.environ.get(name) or env_file_values.get(name, "")
+        done = subprocess.run(["bash", "-c", script, "_", str(root)], stdout=subprocess.PIPE, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        die("cannot read %s/config.sh: %s" % (root, exc))
+    if done.returncode != 0:
+        die("%s/config.sh failed (exit code %d)" % (root, done.returncode))
+    view, _, worker = done.stdout.decode("utf-8", "replace").partition("\0")
+    return view, worker
 
 
 # --- Writing ---
@@ -202,7 +178,7 @@ def copy_to_worker(host, local, remote_path):
     if done.returncode != 0:
         die(
             "the copy to the worker failed (ssh exit code %d):\n  %s\n"
-            "  If the folder is missing on the worker, run scripts/download.sh worker first."
+            "  If the folder is missing on the worker, run ./download.sh worker first."
             % (done.returncode, done.stderr.decode("utf-8", "replace").strip())
         )
     fields = done.stdout.decode("utf-8", "replace").split()
@@ -215,7 +191,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Download the MiaAI-Lab kit chat template at a pinned commit, apply our patch,"
         " check both sha256 values, and write the result.",
-        epilog="MODEL_VIEW and WORKER_SSH come from the environment, or else from the .env file of this repo.",
+        epilog="MODEL_VIEW and WORKER_SSH come from config.sh (the shell, then config.local.sh, then its defaults).",
     )
     parser.add_argument(
         "--out",
@@ -235,21 +211,18 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    repo_root = Path(__file__).resolve().parent.parent
-    env_file = read_env_file(repo_root / ".env")
-    view = setting("MODEL_VIEW", env_file)
-    worker = setting("WORKER_SSH", env_file)
+    view, worker = settings(Path(__file__).resolve().parent)
 
     if args.out:
         out = Path(os.path.expanduser(os.path.expandvars(args.out))).absolute()
     elif view:
         out = Path(os.path.expanduser(view)).absolute() / "model" / "chat_template.jinja"
         if not out.parent.is_dir():
-            die("the folder %s does not exist. Run scripts/download.sh view first, or use --out." % out.parent)
+            die("the folder %s does not exist. Run ./download.sh view first, or use --out." % out.parent)
     else:
-        die("MODEL_VIEW is not set. Set it in the environment or in .env, or use --out PATH.")
+        die("MODEL_VIEW is not set. Set it in config.local.sh, or use --out PATH.")
     if args.worker and not worker:
-        die("WORKER_SSH is not set. Set it in the environment or in .env.")
+        die("WORKER_SSH is not set. Set it in config.local.sh.")
 
     existing = out.read_bytes() if out.is_file() else b""
     if existing and sha256(existing) == OUT_SHA256 and not args.from_file:
@@ -268,7 +241,7 @@ def main(argv=None):
     if args.worker:
         copy_to_worker(worker, out, str(out))
     elif not args.out:
-        say("The worker needs the same file. Run this script again with --worker, or run scripts/download.sh worker.")
+        say("The worker needs the same file. Run this script again with --worker, or run ./download.sh worker.")
     return 0
 
 

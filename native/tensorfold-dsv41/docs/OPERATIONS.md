@@ -3,7 +3,7 @@
 ## Start, stop, check
 
 ```bash
-./start.sh
+./serve.sh
 ```
 
 ```bash
@@ -34,14 +34,14 @@ A broken lane ends both rank processes with **exit code 75** after 5 s (`TF_DS_E
 - **Restart by hand.** Run:
 
 ```bash
-./stop.sh && ./start.sh
+./stop.sh && ./serve.sh
 ```
 
 - **Restart on its own.** Use a supervisor, with these rules:
   - Both ranks must restart together, rank 0 first, because rank 1 connects to rank 0's port 29551.
-  - The simplest supervisor is a systemd unit on the head that runs `./start.sh`, with `ExecStop=./stop.sh` and `Restart=on-failure`, and that checks `./status.sh`.
-  - `RESTART_POLICY=on-failure` in `.env` (docker's own restart) restarts each container alone. It works when rank 0 comes back first, but no tool enforces that order.
-- **Out of memory.** With `scripts/host_tuning.sh`, earlyoom stops the engine when a node has less than 1 GiB available, so the node stays reachable by ssh. `journalctl -u earlyoom` shows when it did. Then restart by hand as above.
+  - The simplest supervisor is a systemd unit on the head that runs `./serve.sh`, with `ExecStop=./stop.sh` and `Restart=on-failure`, and that checks `./status.sh`.
+  - `RESTART_POLICY=on-failure` in `config.local.sh` (docker's own restart) restarts each container alone. It works when rank 0 comes back first, but no tool enforces that order.
+- **Out of memory.** With `./host-tuning.sh`, earlyoom stops the engine when a node has less than 1 GiB available, so the node stays reachable by ssh. `journalctl -u earlyoom` shows when it did. Then restart by hand as above.
 - **Boot.** Do not let a second server also start at boot (a vLLM unit, another model). Both servers want port 8888 and ~100 GB per node, and the second one fails or runs a node out of memory.
 
 ## Things that hurt on DGX Spark
@@ -63,17 +63,17 @@ A broken lane ends both rank processes with **exit code 75** after 5 s (`TF_DS_E
 
 ## Update the engine
 
-1. Set `TF_COMMIT` and `IMAGE` in `.env`.
+1. Set `TF_COMMIT` (and with it `IMAGE`) for the new build, in the shell or in `config.local.sh`.
 2. Build the image and copy it to the worker:
 
 ```bash
-./docker/build.sh
+./build.sh
 ```
 
 3. Deploy with rollback:
 
 ```bash
-./scripts/deploy_gate.sh <new-tag> <old-tag>
+./deploy-gate.sh <new-tag> <old-tag>
 ```
 
-`scripts/deploy_gate.sh` deploys the new image, runs a live structured-output request, the 32-test suite and the `--parallel` grammar check, and goes back to the old image if any step fails.
+`./deploy-gate.sh` deploys the new image, runs a live structured-output request, the 32-test suite and the `--parallel` grammar check, and goes back to the old image if any step fails.

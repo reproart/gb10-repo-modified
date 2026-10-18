@@ -6,7 +6,7 @@ Each item was checked against the files in this repo. The file that supports the
 ## Not measured
 
 1. **Image input.**
-   - The server starts with `--vision` by default (`VISION=1` in `.env.example`).
+   - The server starts with `--vision` by default (`VISION=1` in `config.sh`).
    - No test in `tests/`, no check in `verify.sh` and no Hermes case sends an image to the server. The conformance test only renders the image placeholder in a prompt.
    - Not measured: image decode speed, two requests with images at the same time, many images in one request.
 2. **vLLM under concurrency.** The vLLM kit ran with `MAX_NUM_SEQS=1` (`runs/2026-10-17/PROVENANCE.md`, section 4). It serves one request at a time. No vLLM result exists for 2 to 4 streams, so the TensorFold concurrency tables have no baseline.
@@ -35,8 +35,8 @@ More that is not measured:
 
 ## Not supported and not shipped
 
-1. **No boot unit.** The server starts by hand (`./start.sh`). The repo has no systemd unit. [OPERATIONS.md](OPERATIONS.md) describes the rules for one.
-2. **No automatic restart.** A device fault (CUDA error, out of memory) or a lost rank breaks the lane. Both ranks then exit with code 75 after 5 s. They stay down until you run `./stop.sh && ./start.sh` or a supervisor does it.
+1. **No boot unit.** The server starts by hand (`./serve.sh`). The repo has no systemd unit. [OPERATIONS.md](OPERATIONS.md) describes the rules for one.
+2. **No automatic restart.** A device fault (CUDA error, out of memory) or a lost rank breaks the lane. Both ranks then exit with code 75 after 5 s. They stay down until you run `./stop.sh && ./serve.sh` or a supervisor does it.
 3. **No API key in the tests.** The test scripts send no `Authorization` header to the engine. With `API_KEY_FILE` set, the engine tests get HTTP 401.
 4. **Living Weights is not available.**
    - It is the `--slide` mode of TensorFold. It ships in upstream TensorFold 1.0.3 and later (the Zig engine).
@@ -51,7 +51,7 @@ More that is not measured:
 1. **The engine is a fork, pinned at a commit.**
    - The recipe builds [Elevatormusic/TensorFold](https://github.com/Elevatormusic/TensorFold) at `92aa710b533d`. The upstream project is `ashhart/TensorFold`.
    - The changes are pull requests #1 to #4 on the fork. The files in this repo do not show that upstream accepted them.
-2. **The first start is slow and large.** The first start writes the weight cache of each rank to `CACHE_DIR`. This takes about 15 minutes and about 100 GiB per node (`.env.example`; `scripts/preflight.sh` asks for 110 GiB free). Later starts take 2 to 4 minutes.
+2. **The first start is slow and large.** The first start writes the weight cache of each rank to `CACHE_DIR`. This takes about 15 minutes and about 100 GiB per node (`CACHE_DIR` in `config.sh`; `./preflight.sh` asks for 110 GiB free). Later starts take 2 to 4 minutes.
 3. **The first long prompt pays a warm-up.** The first prompt of 8K tokens or more after a start takes about 10 s longer ([OPERATIONS.md](OPERATIONS.md)). The 8K prefill row in [BENCHMARKS.md](BENCHMARKS.md) includes this cost.
 4. **The Engram tables are large.** The two 1017 Engram shards are about 101 GB each. The model folder on each node holds about 196 GiB of weights and about 189 GiB of Engram tables (`PROVENANCE.md`, section 1).
 5. **The weights revision is not the newest.**

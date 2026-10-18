@@ -44,7 +44,7 @@ The suite is [`tests/v41_suite.py`](../tests/v41_suite.py), and the run logs are
 - **Change.**
   - Leading system messages stay separate on this model (`merge_leading = False`).
   - json_object becomes the template's response-format input.
-  - The chat template from the MiaAI kit gets a small patch (1 hunk, +6/-2 lines) for the tools-without-system case and for json_object without a system message. [`scripts/patch_template.py`](../scripts/patch_template.py) downloads the template at a pinned commit and applies the patch; the template is AGPL-3.0, so this repo does not copy it.
+  - The chat template from the MiaAI kit gets a small patch (1 hunk, +6/-2 lines) for the tools-without-system case and for json_object without a system message. [`./patch-template.py`](../patch-template.py) downloads the template at a pinned commit and applies the patch; the template is AGPL-3.0, so this repo does not copy it.
 - **Proof.**
   - `tests/v41_differential.py`: 12/12 API-shaped requests render byte-identical to DeepSeek's `encoding.py`.
   - `tests/v41_conformance.py`: 3/3 of DeepSeek's golden fixtures that use API roles.
@@ -69,14 +69,14 @@ The suite is [`tests/v41_suite.py`](../tests/v41_suite.py), and the run logs are
   - A device fault (CUDA error, out of memory) still breaks the lane, because the CUDA context may be bad.
   - A broken lane now ends the process with exit code 75 after 5 s, so a supervisor can restart it.
   - If only one rank ends a stream, both ranks still fail that step together instead of hanging.
-- **Deploy gate.** Every image in this repo went through [`scripts/deploy_gate.sh`](../scripts/deploy_gate.sh), which rolls back on its own if any check fails:
+- **Deploy gate.** Every image in this repo went through [`./deploy-gate.sh`](../deploy-gate.sh), which rolls back on its own if any check fails:
   1. deploy;
   2. a live json_schema request and a plain request;
   3. the 32-test suite;
   4. the `--parallel` grammar check.
 - **Review.** The OpenAI Codex review bot found 8 issues across PRs #1-#3 in two rounds, and 2 more in a third round (#2: a stream whose grammar failed could send one unmasked token; #3: ranks that differ only in draft depth could pass the round check). All are fixed, each with a test.
 
-## 5. Launcher settings (start.sh)
+## 5. Launcher settings (serve.sh)
 
 | Setting | Value | Why |
 |---|---|---|
@@ -94,7 +94,7 @@ The suite is [`tests/v41_suite.py`](../tests/v41_suite.py), and the run logs are
 | `TF_DS_SPILL_GIB=64` | 64 | kept prompts are also written to disk, so a prompt survives a restart |
 | `TF_DS_ENGRAM_DONTNEED=1` | on | PR #4: drops the Engram tables' cached pages after each prompt chunk, so long prefills do not push the node into reclaim and compaction stalls |
 | `--oom-score-adj 1000` | docker flag | if a node runs out of memory, the kernel and earlyoom stop the engine first, not sshd or the systemd manager |
-| `--cgroup-parent tensorfold.slice` | docker flag | the slice from `scripts/host_tuning.sh`, where the engine cannot swap |
+| `--cgroup-parent tensorfold.slice` | docker flag | the slice from `./host-tuning.sh`, where the engine cannot swap |
 | `TF_DS_ENGRAM=/engram` | path | DeepSeek's 1017 Engram tables (shards 47/48), read from NVMe at random offsets |
 | `TF_RDMA_*`, `NCCL_IB_*` | CX7 ports | TP=2 runs on both ConnectX-7 ports with RoCE v2 (see [NETWORK.md](NETWORK.md)) |
 

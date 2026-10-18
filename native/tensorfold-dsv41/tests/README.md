@@ -5,7 +5,7 @@ Run all of them with one command, or run each test alone.
 
 ## Script check (no server needed)
 
-`bash tests/host_tuning_test.sh` runs the node part of `scripts/host_tuning.sh` in a temporary folder, with stub `sysctl` and `systemctl` commands. It changes nothing on the node. It checks that the first run keeps the old sysctl values, that `--undo` puts them back, that a missing or stopped earlyoom stops the setup, and that a failed setup puts the node back.
+`bash tests/host_tuning_test.sh` runs the node part of `./host-tuning.sh` in a temporary folder, with stub `sysctl` and `systemctl` commands. It changes nothing on the node. It checks that the first run keeps the old sysctl values, that `--undo` puts them back, that a missing or stopped earlyoom stops the setup, and that a failed setup puts the node back.
 
 ## Run everything
 
@@ -15,7 +15,7 @@ Run this on the head node, with the server up:
 tests/run_all.sh
 ```
 
-The script reads your `.env` through `scripts/common.sh`. It prints one `PASS`, `FAIL` or `SKIP` line per step.
+The script reads `config.sh` (and your `config.local.sh`). It prints one `PASS`, `FAIL` or `SKIP` line per step.
 It exits with code 1 when any step fails. A `SKIP` does not fail the run.
 
 | Step | Runs when | Time (measured on the pair) |
@@ -45,8 +45,8 @@ The tests run on the head node. They bind their source address to `127.0.0.1`.
 
 | Variable | Used by | Default | Meaning |
 |---|---|---|---|
-| `V41_BASE_URL` | suite, benchmark, grammar check | `http://172.17.0.1:8888/v1` | The engine API. `run_all.sh` sets it from `.env`. |
-| `V41_MODEL` | suite, benchmark, grammar check | `DeepSeek-v4.1-Flash-1017-EXL3` | The model id in each request. `run_all.sh` sets it to `SERVED_NAME`. |
+| `V41_BASE_URL` | suite, benchmark, grammar check | `http://172.17.0.1:8888/v1` | The engine API. `run_all.sh` sets it from `config.sh`. |
+| `V41_MODEL` | suite, benchmark, grammar check | `DeepSeek-v4.1-Flash-1017-EXL3` | The model id in each request. `run_all.sh` sets it to `SERVED_MODEL_NAME`. |
 | `V41_ROUTER_URL` | suite (`router` group) | `http://127.0.0.1:8443/v1` | A router in front of the engine. It must accept the model id `dgx-model`. |
 | `V41_ROUTER_API_KEY` | suite (`router` group) | none | The key for the router. `DGX_ROUTER_API_KEY` also works. |
 | `ENCODING_DIR` | `run_all.sh`, differential test | none | A folder that holds DeepSeek's `encoding.py`. See below. |
@@ -59,12 +59,12 @@ The tests run on the head node. They bind their source address to `127.0.0.1`.
 | `GRAMMAR_ROUNDS` | `run_all.sh` | `2` | The number of rounds of the grammar check. |
 | `CHECK_DOCKER_ARGS` | `run_all.sh` | none | Extra `docker run` options for the conformance and differential tests (for example `--gpus all`). |
 
-The tests send no API key to the engine. If `.env` sets `API_KEY_FILE`, the engine tests get HTTP 401.
+The tests send no API key to the engine. If `config.local.sh` sets `API_KEY_FILE`, the engine tests get HTTP 401.
 Start the server without `API_KEY_FILE` for the test run.
 
 ## What each test checks
 
-### `verify.sh` (in the repo root)
+### `verify.sh` (next to `serve.sh`)
 
 Sends five real requests: a plain reply, a thinking reply, a strict `json_schema` reply, a forced tool call (`tool_choice` required) and a regex reply.
 It checks the content of each reply. A health check alone does not prove that TP=2 works.
@@ -129,10 +129,10 @@ It imports the `tensorfold` package, so it must run on a host that has the packa
 
 It needs the patched `chat_template.jinja` in the model folder.
 
-Run it in the engine image, from the repo root. First load your `.env`:
+Run it in the engine image, from this folder (`native/tensorfold-dsv41`). First load the settings:
 
 ```bash
-source ./.env
+. ./config.sh
 ```
 
 Then start the image:
@@ -146,7 +146,7 @@ docker run --rm --network none --entrypoint python3 -v "$PWD/tests:/tests:ro" -v
 Renders 12 API-shaped conversations (chat, system turns, thinking levels, tools, tool results, `json_object`) with DeepSeek's reference encoder (`encoding.py`) and with TensorFold's prompt path.
 Each prompt must match byte for byte. It needs `encoding.py` (see the next section) and the `tensorfold` package.
 
-Run it in the engine image, from the repo root, after `source ./.env`. `ENCODING_DIR` is the folder that holds `encoding.py`:
+Run it in the engine image, from this folder, after `. ./config.sh`. `ENCODING_DIR` is the folder that holds `encoding.py`:
 
 ```bash
 docker run --rm --network none --entrypoint python3 -v "$PWD/tests:/tests:ro" -v "$MODEL_VIEW/model:/model:ro" -v "$ENCODING_DIR:/encoding:ro" "$IMAGE" -I -u /tests/v41_differential.py /model /encoding /tests

@@ -1,10 +1,12 @@
 # DeepSeek V4.1 Flash on two DGX Spark
 
+> The recipe's own page, as published by Elevatormusic (Apache-2.0), kept for its numbers and its story. In this project it lives in `native/tensorfold-dsv41/`; the commands below are renamed to ours (`./serve.sh` for `./start.sh`, `config.local.sh` for `.env`, the `scripts/` and `docker/` helpers moved next to `serve.sh`). The short version: [../README.md](../README.md).
+
 **Run DeepSeek's V4.1 Flash model on two NVIDIA DGX Spark computers with about 2× the decode and prefill speed of the standard vLLM setup, ready for AI agents.**
 
 Also on Hugging Face: [Elevatormusic/DeepSeek-V4.1-Flash-1017-2x-DGX-Spark-TensorFold-2x-Faster](https://huggingface.co/Elevatormusic/DeepSeek-V4.1-Flash-1017-2x-DGX-Spark-TensorFold-2x-Faster). The engine is [my TensorFold fork](https://github.com/Elevatormusic/TensorFold) (branch `deepseek-v41-tp2`).
 
-Measured on 17 and 18 October 2026 on one pair of DGX Spark. Every number on this page comes from a saved run in [`runs/`](runs/2026-10-17/INDEX.md) ([prefill and 1M context](runs/2026-10-18/INDEX.md)).
+Measured on 17 and 18 October 2026 on one pair of DGX Spark. Every number on this page comes from a saved run in [`runs/`](../runs/2026-10-17/INDEX.md) ([prefill and 1M context](../runs/2026-10-18/INDEX.md)).
 
 ---
 
@@ -49,7 +51,7 @@ You need:
 - **Two NVIDIA DGX Spark**, joined by one QSFP cable between their ConnectX-7 network ports. NVIDIA's [Connect Two Sparks](https://build.nvidia.com/spark/connect-two-sparks) guide shows how to cable them, set fixed addresses, and set up ssh.
 - **About 500 GB of free disk on each computer.** The model files use 385 GB. The first start uses 110 GB more.
 - **About 100 GB of free memory on each computer.** Close other AI programs first.
-- **A network setup** with fixed addresses on the cable link and ssh from the first computer to the second. Do NVIDIA's guide first, then read [our network notes](docs/NETWORK.md).
+- **A network setup** with fixed addresses on the cable link and ssh from the first computer to the second. Do NVIDIA's guide first, then read [our network notes](NETWORK.md).
 - **Software on the head:** Docker with GPU support (DGX OS has it), Python 3, `curl`, `rsync`, and the [Hugging Face CLI](https://huggingface.co/docs/huggingface_hub/guides/cli) (`hf`). The worker needs Docker and `rsync`.
 - **Time.** Most of the first setup is the 400 GB download. It takes a few hours on a fast internet link.
 
@@ -61,40 +63,40 @@ In this guide, the *head* is the computer where you type the commands. The *work
 
 Run each command on the head, in this folder.
 
-**1. Make your settings file.** Then open `.env` and type your addresses and folder paths.
+**1. Make your settings file.** Then open `config.local.sh` and type your addresses and folder paths.
 
 ```bash
-cp .env.example .env
+cp config.local.sh.example config.local.sh
 ```
 
 **2. Download the model.** This step gets 400 GB, checks every file, and copies it to the worker.
 
 ```bash
-scripts/download.sh
+./download.sh
 ```
 
 **3. Prepare the chat template.** This step gets the template and applies a small fix.
 
 ```bash
-scripts/patch_template.py --worker
+./patch-template.py --worker
 ```
 
 **4. Build the engine.** This step builds the server software from [my TensorFold fork](https://github.com/Elevatormusic/TensorFold) and copies it to the worker. The fork is bertholomus's engine plus the changes in [What I changed](#what-i-changed-to-make-it-work).
 
 ```bash
-docker/build.sh
+./build.sh
 ```
 
-**5. Tune the memory settings (once).** This keeps the model out of swap and stops memory stalls during long prefills, on both computers. If memory runs out, it stops the model, not the computer (this needs the earlyoom package, which DGX OS has). It asks for your password on each computer. `scripts/host_tuning.sh --undo` removes it.
+**5. Tune the memory settings (once).** This keeps the model out of swap and stops memory stalls during long prefills, on both computers. If memory runs out, it stops the model, not the computer (this needs the earlyoom package, which DGX OS has). It asks for your password on each computer. `./host-tuning.sh --undo` removes it.
 
 ```bash
-scripts/host_tuning.sh
+./host-tuning.sh
 ```
 
 **6. Start the server.** It checks your setup first. The first start takes about 15 minutes. Later starts take 2 to 4 minutes.
 
 ```bash
-./start.sh
+./serve.sh
 ```
 
 **7. Check that it works.** This sends five real requests and shows the result of each.
@@ -119,7 +121,7 @@ Use these three settings in any app that supports a custom OpenAI endpoint:
 
 Thinking is off by default. Turn it on per request with `"reasoning_effort": "high"`.
 
-[The connection guide](docs/CONNECT.md) covers thinking levels, tool calls, structured output, and use from other computers.
+[The connection guide](CONNECT.md) covers thinking levels, tool calls, structured output, and use from other computers.
 
 ---
 
@@ -130,9 +132,9 @@ Thinking is off by default. Turn it on per request with `"reasoning_effort": "hi
 | See if the server is running | `./status.sh` |
 | Stop the server | `./stop.sh` |
 | Run all the tests | `tests/run_all.sh` |
-| Install a new engine version safely | `scripts/deploy_gate.sh <new> <old>` |
+| Install a new engine version safely | `./deploy-gate.sh <new> <old>` |
 
-If something goes wrong, read [Operations](docs/OPERATIONS.md). It covers restarts, logs, and what to avoid on DGX Spark.
+If something goes wrong, read [Operations](OPERATIONS.md). It covers restarts, logs, and what to avoid on DGX Spark.
 
 ---
 
@@ -146,7 +148,7 @@ The fast engine for this model was written by [bertholomus](https://github.com/b
 4. **Fault isolation.** Before, one failed request stopped all requests until a manual restart. Now it ends only that request.
 5. **Faster long prefills.** The server now drops the page cache of the Engram tables after each prompt chunk. Before, the page cache filled the memory, and some chunks stalled for 1 to 4 s in reclaim and compaction.
 
-[Read the full story](docs/WHAT-I-CHANGED.md), with the reason for each change. The engine code is in [my fork](https://github.com/Elevatormusic/TensorFold), in pull requests [#1](https://github.com/Elevatormusic/TensorFold/pull/1), [#2](https://github.com/Elevatormusic/TensorFold/pull/2), [#3](https://github.com/Elevatormusic/TensorFold/pull/3) and [#4](https://github.com/Elevatormusic/TensorFold/pull/4).
+[Read the full story](WHAT-I-CHANGED.md), with the reason for each change. The engine code is in [my fork](https://github.com/Elevatormusic/TensorFold), in pull requests [#1](https://github.com/Elevatormusic/TensorFold/pull/1), [#2](https://github.com/Elevatormusic/TensorFold/pull/2), [#3](https://github.com/Elevatormusic/TensorFold/pull/3) and [#4](https://github.com/Elevatormusic/TensorFold/pull/4).
 
 ---
 
@@ -158,7 +160,7 @@ The fast engine for this model was written by [bertholomus](https://github.com/b
 - **vLLM was tested with 1 request at a time only.** So the concurrency numbers have no vLLM comparison.
 - **Living Weights is not available.** That TensorFold feature works only with a different model on one computer.
 
-[All known limits](docs/KNOWN-LIMITS.md)
+[All known limits](KNOWN-LIMITS.md)
 
 ---
 
@@ -194,14 +196,14 @@ vLLM: 1 run. This recipe: 6 runs (6 engine builds of the same day, the last is t
 | Needle test, 200K tokens (\*) | 216.9 s | 109.8 (103.6-126.9) s | 2.0× |
 | Prefill, 8K prompt, first after a start | 789 tok/s | 562 (427-958) tok/s | 0.7× |
 
-- Decode speed counts the completion tokens the server reports, per second after the first token. Prose and code are shown apart, because code has a higher draft acceptance rate with speculative decoding (greedy: 3.6 tokens per step on code, 2.0 on prose; [counters](runs/2026-10-18/kitbench-decode/r0-done-ht.log)).
+- Decode speed counts the completion tokens the server reports, per second after the first token. Prose and code are shown apart, because code has a higher draft acceptance rate with speculative decoding (greedy: 3.6 tokens per step on code, 2.0 on prose; [counters](../runs/2026-10-18/kitbench-decode/r0-done-ht.log)).
 - (\*) These two rows can include prefix-cache hits, on both engines. The suite's 32K prompt starts with its 8K prompt, and the 200K prompt starts like the 64K one.
-- The 8K row is slow because it is the first long prompt after each start. A longer warm-up list does not fix it ([tuning notes](runs/2026-10-17/17_tuning_warmup-spill-drafts/NOTES.md)). The likely cause is cold reads of the Engram tables from disk.
+- The 8K row is slow because it is the first long prompt after each start. A longer warm-up list does not fix it ([tuning notes](../runs/2026-10-17/17_tuning_warmup-spill-drafts/NOTES.md)). The likely cause is cold reads of the Engram tables from disk.
 - Both engines use speculative decoding (vLLM: DSpark, 3 drafts; this recipe: DSpark, 5 drafts; 4 drafts measured slower).
 
 #### Same test client as bertholomus
 
-bertholomus's own benchmark client ([`kit_bench.py`](runs/2026-10-17/16_kit-bench-bertholomus_tensorfold-fd2365042f56/)) ran against this server with their settings. Their numbers are from [their README](https://github.com/bertholomus/deepseek-v4.1-tensorfold-tp2-2xgb10): original V4.1 Flash weights, their computers. This recipe uses the 1017 weights.
+bertholomus's own benchmark client ([`kit_bench.py`](../runs/2026-10-17/16_kit-bench-bertholomus_tensorfold-fd2365042f56/)) ran against this server with their settings. Their numbers are from [their README](https://github.com/bertholomus/deepseek-v4.1-tensorfold-tp2-2xgb10): original V4.1 Flash weights, their computers. This recipe uses the 1017 weights.
 
 | kit_bench row | Their Zig engine v0.6.0 | Their Python engine v0.5.1 | **This recipe** |
 |---|---:|---:|---:|
@@ -214,7 +216,7 @@ bertholomus's own benchmark client ([`kit_bench.py`](runs/2026-10-17/16_kit-benc
 
 Their Zig engine does not have the agent features above (forced tool calls and structured output return an error there).
 
-(\*\*) Median of 5 runs on 18 October with the final setup (fork PR #4 and `scripts/host_tuning.sh`); ranges 2,174-2,223 / 2,065-2,201 / 1,836-2,119 / 1,851-1,986. On 17 October, before those changes: 2,190 / 1,707 / 1,457 / 1,420. How each change was found: [runs/2026-10-18](runs/2026-10-18/INDEX.md).
+(\*\*) Median of 5 runs on 18 October with the final setup (fork PR #4 and `./host-tuning.sh`); ranges 2,174-2,223 / 2,065-2,201 / 1,836-2,119 / 1,851-1,986. On 17 October, before those changes: 2,190 / 1,707 / 1,457 / 1,420. How each change was found: [runs/2026-10-18](../runs/2026-10-18/INDEX.md).
 
 #### Concurrency (released engine)
 
@@ -228,7 +230,7 @@ Their Zig engine does not have the agent features above (forced tool calls and s
 - **Prefix cache.** A second question about the same 24K-token document: TTFT **12.8 s cold, 1.1 s warm** (22,528 of 24,210 prompt tokens cached).
 - **After a restart** (`SPILL_GIB=64`, on by default, keeps cached prompts on disk): TTFT for an 18K-token prompt **2.7 s** instead of 16.8 s.
 
-Method, definitions and every run: [Benchmarks](docs/BENCHMARKS.md).
+Method, definitions and every run: [Benchmarks](BENCHMARKS.md).
 
 </details>
 
@@ -241,11 +243,11 @@ Method, definitions and every run: [Benchmarks](docs/BENCHMARKS.md).
 | Engram tables | `deepseek-ai/DeepSeek-V4.1-Flash-1017` @ `1bae0e10`, files 47 and 48 |
 | Engine | [Elevatormusic/TensorFold](https://github.com/Elevatormusic/TensorFold) @ `92aa710b533d` (TensorFold 0.6.6 + bertholomus's V4.1 engine + PRs #1-#4) |
 | Base image | `nvcr.io/nvidia/pytorch:26.07-py3` |
-| Chat template | MiaAI kit `files/chat_template.jinja` @ `6f7d1590` + [our patch](runs/2026-10-17/template-patch.diff) |
+| Chat template | MiaAI kit `files/chat_template.jinja` @ `6f7d1590` + [our patch](../runs/2026-10-17/template-patch.diff) |
 | vLLM comparison | MiaAI kit @ `6f7d1590`, image `sha256:2f0cf3ad...` |
 | Tested on | DGX OS (Ubuntu 24.04.5), driver 580.178.04, CUDA 13.0, Docker 29.6.2 |
 
-Every checksum, file size and computer detail: [PROVENANCE](runs/2026-10-17/PROVENANCE.md).
+Every checksum, file size and computer detail: [PROVENANCE](../runs/2026-10-17/PROVENANCE.md).
 
 </details>
 
@@ -254,10 +256,10 @@ Every checksum, file size and computer detail: [PROVENANCE](runs/2026-10-17/PROV
 
 | Path | What |
 |---|---|
-| `start.sh`, `stop.sh`, `status.sh`, `verify.sh` | run the server |
-| `scripts/` | download, template fix, setup checks, safe engine install (`_raw_*`: the scripts as they ran on the tested pair) |
+| `serve.sh`, `stop.sh`, `status.sh`, `verify.sh` | run the server |
+| `scripts/` | download, template fix, setup checks, safe engine install (`raw/` holds the scripts as they ran on the tested pair) |
 | `docker/` | the engine build |
-| `tests/` | the 32 agent tests, the format check, the benchmark, the prompt tests, the Hermes test ([guide](tests/README.md)) |
+| `tests/` | the 32 agent tests, the format check, the benchmark, the prompt tests, the Hermes test ([guide](../tests/README.md)) |
 | `runs/2026-10-17/` | every log and result behind this page |
 | `docs/` | how to connect your app, the full story, benchmarks, network, operations, known limits |
 
@@ -267,6 +269,6 @@ Every checksum, file size and computer detail: [PROVENANCE](runs/2026-10-17/PROV
 
 ## Credits and licence
 
-This recipe stands on the work of DeepSeek (the model), LibertAIDAI (the compressed weights), turboderp (ExLlamaV3), ashhart and the TensorFold contributors, **bertholomus (the fast V4.1 engine this recipe runs)**, willjriley and Capicua25x (engine fixes), MiaAI-Lab (the vLLM kit and the template) and tonyd2wild (the benchmark method). [Full credits](CREDITS.md)
+This recipe stands on the work of DeepSeek (the model), LibertAIDAI (the compressed weights), turboderp (ExLlamaV3), ashhart and the TensorFold contributors, **bertholomus (the fast V4.1 engine this recipe runs)**, willjriley and Capicua25x (engine fixes), MiaAI-Lab (the vLLM kit and the template) and tonyd2wild (the benchmark method). [Full credits](../CREDITS.md)
 
-The scripts, tests and documents here are Apache-2.0 ([LICENSE](LICENSE)). The model, the template and the engine keep their own licences.
+The scripts, tests and documents here are Apache-2.0 ([LICENSE](../LICENSE)). The model, the template and the engine keep their own licences.

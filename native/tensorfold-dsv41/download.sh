@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Get the model files and build the model view. Run it on the head node.
-#   scripts/download.sh [phase ...]
+#   ./download.sh [phase ...]
 # With no argument, it runs all phases in this order. Each phase is safe to run again:
 # it resumes a download, or it skips work that is done.
 #   download  EXL3 2.9 bpw weights (196 GiB, 43 shards) at a pinned revision, with the hf command
@@ -18,8 +18,8 @@ usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-}" in -h | --help) usage; exit 0 ;; esac
 
-# shellcheck source=common.sh
-. "$(dirname "$0")/common.sh"
+# shellcheck source=config.sh
+. "$(dirname "$0")/config.sh"
 
 # --- Pinned inputs. The sizes come from runs/2026-10-17/PROVENANCE.md, section 2. ---
 EXL3_REPO=LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw
@@ -40,7 +40,7 @@ SPARE_BYTES=$((10 * 1024 * 1024 * 1024))   # keep 10 GiB free after the work
 ENGRAM_BYTES=0
 for e in "${ENGRAM_FILES[@]}"; do ENGRAM_BYTES=$((ENGRAM_BYTES + ${e##* })); done
 
-: "${MODEL_VIEW:?set MODEL_VIEW in .env}"
+: "${MODEL_VIEW:?set MODEL_VIEW in config.local.sh}"
 MODEL_VIEW=${MODEL_VIEW%/}
 DL_DIR=${DOWNLOAD_DIR:-$MODEL_VIEW.src}
 DL_DIR=${DL_DIR%/}
@@ -68,7 +68,7 @@ need_cmd() {  # $@ = commands that must exist
 
 find_hf() {  # print the name of the Hugging Face command line tool
   local c
-  for c in hf huggingface-cli "$HOME/.local/bin/hf"; do
+  for c in hf huggingface-cli "$HOME/spark/venv/bin/hf" "$HOME/.local/bin/hf"; do
     if command -v "$c" > /dev/null 2>&1; then echo "$c"; return 0; fi
   done
   return 1
@@ -143,7 +143,7 @@ check_head_setup() {  # Run once, before a download. Fail now, not after 200 GiB
   mkdir -p "$DL_DIR" "$(dirname "$MODEL_VIEW")"
   if [ ! -d "$anchor" ]; then anchor=$(dirname "$MODEL_VIEW"); fi
   if [ "$(stat -c %d "$DL_DIR")" != "$(stat -c %d "$anchor")" ]; then
-    fail "$DL_DIR and $anchor are on different disks. Hard links need one disk. Set DOWNLOAD_DIR in .env to a folder on the disk of MODEL_VIEW."
+    fail "$DL_DIR and $anchor are on different disks. Hard links need one disk. Set DOWNLOAD_DIR in config.local.sh to a folder on the disk of MODEL_VIEW."
   fi
   if has download; then need=$((need + $(left_to_get "$EXL3_BYTES" "$DL_DIR/model"))); fi
   if has engram; then need=$((need + $(left_to_get "$ENGRAM_BYTES" "$DL_DIR/engram"))); fi
@@ -222,7 +222,7 @@ phase_view() {
   log "view: done. $(find "$MODEL_VIEW" -type f | wc -l) files, $n weight shards."
   log "view: $DL_DIR and the view share the data. Deleting $DL_DIR frees no disk space."
   if [ ! -f "$MODEL_VIEW/model/chat_template.jinja" ]; then
-    log "view: the chat template comes next. Run: $ROOT/scripts/patch_template.py"
+    log "view: the chat template comes next. Run: $ROOT/patch-template.py"
   fi
 }
 
@@ -231,7 +231,7 @@ phase_worker() {
   need_cmd rsync ssh
   [ -f "$SUMS" ] || fail "worker: $SUMS is missing"
   [ -d "$MODEL_VIEW/model" ] && [ -d "$MODEL_VIEW/engram" ] || fail "worker: no view on this node. Run the view phase first."
-  wssh true 2> /dev/null || fail "worker: ssh to $WORKER_SSH failed. Check WORKER_SSH in .env."
+  wssh true 2> /dev/null || fail "worker: ssh to $WORKER_SSH failed. Check WORKER_SSH in config.local.sh."
   q=$(printf '%q' "$MODEL_VIEW")
   wssh "mkdir -p $q"
   have=$(wssh "du -sb $q | cut -f1")
@@ -251,7 +251,7 @@ phase_worker() {
   if [ -f "$MODEL_VIEW/model/chat_template.jinja" ]; then
     log "worker: chat_template.jinja was copied with the view"
   else
-    log "worker: the chat template comes next. Run: $ROOT/scripts/patch_template.py --worker"
+    log "worker: the chat template comes next. Run: $ROOT/patch-template.py --worker"
   fi
 }
 

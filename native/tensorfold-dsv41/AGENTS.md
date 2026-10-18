@@ -5,12 +5,12 @@ You can set up and run this recipe for a user. Follow these steps in this order.
 ## Setup
 
 1. Check that the two nodes are cabled and reach each other (NVIDIA's [Connect Two Sparks](https://build.nvidia.com/spark/connect-two-sparks) guide; [docs/NETWORK.md](docs/NETWORK.md)). `ibdev2netdev` must show the CX7 ports as Up on both nodes.
-2. `cp .env.example .env`, then fill in the values from `ibdev2netdev`, `ip -br addr` and `show_gids`. Ask the user for paths you cannot find.
-3. `scripts/download.sh` (~400 GB; resumable: run it again after a break). If a download needs a Hugging Face login, ask the user to run `hf auth login`. Never type a token yourself.
-4. `scripts/patch_template.py --worker`
-5. `docker/build.sh`
-6. `scripts/host_tuning.sh` (once; it needs sudo on both nodes, so the user types the password). It turns swap off for the engine, sets the kernel memory values and makes earlyoom stop the engine (not the node) when memory runs out; preflight fails without it. Restart the server after it, because the engine sizes its memory at start.
-7. `./start.sh` (it runs `scripts/preflight.sh` first; fix each `[FAIL]` line it prints). The first start takes ~15 min.
+2. `cp config.local.sh.example config.local.sh`, then fill in the values from `ibdev2netdev`, `ip -br addr` and `show_gids`. Ask the user for paths you cannot find.
+3. `./download.sh` (~400 GB; resumable: run it again after a break). If a download needs a Hugging Face login, ask the user to run `hf auth login`. Never type a token yourself.
+4. `./patch-template.py --worker`
+5. `./build.sh`
+6. `./host-tuning.sh` (once; it needs sudo on both nodes, so the user types the password). It turns swap off for the engine, sets the kernel memory values and makes earlyoom stop the engine (not the node) when memory runs out; preflight fails without it. Restart the server after it, because the engine sizes its memory at start.
+7. `./serve.sh` (it runs `./preflight.sh` first; fix each `[FAIL]` line it prints). The first start takes ~15 min.
 8. `./verify.sh` must print PASS for all five checks. Only a real reply proves that both nodes work; `/health` alone does not.
 
 Then give the user the three client settings from [docs/CONNECT.md](docs/CONNECT.md).
@@ -20,9 +20,9 @@ Then give the user the three client settings from [docs/CONNECT.md](docs/CONNECT
 - **Never `docker exec` into `tfv41-r0` or `tfv41-r1` while they serve.** The exec process counts against the rank's memory.
 - **Never stop the display manager** (`systemctl stop gdm`) on a Spark. On the tested pair it powered the node off.
 - **Run one model server at a time.** Each one needs port 8888 and ~100 GB of memory on each node.
-- **Keep `BIND_HOST=127.0.0.1`** unless the user asks for network access. Then set `API_KEY_FILE` too ([docs/CONNECT.md](docs/CONNECT.md)).
-- **If the server stops with exit code 75**, the lane broke on a device fault. Run `./stop.sh && ./start.sh`.
-- **If NCCL hangs at start after a cable or reboot event**, the RoCE GID index moved. Set `GID_INDEX=-1` in `.env` and restart ([docs/NETWORK.md](docs/NETWORK.md)).
+- **The API listens on the network** (`HOST=0.0.0.0`, as the project's other servers), with no key. On a shared network suggest `API_KEY_FILE` or `HOST=127.0.0.1` ([docs/CONNECT.md](docs/CONNECT.md)).
+- **If the server stops with exit code 75**, the lane broke on a device fault. Run `./stop.sh && ./serve.sh`.
+- **If NCCL hangs at start after a cable or reboot event**, the RoCE GID index moved. Set `GID_INDEX=-1` in `config.local.sh` and restart ([docs/NETWORK.md](docs/NETWORK.md)).
 
 ## Where to look
 
