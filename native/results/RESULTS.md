@@ -687,15 +687,52 @@ second Spark at 0.80, without tuning and without the counters:
 No stalls at all, and the three runs agree to 0.5% at 32K and 101K, against
 the 6-12% spread of the 8192 runs before (8K 1,468-2,142 on one config).
 The rate itself is +2% at 32K over the untuned 2048 run, inside what two
-machines differ by, so the gain shown is steadiness, not speed; a run with
-`--undo` on this machine, with the counters, would say whether the stalls
-were there before. 225 pages swapped out once in 18 rows: another process
+machines differ by; the A/B below, with `--undo` on this machine, shows the
+steadiness is not the tuning's either. 225 pages swapped out once in 18 rows: another process
 (the server runs with swap off). 0.85 ran three full suites with the new
 earlyoom (1 GiB) and no kill; single-stream decode at 0.85 here is 88.3,
 the same as 0.80 on the other Spark, so the earlier 93.8 at 0.85 was that
 box's numerics, not the memory split (as concluded above). The GPU reached
 85-86 °C at the end of the 101K prompt in each run without a suspend: the
 80 °C "threshold" perf.py flags is lower than this machine's.
+
+**The A/B on one machine** (same day, gx10-1cc3, 0.85, the same server
+config): three full runs after `--undo` and a restart, then the tuning, a
+reboot and three more:
+
+| | Without tuning (3 runs) | With tuning (3 runs, after a reboot) |
+|---|---:|---:|
+| Prefill 2K | 2,459 / 2,453 / 2,481 | 2,462 / 2,475 / 2,447 |
+| Prefill 8K | 2,584 / 2,598 / 2,602 | 2,533 / 2,594 / 2,595 |
+| Prefill 32K | 2,115 / 2,117 / 2,115 | 2,114 / 2,114 / 2,112 |
+| Prefill 101K | 1,345 / 1,345 / 1,350 | 1,348 / 1,351 / 1,346 |
+| Direct compaction / reclaim stalls | **0** in every row | 0 in every row |
+| Single-stream decode | 89.5 / 89.5 / 89.5 | 94.1 / 94.1 / 94.0 |
+| Sweep, 16 streams | 428.7 / 407.0 / 429.2 | 403.2 / 444.9 / 410.3 |
+| Decode during a 32K prefill: longest pause | 1.28 / 1.31 s | 1.28 / 1.31 s |
+
+**No effect on prefill:** the kernel never stalled without the tuning
+either, so there was nothing for it to remove. SGLang takes its whole pool
+at start (`--mem-fraction-static`) and allocates nothing while a prompt
+runs; the stalls the DeepSeek recipe removed came from its Engram tables
+read through the page cache, which grows during every prefill. The
+steadiness above (0.5% between runs) is chunk 2048's, not the tuning's.
+(Flash-Next's n-gram table, read through mmap by `gb10_ple_mmap`, is the
+analogous case and would be the one to A/B.) What the tuning does give the
+SGLang profiles is earlyoom at 1 GiB, so 0.85 holds (the 27B profiles now
+default to it when the tuning is applied), and a server that cannot swap.
+
+**Single-stream decode has two modes per boot,** 88-89.5 or 93.8-94.2
+tok/s, and keeps its mode for the whole boot: 89.5 before this reboot and
+94.1 after, but 88.3 in the three runs with the tuning applied earlier the
+same morning, and 93.8 against 88.8 on the other Spark for 0.85 against
+0.80. So neither the memory split nor the tuning picks it; the boot does. In
+the fast boots accept_len varies from run to run (8.95-10.75) at the same
+speed, in the slow ones it repeats exactly: the step itself is ~8% shorter
+(~104 against ~112 ms at accept ~9.8), which points at a kernel or graph
+choice made at boot (autotuning, CUDA-graph capture), not at the draft.
+Not investigated yet; one `perf.py --only decode` after a boot tells which
+mode it got.
 
 **Measured, Qwen3.8-Flash-Next** (`models/qwen3.8-flash-next.sh` as shipped:
 NVFP4, MTP 3/1/4, 65K draft vocabulary, FP8 side layers, both heads and HC

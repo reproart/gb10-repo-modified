@@ -118,6 +118,13 @@ CUDA_GRAPH_BS="${CUDA_GRAPH_BS:-$MAX_RUNNING}"
 # cookbook lost 15 of 48 GB10 configs at 0.85, none at 0.80. 0.85 ran fine
 # here under Docker. Above 0.85 add --max-total-tokens 1048576 to EXTRA_ARGS:
 # a bigger KV pool goes unused and the lost headroom cost 18% at 32 streams.
+# With scripts/host-tuning.sh applied (earlyoom at 1 GiB, not ~8 GB) the
+# trap is gone and the default is 0.85: ~1.15M tokens of fp8 KV against ~995K,
+# four 262K sessions against three; six full perf.py suites ran at 0.85 so
+# (results/RESULTS.md, "Host tuning"). Without it, 0.80.
+if [ -z "${MEM_FRACTION:-}" ] && { [ -f /etc/sysctl.d/99-gb10.conf ] || [ -f /etc/sysctl.d/99-tensorfold.conf ]; }; then
+  MEM_FRACTION=0.85
+fi
 MEM_FRACTION="${MEM_FRACTION:-0.80}"
 
 # Prefill chunk and how decode gets in between (results/RESULTS.md, "Decode

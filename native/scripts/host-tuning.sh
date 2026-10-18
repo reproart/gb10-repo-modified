@@ -11,8 +11,10 @@
 # swaps other programs, and a long prefill stalls for 1-4 s per chunk. The
 # two-Spark DeepSeek recipe measured it (tensorfold-dsv41/runs/2026-10-18):
 # with background compaction on, 46 of 248 prompt chunks were slow (over
-# 1.3 s); with these values, 2. Whether SGLang's prefill gains too is what
-# the A/B in results/RESULTS.md ("Host tuning") measures.
+# 1.3 s); with these values, 2. SGLang's prefill does not gain: it takes its
+# pool at start and the kernel never stalled without these either (A/B in
+# results/RESULTS.md, "Host tuning"). What it gets is earlyoom at 1 GiB (so
+# the 27B profiles default to MEM_FRACTION 0.85) and a server that cannot swap.
 #
 # Changes (kernel defaults in brackets):
 #   1. /etc/sysctl.d/99-gb10.conf:

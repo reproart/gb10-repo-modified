@@ -190,7 +190,7 @@ settings as a local-only commit on top of them.
 | `SGLANG_VERSION` | profile | `0.5.21` | `0.5.20` goes back; see "Trying a newer SGLang" |
 | `DRAFT_TOKENS` | profile | `15` | 11 if you mostly run 10-12 requests at once, 10 for cap 32 (step 8) |
 | `MAX_RUNNING` | profile | `16` | the most requests you run at once; sizes the GDN pool and CUDA graphs with it (step 7) |
-| `MEM_FRACTION` | profile | `0.80` | see the earlyoom trap |
+| `MEM_FRACTION` | profile | `0.80`; `0.85` with `scripts/host-tuning.sh` applied | see the earlyoom trap |
 | `CHUNKED_PREFILL`, `PREFILL_DECODE_INTERVAL` | profile | `2048`, `1` | one decode round after each prefill chunk: streams already generating pause ~1-2 s instead of the whole long prompt (`perf.py --only interference`); 8192 / 0 before 2026-10-17 |
 | `PREFILL_CUDA_GRAPH` | profile | `0` | 1 turns prefill CUDA graphs on (untested here) |
 | `CONTEXT_LENGTH` | profile | `262144` | |
@@ -263,9 +263,14 @@ display stack; and, once applied, `./serve.sh` runs SGLang in a user scope
 with `MemorySwapMax=0` (`NOSWAP`, auto; the boot prints a `memory` line;
 the service unit has that limit already). `perf.py`'s prefill rows now print
 the kernel's direct compaction and reclaim stalls and swap-outs during each
-prompt (`/proc/vmstat`, local server only), so the A/B shows the cause and
-not only the rate: three `perf.py --only prefill` runs before, apply,
-restart the server, three after (results/RESULTS.md, "Host tuning").
+prompt (`/proc/vmstat`, local server only). Measured on the 27B, three full
+runs without and three with (results/RESULTS.md, "Host tuning"): **no change
+in prefill**, because SGLang takes its pool at start and the kernel never
+stalled without the tuning either (0 stalls in every row both ways). What
+it does give: earlyoom at 1 GiB, so the 27B profiles default to
+`MEM_FRACTION=0.85` when it is applied (~1.15M tokens of KV, four 262K
+sessions), and a server that cannot swap. Flash-Next's n-gram table, read
+through mmap, is where it could still matter; not measured.
 
 ## 7. Concurrency: three flags, one knob
 
@@ -341,8 +346,8 @@ allocated ... #tokens: 1146098`, 35.0 GiB target + 10.9 GiB draft, next to
 
 | `MEM_FRACTION` | Pools | KV, default profile | 262K sessions: default (cap 16, draft 15) | `-longctx` (cap 6, draft 10) | `-longctx`, draft 15 |
 |---:|---:|---:|---:|---:|---:|
-| **0.80** (default) | 64.5 GiB | 39.8 GiB, ~995K tokens | **3** (3.8) | 5 (5.5) | 5 (5.3) |
-| 0.85 | 70.6 GiB | 45.9 GiB, 1,146,098 (boot log) | 4 (4.4) | **6** (6.05, on the edge) | 5 (5.8) |
+| **0.80** (default without host tuning) | 64.5 GiB | 39.8 GiB, ~995K tokens | **3** (3.8) | 5 (5.5) | 5 (5.3) |
+| **0.85** (default with `scripts/host-tuning.sh`) | 70.6 GiB | 45.9 GiB, 1,146,098 (boot log) | **4** (4.4) | **6** (6.05, on the edge) | 5 (5.8) |
 | 0.90 | 76.7 GiB | 52.0 GiB, ~1.30M | 4 (4.95) | 6 (6.6) | 6 (6.4) |
 
 The default profile holds three full-length sessions, or its ~995K tokens
