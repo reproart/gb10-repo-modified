@@ -661,6 +661,42 @@ at 2048, is ~10% slower. The sweep is the same within the spread, its TTFT
 0.80, chunk 2048, interval 1 (2026-10-17); a larger interval gives the
 running streams more and the long prompt a longer TTFT, not measured.
 
+### Host tuning (2026-10-18)
+
+`scripts/host-tuning.sh` applied on the first Spark (gx10-1cc3), the server
+restarted on the new defaults (0.5.21, cap 16, chunk 2048, interval 1) at
+`MEM_FRACTION=0.85`, three full `perf.py` runs back to back; `perf.py` now
+prints the kernel's direct compaction / reclaim stalls and swap-outs per
+prefill row. The reference is the one 2048 / interval-1 run above, on the
+second Spark at 0.80, without tuning and without the counters:
+
+| Prefill, tok/s | 2048 / 1, no tuning (1 run, other Spark, 0.80) | Host tuning (3 runs) |
+|---|---:|---:|
+| 2K | 2,465 | 2,421 / 2,450 / 2,454 |
+| 8K | 2,588 | 2,572 / 2,580 / 2,583 |
+| 32K | 2,052 | 2,100 / 2,104 / 2,105 |
+| 101K | 1,334 | 1,337 / 1,342 / 1,344 |
+| Direct compaction / reclaim stalls, all rows | (not counted) | **0** in every row |
+
+| Other sections | Host tuning (3 runs) |
+|---|---:|
+| Single-stream decode | 88.3 in all three (accept_len 9.68 / 9.47 / 9.68, the same within a run) |
+| Sweep, 16 streams | 414.1 / 440.3 / 409.9 |
+| Decode during a 32K prefill, 1 / 4 streams | 4.2-8.0 / 14.5-18.7 tok/s, longest pause 1.28 / 1.31 s |
+
+No stalls at all, and the three runs agree to 0.5% at 32K and 101K, against
+the 6-12% spread of the 8192 runs before (8K 1,468-2,142 on one config).
+The rate itself is +2% at 32K over the untuned 2048 run, inside what two
+machines differ by, so the gain shown is steadiness, not speed; a run with
+`--undo` on this machine, with the counters, would say whether the stalls
+were there before. 225 pages swapped out once in 18 rows: another process
+(the server runs with swap off). 0.85 ran three full suites with the new
+earlyoom (1 GiB) and no kill; single-stream decode at 0.85 here is 88.3,
+the same as 0.80 on the other Spark, so the earlier 93.8 at 0.85 was that
+box's numerics, not the memory split (as concluded above). The GPU reached
+85-86 °C at the end of the 101K prompt in each run without a suspend: the
+80 °C "threshold" perf.py flags is lower than this machine's.
+
 **Measured, Qwen3.8-Flash-Next** (`models/qwen3.8-flash-next.sh` as shipped:
 NVFP4, MTP 3/1/4, 65K draft vocabulary, FP8 side layers, both heads and HC
 mix in FP8, cap 8; every patch booted unchanged and logged its conversions
