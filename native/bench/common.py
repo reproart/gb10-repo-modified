@@ -444,6 +444,49 @@ def gpu_watch_enabled():
     return local and shutil.which("nvidia-smi") is not None
 
 
+def vmstat():
+    """The kernel's memory-pressure counters on this machine (/proc/vmstat):
+    direct compaction stalls, pages scanned and allocation stalls in direct
+    reclaim, pages swapped out. {} when the server is not local (the same
+    rule and GB10_VMSTAT=0/1 override as GB10_GPU_WATCH) or on another OS.
+    The stalls land on the allocating thread, i.e. a prefill chunk."""
+    flag = os.environ.get("GB10_VMSTAT")
+    local = urlparse(BASE_URL).hostname in ("127.0.0.1", "localhost", "::1")
+    if (flag is not None and flag != "1") or (flag is None and not local):
+        return {}
+    try:
+        with open("/proc/vmstat") as f:
+            text = f.read()
+    except OSError:
+        return {}
+    out = {"compact_stall": 0, "direct_scan": 0, "alloc_stall": 0, "swap_out": 0}
+    for line in text.splitlines():
+        key, _, val = line.partition(" ")
+        if not val.strip().isdigit():
+            continue
+        if key == "compact_stall":
+            out["compact_stall"] = int(val)
+        elif key.startswith("pgscan_direct"):
+            out["direct_scan"] += int(val)
+        elif key.startswith("allocstall"):
+            out["alloc_stall"] += int(val)
+        elif key == "pswpout":
+            out["swap_out"] = int(val)
+    return out
+
+
+def vm_summary(v0, v1):
+    """The vmstat() delta as one short note, '' without counters."""
+    if not v0 or not v1:
+        return ""
+    d = {k: v1[k] - v0.get(k, 0) for k in v1}
+
+    def n(x):
+        return f"{x / 1e6:.1f}M" if x >= 1e6 else f"{x / 1e3:.0f}K" if x >= 1e4 else str(x)
+    return (f"vm: {n(d['compact_stall'])} compaction stalls, {n(d['alloc_stall'])} reclaim stalls"
+            f" ({n(d['direct_scan'])} pages scanned), {n(d['swap_out'])} swapped out")
+
+
 def gpu_sample():
     """(temp °C, SM MHz, throttle bits) of GPU 0, or None."""
     for q in ([_GPU_QUERY[0]] if _GPU_QUERY[0] else _GPU_QUERIES):

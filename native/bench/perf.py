@@ -38,6 +38,9 @@ What the columns mean (and the traps they avoid):
   * the run header records the engine's effective settings (SGLang
     /get_server_info: revision, draft tokens, request cap ...), and the whole
     output is saved under results/runs/ (GB10_RUN_DIR).
+  * vm (prefill rows, local server only, GB10_VMSTAT): the kernel's direct
+    compaction and reclaim stalls and swap-outs during the row, from
+    /proc/vmstat; what scripts/host-tuning.sh is meant to remove.
   * decode during a long prefill: what the streams already running see while
     another request's long prompt is prefilled (an agent sending a big
     context while others generate): their tok/s before / during / after it,
@@ -61,7 +64,7 @@ import uuid
 import common
 from common import (CODE_PROMPT, GpuWatch, PeakWatch, cache_hit_significant, calibrate, chat,
                     decode_rate, delta, metrics, ple_summary, restarted, sidecar, spec_summary,
-                    unique_prompt)
+                    unique_prompt, vm_summary, vmstat)
 
 
 def _med(xs):
@@ -198,8 +201,10 @@ def prefill(targets):
     for target in targets:
         m0, s0 = metrics(), s_prev
         prompt = unique_prompt(uuid.uuid4().hex, target)
+        v0 = vmstat()
         with GpuWatch() as gpu:
             r = chat(prompt, 8, stream=True)
+        vm = vm_summary(v0, vmstat())
         hits = r["cached_tokens"]
         if hits is None:
             hits = delta(m0, metrics(), "pc_hits")
@@ -211,6 +216,8 @@ def prefill(targets):
         print(f"   prompt {r['prompt_tokens']:>7} tok (cached {cached:>5}) -> "
               f"TTFT {_fmt(r['ttft'], '>6.2f', 's')}   prefill ~{_fmt(rate, '>6.0f')} tok/s"
               f"{'   ' + ple if ple else ''}{'   ' + str(gpu) if str(gpu) else ''}")
+        if vm:
+            print(f"   {'':>7} {vm}")
         if cache_hit_significant(hits, r["prompt_tokens"]):
             print("   !! prefix-cache hit on a unique prompt — the rate above excludes it")
     print()
