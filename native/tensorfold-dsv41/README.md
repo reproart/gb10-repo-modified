@@ -43,11 +43,42 @@ HumanEval and `bench/answers.py` here would be the first numbers.
   (`~/spark/venv/bin/hf` from `../serve.sh install` will do), earlyoom.
 - Time: the ~400 GB download, then a first start of ~15 minutes.
 
+## Weights
+
+Two folders, the same paths on both nodes, written by plain `hf download`
+like every other model here (so they can be fetched apart, and copied to
+the other Spark with `cp -a` / `rsync` or a disk):
+
+```bash
+HF=~/spark/venv/bin/hf
+# EXL3 2.9 bpw weights (196 GiB, 43 shards) -> MODEL_DIR
+$HF download LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw --revision afc7aa0aab98ee735c0f54e0a122019af1ac08f1 \
+  --exclude 'assets/*' --local-dir /models/LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw
+# DeepSeek's Engram tables (189 GiB: two shards of the base repo, its index, config.json) -> ENGRAM_DIR
+$HF download deepseek-ai/DeepSeek-V4.1-Flash-1017 --revision 1bae0e1088993b9b82de08f59de5be5a34e42170 \
+  model-00047-of-00048.safetensors model-00048-of-00048.safetensors model.safetensors.index.json config.json \
+  --local-dir /models/deepseek-ai/DeepSeek-V4.1-Flash-1017-engram
+./download.sh verify   # sha256 of all 53 files against the recipe's list (reads ~385 GiB)
+```
+
+The two Engram shards are ~101 GB each: the hub serves files over 50 GB only
+through `hf_xet`, which used too much memory on a Spark next to a running
+model (the recipe's note). If `hf download` refuses them or memory runs
+short, `./download.sh engram` fetches the same four files into the same
+folder with resumable `curl`; `./download.sh` alone does all of it
+(weights with `hf`, Engram with `curl`, verify, copy to the worker with
+`rsync`). A folder copied by hand works the same; `./download.sh verify` on
+that machine checks it. The patched chat template is written into
+`MODEL_DIR` by `./patch-template.py` (`--worker` copies it); preflight
+checks its sha256, so a later `hf download` that put the repo's own back is
+caught. The recipe's layout (one folder with `model/` and `engram/`) still
+works with `MODEL_VIEW=<folder>`.
+
 ## Setup and run (on the head, in this directory)
 
 ```bash
 cp config.local.sh.example config.local.sh   # your CX7 addresses, RDMA devices, ssh to the worker
-./download.sh          # weights + Engram tables (~400 GB, resumable), sha256 check, copy to the worker
+./download.sh          # or the two hf commands above: weights + Engram, sha256 check, copy to the worker
 ./patch-template.py --worker   # the chat template at a pinned commit + a 1-hunk fix (AGPL: not stored here)
 ./build.sh             # the engine image at TF_COMMIT, copied to the worker (~10 min)
 ./host-tuning.sh       # once, sudo on both nodes: no swap for the engine, memory sysctls, earlyoom; --undo removes it
@@ -68,7 +99,7 @@ Thinking is off by default; per request `"reasoning_effort": "high"`
 |---|---|---|
 | `HEAD_IP`, `WORKER_IP`, `WORKER_SSH` | 10.100.80.1, .2, = `WORKER_IP` | the CX7 link; set in `config.local.sh` |
 | `RDMA_DEVICES`, `NCCL_SOCKET_IFNAME`, `GID_INDEX` | both CX7 RoCE devices, `enp1s0f1np1`, 3 | from `ibdev2netdev`, `ip -br addr`, `show_gids`; `GID_INDEX=-1` after a link flap |
-| `MODEL_VIEW` | `/models/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw` | `model/` + `engram/`, the same path on both nodes |
+| `MODEL_DIR`, `ENGRAM_DIR` | `/models/LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw`, `/models/deepseek-ai/DeepSeek-V4.1-Flash-1017-engram` | the two `hf download` folders, the same paths on both nodes (`MODEL_VIEW` for the recipe's one-folder layout) |
 | `CACHE_DIR` | `~/.cache/gb10-tensorfold-dsv41` | rank weight caches, spilled prompts, kernels (~100 GiB a node) |
 | `TF_COMMIT`, `IMAGE` | `92aa710b533d`, `tensorfold-dsv41:<commit>` | the engine build (`./build.sh`) |
 | `MAX_RUNNING` | 4 | concurrent requests (`--parallel`) |

@@ -138,7 +138,7 @@ Run it in the engine image, from this folder (`native/tensorfold-dsv41`). First 
 Then start the image:
 
 ```bash
-docker run --rm --network none --entrypoint python3 -v "$PWD/tests:/tests:ro" -v "$MODEL_VIEW/model:/model:ro" -v "$PWD/runs/2026-10-17/encoding-fixtures:/fixtures:ro" "$IMAGE" -I -u /tests/v41_conformance.py /model /fixtures
+docker run --rm --network none --entrypoint python3 -v "$PWD/tests:/tests:ro" -v "$MODEL_DIR:/model:ro" -v "$PWD/runs/2026-10-17/encoding-fixtures:/fixtures:ro" "$IMAGE" -I -u /tests/v41_conformance.py /model /fixtures
 ```
 
 ### `v41_differential.py`
@@ -149,7 +149,7 @@ Each prompt must match byte for byte. It needs `encoding.py` (see the next secti
 Run it in the engine image, from this folder, after `. ./config.sh`. `ENCODING_DIR` is the folder that holds `encoding.py`:
 
 ```bash
-docker run --rm --network none --entrypoint python3 -v "$PWD/tests:/tests:ro" -v "$MODEL_VIEW/model:/model:ro" -v "$ENCODING_DIR:/encoding:ro" "$IMAGE" -I -u /tests/v41_differential.py /model /encoding /tests
+docker run --rm --network none --entrypoint python3 -v "$PWD/tests:/tests:ro" -v "$MODEL_DIR:/model:ro" -v "$ENCODING_DIR:/encoding:ro" "$IMAGE" -I -u /tests/v41_differential.py /model /encoding /tests
 ```
 
 `run_all.sh` runs both tests with the host Python when the host has the `tensorfold` package. Otherwise it uses these docker commands.

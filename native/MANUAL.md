@@ -498,6 +498,10 @@ YaRN строится из настроек RoPE самого чекпойнта
 cd tensorfold-dsv41
 cp config.local.sh.example config.local.sh   # адреса CX7, RDMA-устройства, ssh на вторую машину
 ./download.sh              # ~400 ГБ, докачивается; sha256; копия на вторую машину
+# или вручную, двумя обычными hf download (команды — в tensorfold-dsv41/README.md, «Weights»):
+#   веса EXL3 → /models/LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw
+#   Engram    → /models/deepseek-ai/DeepSeek-V4.1-Flash-1017-engram
+# папки можно просто скопировать на вторую машину (cp -a, rsync); ./download.sh verify проверит
 ./patch-template.py --worker   # шаблон чата по закреплённому коммиту + правка
 ./build.sh                 # образ движка, копия на вторую машину (~10 мин)
 ./host-tuning.sh           # один раз, sudo на обеих: без swap, sysctl памяти, earlyoom; --undo откатывает

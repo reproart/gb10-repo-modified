@@ -69,7 +69,7 @@ run_args() {  # $1 = rank: the docker run words, one per line, for the head or t
   [ -n "$CPUSET" ] && printf '%s\n' --cpuset-cpus "$CPUSET"
   printf '%s\n' --gpus all --network host --ipc host --shm-size 32g --oom-score-adj 1000 \
     --ulimit memlock=-1 --ulimit stack=67108864 --device /dev/infiniband --cap-add IPC_LOCK --cap-add SYS_PTRACE \
-    -v "$MODEL_VIEW/model:/model:ro" -v "$MODEL_VIEW/engram:/engram:ro" -v "$CACHE_DIR:/cache"
+    -v "$MODEL_DIR:/model:ro" -v "$ENGRAM_DIR:/engram:ro" -v "$CACHE_DIR:/cache"
   # rank 0 serves HTTP, so only it needs the keys
   [ -n "$API_KEY_FILE" ] && [ "$r" = 0 ] && printf '%s\n' -v "$API_KEY_FILE:/run/keys:ro"
   for e in "${envs[@]}"; do printf '%s\n' -e "$e"; done
@@ -87,7 +87,7 @@ run_args() {  # $1 = rank: the docker run words, one per line, for the head or t
 }
 
 echo "image   $IMAGE ($TF_REPO @ $TF_COMMIT)"
-echo "model   $MODEL_VIEW (model/ + engram/), on both nodes"
+echo "model   $MODEL_DIR + Engram $ENGRAM_DIR, on both nodes"
 echo "nodes   head $HEAD_IP (rank 0), worker $WORKER_SSH / $WORKER_IP (rank 1), RDMA $RDMA_DEVICES, GID $GID_INDEX"
 echo "serve   ctx $CONTEXT_LENGTH, $MAX_RUNNING requests, DSpark $DRAFT_TOKENS drafts, chunk $CHUNKED_PREFILL," \
   "spill $SPILL_GIB GiB, temperature $TEMPERATURE / top-p $TOP_P$([ "$VISION" = 1 ] && echo ", vision"), CPUs ${CPUSET:-all}"
