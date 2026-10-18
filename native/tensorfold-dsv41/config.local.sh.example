@@ -16,8 +16,10 @@ RDMA_DEVICES="${RDMA_DEVICES:-rocep1s0f1,roceP2p1s0f1}"
 NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f1np1}"
 GID_INDEX="${GID_INDEX:-3}"                     # -1 after a link flap moved it (docs/NETWORK.md)
 
-# Where the weights live on both nodes, if not /models/...
-# MODEL_VIEW="${MODEL_VIEW:-/models/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw}"
+# Where the two weight folders live on both nodes, if not the /models/... defaults;
+# or MODEL_VIEW=<folder> for the recipe's layout (model/ and engram/ in one folder).
+# MODEL_DIR="${MODEL_DIR:-/models/LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw}"
+# ENGRAM_DIR="${ENGRAM_DIR:-/models/deepseek-ai/DeepSeek-V4.1-Flash-1017-engram}"
 
 # An API key for LAN use (a file, one key per line).
 # API_KEY_FILE="${API_KEY_FILE:-$HOME/.tfv41-api-keys}"

@@ -66,7 +66,7 @@ tf_python() {
   shift
   # shellcheck disable=SC2086
   docker run --rm --network none -e HF_HUB_OFFLINE=1 ${CHECK_DOCKER_ARGS:-} --entrypoint python3 \
-    -v "$ROOT/tests:/tests:ro" -v "$MODEL_VIEW/model:/model:ro" -v "$FIXTURE_DIR:/fixtures:ro" \
+    -v "$ROOT/tests:/tests:ro" -v "$MODEL_DIR:/model:ro" -v "$FIXTURE_DIR:/fixtures:ro" \
     ${ENCODING_DIR:+-v "$ENCODING_DIR:/encoding:ro"} \
     "$IMAGE" -I -u "/tests/$script" "$@"
 }
@@ -121,7 +121,7 @@ elif have_tensorfold || have_image; then
   t=$SECONDS
   log="$P-conformance.log"
   if have_tensorfold; then
-    python3 -I -u "$ROOT/tests/v41_conformance.py" "$MODEL_VIEW/model" "$FIXTURE_DIR" > "$log" 2>&1
+    python3 -I -u "$ROOT/tests/v41_conformance.py" "$MODEL_DIR" "$FIXTURE_DIR" > "$log" 2>&1
   else
     tf_python v41_conformance.py /model /fixtures > "$log" 2>&1
   fi
@@ -139,7 +139,7 @@ elif have_tensorfold || have_image; then
   t=$SECONDS
   log="$P-differential.log"
   if have_tensorfold; then
-    python3 -I -u "$ROOT/tests/v41_differential.py" "$MODEL_VIEW/model" "$ENCODING_DIR" "$ROOT/tests" > "$log" 2>&1
+    python3 -I -u "$ROOT/tests/v41_differential.py" "$MODEL_DIR" "$ENCODING_DIR" "$ROOT/tests" > "$log" 2>&1
   else
     tf_python v41_differential.py /model /encoding /tests > "$log" 2>&1
   fi

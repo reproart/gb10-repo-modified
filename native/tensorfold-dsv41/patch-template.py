@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the patched chat template for the model view.
+"""Build the patched chat template in the weights folder (MODEL_DIR).
 
 The template comes from the MiaAI-Lab vLLM kit. The kit is AGPL-3.0, so this repo does
 not hold the template. This script does these steps:
@@ -123,18 +123,18 @@ def read_kit(local_file):
     return data
 
 
-# --- Settings: MODEL_VIEW and WORKER_SSH, as config.sh resolves them (shell, then config.local.sh, then defaults) ---
+# --- Settings: MODEL_DIR and WORKER_SSH, as config.sh resolves them (shell, then config.local.sh, then defaults) ---
 def settings(root):
-    """Return (MODEL_VIEW, WORKER_SSH) from config.sh next to this script."""
-    script = '. "$1/config.sh" >/dev/null && printf "%s\\0%s" "$MODEL_VIEW" "$WORKER_SSH"'
+    """Return (MODEL_DIR, WORKER_SSH) from config.sh next to this script."""
+    script = '. "$1/config.sh" >/dev/null && printf "%s\\0%s" "$MODEL_DIR" "$WORKER_SSH"'
     try:
         done = subprocess.run(["bash", "-c", script, "_", str(root)], stdout=subprocess.PIPE, timeout=30)
     except (OSError, subprocess.TimeoutExpired) as exc:
         die("cannot read %s/config.sh: %s" % (root, exc))
     if done.returncode != 0:
         die("%s/config.sh failed (exit code %d)" % (root, done.returncode))
-    view, _, worker = done.stdout.decode("utf-8", "replace").partition("\0")
-    return view, worker
+    model_dir, _, worker = done.stdout.decode("utf-8", "replace").partition("\0")
+    return model_dir, worker
 
 
 # --- Writing ---
@@ -191,12 +191,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Download the MiaAI-Lab kit chat template at a pinned commit, apply our patch,"
         " check both sha256 values, and write the result.",
-        epilog="MODEL_VIEW and WORKER_SSH come from config.sh (the shell, then config.local.sh, then its defaults).",
+        epilog="MODEL_DIR and WORKER_SSH come from config.sh (the shell, then config.local.sh, then its defaults).",
     )
     parser.add_argument(
         "--out",
         metavar="PATH",
-        help="write the result here (default: $MODEL_VIEW/model/chat_template.jinja)",
+        help="write the result here (default: $MODEL_DIR/chat_template.jinja)",
     )
     parser.add_argument(
         "--worker",
@@ -211,16 +211,16 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    view, worker = settings(Path(__file__).resolve().parent)
+    model_dir, worker = settings(Path(__file__).resolve().parent)
 
     if args.out:
         out = Path(os.path.expanduser(os.path.expandvars(args.out))).absolute()
-    elif view:
-        out = Path(os.path.expanduser(view)).absolute() / "model" / "chat_template.jinja"
+    elif model_dir:
+        out = Path(os.path.expanduser(model_dir)).absolute() / "chat_template.jinja"
         if not out.parent.is_dir():
-            die("the folder %s does not exist. Run ./download.sh view first, or use --out." % out.parent)
+            die("the folder %s does not exist. Run ./download.sh download first, or use --out." % out.parent)
     else:
-        die("MODEL_VIEW is not set. Set it in config.local.sh, or use --out PATH.")
+        die("MODEL_DIR is not set. Set it in config.local.sh, or use --out PATH.")
     if args.worker and not worker:
         die("WORKER_SSH is not set. Set it in config.local.sh.")
 

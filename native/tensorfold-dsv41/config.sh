@@ -33,13 +33,23 @@ NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-enp1s0f1np1}"   # the netdev that hold
 # index can move and NCCL hangs at start: -1 lets NCCL choose.
 GID_INDEX="${GID_INDEX:-3}"
 
-# --- Weights (the same paths on both nodes) ---
-# ./download.sh fills model/ (EXL3 weights, 196 GiB) and engram/ (DeepSeek's
-# Engram tables, 189 GiB, read from NVMe at random offsets while serving).
-MODEL_VIEW="${MODEL_VIEW:-/models/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw}"
-# Downloads are staged here first, then hard-linked into MODEL_VIEW: keep it
-# on the same disk.
-DOWNLOAD_DIR="${DOWNLOAD_DIR:-$MODEL_VIEW.src}"
+# --- Weights: two plain `hf download` folders, the same paths on both nodes ---
+# (README, "Weights": the two commands; ./download.sh writes the same.)
+#   MODEL_DIR   LibertAIDAI's EXL3 2.9 bpw weights (196 GiB, 43 shards) plus
+#               the patched chat_template.jinja (./patch-template.py)
+#   ENGRAM_DIR  DeepSeek's Engram tables: shards 47 and 48 of the base repo,
+#               its index and config.json (189 GiB), read from NVMe at random
+#               offsets while serving
+# A folder copied from another machine works as well; ./download.sh verify
+# checks it against the recipe's sha256 list.
+# The recipe's layout, one folder with model/ and engram/ in it, still works:
+# MODEL_VIEW=<that folder>.
+if [ -n "${MODEL_VIEW:-}" ]; then
+  MODEL_DIR="${MODEL_DIR:-$MODEL_VIEW/model}"
+  ENGRAM_DIR="${ENGRAM_DIR:-$MODEL_VIEW/engram}"
+fi
+MODEL_DIR="${MODEL_DIR:-/models/LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw}"
+ENGRAM_DIR="${ENGRAM_DIR:-/models/deepseek-ai/DeepSeek-V4.1-Flash-1017-engram}"
 # Rank weight caches, spilled prompts and compiled kernels, kept between runs
 # (~100 GiB per node; the first start writes it). Root-owned: the containers
 # run as root.

@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# Get the model files and build the model view. Run it on the head node.
+# Get the model files into two plain `hf download` folders, check them, copy them to the worker.
+# Run it on the head node.
 #   ./download.sh [phase ...]
 # With no argument, it runs all phases in this order. Each phase is safe to run again:
 # it resumes a download, or it skips work that is done.
-#   download  EXL3 2.9 bpw weights (196 GiB, 43 shards) at a pinned revision, with the hf command
-#   engram    Engram shards 47 and 48 (189 GiB in total) and two small files, with resumable curl
+#   download  EXL3 2.9 bpw weights (196 GiB, 43 shards) at a pinned revision into $MODEL_DIR, with hf
+#   engram    Engram shards 47 and 48 (189 GiB) and two small files into $ENGRAM_DIR, with resumable curl
 #   verify    sha256 check of 53 files against runs/2026-10-17/weights.sha256 (reads ~385 GiB)
-#   view      hard-link view in $MODEL_VIEW (model/ and engram/); the chat template comes next
-#   worker    copy the view to the worker with rsync, then check the hashes there
-# The files go to $DOWNLOAD_DIR first (default: $MODEL_VIEW.src). Keep it on the same disk as
-# $MODEL_VIEW, because the view uses hard links. The two repos are public. HF_TOKEN is optional.
+#   worker    copy both folders to the same paths on the worker with rsync, then check the hashes there
+# Both are what `hf download` would write (README, "Weights": the two commands), so either way works,
+# and a folder copied from another machine (cp -a, rsync) works too: `./download.sh verify` checks it.
+# The two repos are public. HF_TOKEN is optional.
 set -euo pipefail
 
-PHASES=(download engram verify view worker)
+PHASES=(download engram verify worker)
 
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-}" in -h | --help) usage; exit 0 ;; esac
 
@@ -25,25 +26,23 @@ case "${1:-}" in -h | --help) usage; exit 0 ;; esac
 EXL3_REPO=LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw
 EXL3_REV=afc7aa0aab98ee735c0f54e0a122019af1ac08f1
 EXL3_SHARDS=43
-EXL3_BYTES=210818691539   # model/ in the view, without the two template files
+EXL3_BYTES=210818691539   # the weights and their json files, without the chat template
 BASE_REPO=deepseek-ai/DeepSeek-V4.1-Flash-1017
 BASE_REV=1bae0e1088993b9b82de08f59de5be5a34e42170
-ENGRAM_FILES=(            # "name size in bytes": the four files of the base repo that the view needs
+ENGRAM_FILES=(            # "name size in bytes": the four files of the base repo the engine reads
   "model-00047-of-00048.safetensors 101535150936"
   "model-00048-of-00048.safetensors 101537926640"
   "model.safetensors.index.json 7470294"
   "config.json 3311"
 )
-SUMS="$ROOT/runs/2026-10-17/weights.sha256"
+SUMS="$ROOT/runs/2026-10-17/weights.sha256"   # paths model/... and engram/..., as the recipe's view had them
 SPARE_BYTES=$((10 * 1024 * 1024 * 1024))   # keep 10 GiB free after the work
 
 ENGRAM_BYTES=0
 for e in "${ENGRAM_FILES[@]}"; do ENGRAM_BYTES=$((ENGRAM_BYTES + ${e##* })); done
 
-: "${MODEL_VIEW:?set MODEL_VIEW in config.local.sh}"
-MODEL_VIEW=${MODEL_VIEW%/}
-DL_DIR=${DOWNLOAD_DIR:-$MODEL_VIEW.src}
-DL_DIR=${DL_DIR%/}
+MODEL_DIR=${MODEL_DIR%/}
+ENGRAM_DIR=${ENGRAM_DIR%/}
 
 # The Xet path used too much memory on the Sparks. Use plain HTTP. You can override each setting.
 HF_ENDPOINT="${HF_ENDPOINT:-https://huggingface.co}"
@@ -94,6 +93,10 @@ check_disk() {  # $1 = label, $2 = free bytes, $3 = bytes still to write
   log "$1: $(gib_down "$free") GiB free, $(gib_up "$need") GiB still to write. OK."
 }
 
+sums_here() {  # weights.sha256 with model/ and engram/ mapped onto MODEL_DIR and ENGRAM_DIR
+  sed -e "s#  model/#  $MODEL_DIR/#" -e "s#  engram/#  $ENGRAM_DIR/#" "$SUMS"
+}
+
 curl_get() {  # $1 = url, $2 = output file. curl resumes at the size of the output file.
   # The token goes to curl on stdin, so it never shows in the process list. curl sends it to the first host only.
   if [ -n "${HF_TOKEN:-}" ]; then printf 'header = "Authorization: Bearer %s"\n' "$HF_TOKEN"; fi |
@@ -101,7 +104,7 @@ curl_get() {  # $1 = url, $2 = output file. curl resumes at the size of the outp
 }
 
 fetch() {  # $1 = file name in the base repo, $2 = size in bytes. Download to name.part, then rename.
-  local name=$1 want=$2 dst="$DL_DIR/engram/$1" attempt have
+  local name=$1 want=$2 dst="$ENGRAM_DIR/$1" attempt have
   local part="$dst.part" url="$HF_ENDPOINT/$BASE_REPO/resolve/$BASE_REV/$1"
   if [ "$(fsize "$dst")" -eq "$want" ]; then
     log "engram: $name is complete"
@@ -129,35 +132,24 @@ fetch() {  # $1 = file name in the base repo, $2 = size in bytes. Download to na
   log "engram: $name is complete"
 }
 
-link_file() {  # $1 = source, $2 = link name. Make a hard link. Skip it when the link is right already.
-  local src
-  src=$(readlink -f "$1")
-  if [ "$src" -ef "$2" ]; then return 0; fi
-  ln -f -- "$src" "$2" ||
-    fail "view: cannot link $src. Hard links work on one disk only. Put DOWNLOAD_DIR on the disk of MODEL_VIEW."
-}
-
 # --- Phases ---
 check_head_setup() {  # Run once, before a download. Fail now, not after 200 GiB.
-  local need=0 anchor=$MODEL_VIEW
-  mkdir -p "$DL_DIR" "$(dirname "$MODEL_VIEW")"
-  if [ ! -d "$anchor" ]; then anchor=$(dirname "$MODEL_VIEW"); fi
-  if [ "$(stat -c %d "$DL_DIR")" != "$(stat -c %d "$anchor")" ]; then
-    fail "$DL_DIR and $anchor are on different disks. Hard links need one disk. Set DOWNLOAD_DIR in config.local.sh to a folder on the disk of MODEL_VIEW."
-  fi
-  if has download; then need=$((need + $(left_to_get "$EXL3_BYTES" "$DL_DIR/model"))); fi
-  if has engram; then need=$((need + $(left_to_get "$ENGRAM_BYTES" "$DL_DIR/engram"))); fi
-  check_disk "disk on the head" "$(free_bytes "$DL_DIR")" "$need"
+  mkdir -p "$MODEL_DIR" "$ENGRAM_DIR"
+  if has download; then check_disk "disk of $MODEL_DIR" "$(free_bytes "$MODEL_DIR")" "$(left_to_get "$EXL3_BYTES" "$MODEL_DIR")"; fi
+  if has engram; then check_disk "disk of $ENGRAM_DIR" "$(free_bytes "$ENGRAM_DIR")" "$(left_to_get "$ENGRAM_BYTES" "$ENGRAM_DIR")"; fi
 }
 
 phase_download() {
   local hf attempt
-  hf=$(find_hf) || fail "download: the hf command is missing. Install it with: pipx install 'huggingface_hub[cli]'"
-  mkdir -p "$DL_DIR/model"
-  log "download: $EXL3_REPO at ${EXL3_REV:0:8}, about $(gib_up "$EXL3_BYTES") GiB, into $DL_DIR/model"
+  hf=$(find_hf) || fail "download: the hf command is missing (../serve.sh install puts one in ~/spark/venv/bin, or: pipx install 'huggingface_hub[cli]')"
+  log "download: $EXL3_REPO at ${EXL3_REV:0:8}, about $(gib_up "$EXL3_BYTES") GiB, into $MODEL_DIR"
   for attempt in 1 2 3 4 5; do
-    if "$hf" download "$EXL3_REPO" --revision "$EXL3_REV" --exclude 'assets/*' --local-dir "$DL_DIR/model" > /dev/null; then
-      log "download: done"
+    if "$hf" download "$EXL3_REPO" --revision "$EXL3_REV" --exclude 'assets/*' --local-dir "$MODEL_DIR" > /dev/null; then
+      local n
+      n=$(find "$MODEL_DIR" -maxdepth 1 -name 'model-*-of-*.safetensors' | wc -l)
+      [ "$n" -eq "$EXL3_SHARDS" ] || fail "download: $n weight shards in $MODEL_DIR, expected $EXL3_SHARDS"
+      log "download: done ($n shards)"
+      [ -f "$MODEL_DIR/chat_template.jinja" ] || log "download: the chat template comes next: $ROOT/patch-template.py"
       return 0
     fi
     log "download: attempt $attempt of 5 failed. Retry in 60 s."
@@ -167,13 +159,14 @@ phase_download() {
 }
 
 phase_engram() {
-  # The hf command refuses files over 50 GB without hf_xet. Use resumable curl on the resolve URL.
-  # The URL redirects to the CDN, and the CDN accepts byte ranges.
+  # The hf command refuses files over 50 GB without hf_xet, and hf_xet used too much memory on the Sparks.
+  # Use resumable curl on the resolve URL: the URL redirects to the CDN, and the CDN accepts byte ranges.
+  # The result is the same folder `hf download ... --local-dir $ENGRAM_DIR` writes (without its .cache/).
   local e pids=() p bad=0
   need_cmd curl
-  mkdir -p "$DL_DIR/engram"
-  log "engram: $BASE_REPO at ${BASE_REV:0:8}, about $(gib_up "$ENGRAM_BYTES") GiB, into $DL_DIR/engram"
-  log "engram: to see the progress, run: ls -l '$DL_DIR/engram'"
+  mkdir -p "$ENGRAM_DIR"
+  log "engram: $BASE_REPO at ${BASE_REV:0:8}, about $(gib_up "$ENGRAM_BYTES") GiB, into $ENGRAM_DIR"
+  log "engram: to see the progress, run: ls -l '$ENGRAM_DIR'"
   for e in "${ENGRAM_FILES[@]}"; do
     fetch "${e%% *}" "${e##* }" &
     pids+=($!)
@@ -184,72 +177,44 @@ phase_engram() {
 }
 
 phase_verify() {
-  local root
   [ -f "$SUMS" ] || fail "verify: $SUMS is missing"
-  if [ -d "$DL_DIR/model" ] && [ -d "$DL_DIR/engram" ]; then
-    root=$DL_DIR
-  elif [ -d "$MODEL_VIEW/model" ] && [ -d "$MODEL_VIEW/engram" ]; then
-    root=$MODEL_VIEW
-  else
-    fail "verify: no files in $DL_DIR or $MODEL_VIEW. Run the download and engram phases first."
-  fi
-  log "verify: check $(wc -l < "$SUMS") files in $root against $(basename "$SUMS")"
+  [ -d "$MODEL_DIR" ] && [ -d "$ENGRAM_DIR" ] || fail "verify: $MODEL_DIR or $ENGRAM_DIR is missing. Download first."
+  log "verify: check $(wc -l < "$SUMS") files in $MODEL_DIR and $ENGRAM_DIR against $(basename "$SUMS")"
   log "verify: this reads about 385 GiB with one thread and takes a while. One line shows for each finished file."
-  (cd "$root" && sha256sum -c "$SUMS") ||
-    fail "verify: a file is missing or damaged (see FAILED above). Delete it, then run the download and engram phases again."
+  sums_here | sha256sum -c - ||
+    fail "verify: a file is missing or damaged (see FAILED above). Delete it, then run the download or engram phase again."
   log "verify: all files match"
 }
 
-phase_view() {
-  local e name f n
-  for e in "${ENGRAM_FILES[@]}"; do
-    [ -f "$DL_DIR/engram/${e%% *}" ] || fail "view: ${e%% *} is missing in $DL_DIR/engram. Run the engram phase first."
-  done
-  compgen -G "$DL_DIR/model/model-*.safetensors" > /dev/null ||
-    fail "view: no weights in $DL_DIR/model. Run the download phase first."
-  mkdir -p "$MODEL_VIEW/model" "$MODEL_VIEW/engram"
-  log "view: link the files into $MODEL_VIEW (hard links, no copy)"
-  for f in "$DL_DIR"/model/*.json "$DL_DIR"/model/*.safetensors; do
-    [ -e "$f" ] || continue
-    link_file "$f" "$MODEL_VIEW/model/$(basename "$f")"
-  done
-  for e in "${ENGRAM_FILES[@]}"; do
-    name=${e%% *}
-    link_file "$DL_DIR/engram/$name" "$MODEL_VIEW/engram/$name"
-  done
-  n=$(find "$MODEL_VIEW/model" -maxdepth 1 -name 'model-*-of-*.safetensors' | wc -l)
-  [ "$n" -eq "$EXL3_SHARDS" ] || fail "view: $n weight shards in $MODEL_VIEW/model, expected $EXL3_SHARDS"
-  log "view: done. $(find "$MODEL_VIEW" -type f | wc -l) files, $n weight shards."
-  log "view: $DL_DIR and the view share the data. Deleting $DL_DIR frees no disk space."
-  if [ ! -f "$MODEL_VIEW/model/chat_template.jinja" ]; then
-    log "view: the chat template comes next. Run: $ROOT/patch-template.py"
-  fi
-}
-
 phase_worker() {
-  local q have free need
+  local d q have free need
   need_cmd rsync ssh
   [ -f "$SUMS" ] || fail "worker: $SUMS is missing"
-  [ -d "$MODEL_VIEW/model" ] && [ -d "$MODEL_VIEW/engram" ] || fail "worker: no view on this node. Run the view phase first."
+  [ -d "$MODEL_DIR" ] && [ -d "$ENGRAM_DIR" ] || fail "worker: $MODEL_DIR or $ENGRAM_DIR is missing on this node."
   wssh true 2> /dev/null || fail "worker: ssh to $WORKER_SSH failed. Check WORKER_SSH in config.local.sh."
-  q=$(printf '%q' "$MODEL_VIEW")
-  wssh "mkdir -p $q"
-  have=$(wssh "du -sb $q | cut -f1")
-  free=$(wssh "df -B1 --output=avail $q | tail -1 | tr -dc 0-9")
-  need=$((EXL3_BYTES + ENGRAM_BYTES))
-  if [ "$have" -ge "$need" ]; then need=0; else need=$((need - have)); fi
+  need=0
+  for d in "$MODEL_DIR" "$ENGRAM_DIR"; do
+    q=$(printf '%q' "$d")
+    wssh "mkdir -p $q"
+    have=$(wssh "du -sb $q | cut -f1")
+    need=$((need + $(dir_bytes "$d") - have))
+  done
+  [ "$need" -gt 0 ] || need=0
+  free=$(wssh "df -B1 --output=avail $(printf '%q' "$MODEL_DIR") | tail -1 | tr -dc 0-9")
   check_disk "disk on the worker" "$free" "$need"
   # Each file shows under its final name only when it is complete: a partial file waits in .rsync-partial.
   # A second run skips the finished files and resumes the others. It deletes nothing on the worker.
-  log "worker: copy $MODEL_VIEW to $WORKER_SSH"
-  rsync -a --partial-dir=.rsync-partial --info=progress2,stats1 \
-    -e "ssh -o BatchMode=yes -o ConnectTimeout=10" "$MODEL_VIEW/" "$WORKER_SSH:$MODEL_VIEW/"
+  for d in "$MODEL_DIR" "$ENGRAM_DIR"; do
+    log "worker: copy $d to $WORKER_SSH"
+    rsync -a --partial-dir=.rsync-partial --info=progress2,stats1 \
+      -e "ssh -o BatchMode=yes -o ConnectTimeout=10" "$d/" "$WORKER_SSH:$d/"
+  done
   log "worker: sha256 check on the worker. It reads about 385 GiB there and takes a while."
-  wrun "cd $q && sha256sum -c -" < "$SUMS" ||
+  sums_here | wrun "sha256sum -c -" ||
     fail "worker: a file is missing or damaged on the worker (see FAILED above). Delete it on the worker, then run the worker phase again."
-  log "worker: view OK on $WORKER_SSH"
-  if [ -f "$MODEL_VIEW/model/chat_template.jinja" ]; then
-    log "worker: chat_template.jinja was copied with the view"
+  log "worker: both folders OK on $WORKER_SSH"
+  if [ -f "$MODEL_DIR/chat_template.jinja" ]; then
+    log "worker: chat_template.jinja was copied with the weights"
   else
     log "worker: the chat template comes next. Run: $ROOT/patch-template.py --worker"
   fi
@@ -276,9 +241,11 @@ if [ $# -eq 0 ]; then
   want=("${PHASES[@]}")
 else
   for a in "$@"; do
+    [ "$a" = view ] && { log "view: no longer needed (the engine reads MODEL_DIR and ENGRAM_DIR as they are)"; continue; }
     valid_phase "$a" || { echo "unknown phase: $a" >&2; usage >&2; exit 2; }
     if [ "$a" = all ]; then want=("${PHASES[@]}"); else want+=("$a"); fi
   done
+  [ ${#want[@]} -gt 0 ] || exit 0
 fi
 
 if has download || has engram; then check_head_setup; fi

@@ -7,6 +7,7 @@ set -uo pipefail
 . "$(dirname "$0")/config.sh"
 
 bad=0
+TEMPLATE_SHA256=defbdfc2a28ea921d9ad4c6be7244fa82c53f6d552507527a944ad4cbdd24a6d   # patch-template.py's OUT_SHA256
 wrun() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$WORKER_SSH" "$@"; }   # (stdin open: wssh closes it)
 ok() { echo "[ ok ] $*"; }
 no() { echo "[FAIL] $*"; bad=1; }
@@ -39,9 +40,14 @@ check_node() {  # $1 = label, $2 = command runner ("" for here, wssh for the wor
 set -u
 $(declare -f cpuset_fast)
 [ -z "$CPUSET" ] || cpuset_fast "$CPUSET"
-for d in "$MODEL_VIEW/model" "$MODEL_VIEW/engram"; do [ -d "\$d" ] || echo "FAIL missing \$d"; done
-[ -f "$MODEL_VIEW/model/chat_template.jinja" ] || echo "FAIL missing $MODEL_VIEW/model/chat_template.jinja"
-n=\$(ls "$MODEL_VIEW"/model/*.safetensors 2>/dev/null | wc -l); [ "\$n" -ge 43 ] || echo "FAIL \$n of 43 weight shards"
+for d in "$MODEL_DIR" "$ENGRAM_DIR"; do [ -d "\$d" ] || echo "FAIL missing \$d"; done
+# The patched template, not the kit's or one a later hf download put back.
+t=\$(sha256sum "$MODEL_DIR/chat_template.jinja" 2>/dev/null | cut -c1-64)
+[ "\$t" = $TEMPLATE_SHA256 ] || echo "FAIL $MODEL_DIR/chat_template.jinja is \${t:+not the patched one}\${t:-missing}: run ./patch-template.py --worker"
+n=\$(ls "$MODEL_DIR"/model-*-of-*.safetensors 2>/dev/null | wc -l); [ "\$n" -ge 43 ] || echo "FAIL \$n of 43 weight shards in $MODEL_DIR"
+for f in model-00047-of-00048.safetensors model-00048-of-00048.safetensors model.safetensors.index.json config.json; do
+  [ -f "$ENGRAM_DIR/\$f" ] || echo "FAIL missing $ENGRAM_DIR/\$f: ./download.sh engram"
+done
 docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null | sed 's/^/IMAGE /' || echo "FAIL no image $IMAGE"
 for dev in \$(echo "$RDMA_DEVICES" | tr ',' ' '); do
   if [ "$GID_INDEX" = "-1" ]; then echo "OK gid auto (\$dev)"; continue; fi
