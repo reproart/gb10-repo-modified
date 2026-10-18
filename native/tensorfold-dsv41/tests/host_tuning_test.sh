@@ -5,7 +5,7 @@
 # stops the apply, a failed apply rolls the node back, --check changes nothing, and --undo puts back the boot and
 # run state of earlyoom.
 set -euo pipefail
-src=${1:-$(dirname "$0")/../scripts/host_tuning.sh}
+src=${1:-$(dirname "$0")/../host-tuning.sh}
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/etc/systemd/system" "$T/etc/sysctl.d" "$T/etc/default" "$T/var/lib"

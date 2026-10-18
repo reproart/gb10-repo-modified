@@ -68,7 +68,7 @@ The server default is `temperature` 1.0 and `top_p` 1.0, as DeepSeek recommends 
 
 ## Use it from another computer
 
-The server listens only on the head itself by default. To serve your local network:
+Here the server listens on every address of the head (`HOST=0.0.0.0`, as the other servers in this project), with no key: anyone on your network can use it. The upstream recipe binds `127.0.0.1` instead (`HOST=127.0.0.1` in `config.local.sh` does that). To keep the network but ask for a key:
 
 1. Make a key file with one key in it:
 
@@ -76,11 +76,11 @@ The server listens only on the head itself by default. To serve your local netwo
 openssl rand -hex 24 > ~/tfv41-api-key
 ```
 
-2. In `.env`, set `BIND_HOST=0.0.0.0` and `API_KEY_FILE=` the full path of that file.
+2. In `config.local.sh`, set `API_KEY_FILE="${API_KEY_FILE:-<the full path of that file>}"`.
 3. Restart:
 
 ```bash
-./stop.sh && ./start.sh
+./stop.sh && ./serve.sh
 ```
 
 4. In your app, use `http://<head address>:8888/v1` and the key.

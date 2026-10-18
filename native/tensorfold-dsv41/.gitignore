@@ -1,0 +1,5 @@
+config.local.sh
+logs/
+__pycache__/
+*.pyc
+tests/suite-results.json

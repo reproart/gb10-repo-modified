@@ -3,12 +3,12 @@
 #   tests/run_all.sh              verify.sh, the suite, the grammar check, the conformance check, the differential check
 #   BENCH=1 tests/run_all.sh      also the concurrency and prefix-cache benchmark
 #   HERMES=1 tests/run_all.sh     also the Hermes agent gate (needs HERMES_DIR and a router; see tests/README.md)
-# The settings come from .env (through scripts/common.sh) and from the variables in tests/README.md.
+# The settings come from ../config.sh (and config.local.sh) and from the variables in tests/README.md.
 # The script prints one PASS, FAIL or SKIP line per step. A SKIP does not fail the run.
 # The exit code is 1 when any step fails, and 0 when none fails.
 set -uo pipefail
-# shellcheck source=scripts/common.sh
-. "$(dirname "${BASH_SOURCE[0]}")/../scripts/common.sh"
+# shellcheck source-path=SCRIPTDIR source=../config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../config.sh"
 
 DAY=$(date -u +%F)
 STAMP=$(date -u +%H%M%SZ)
@@ -23,7 +23,7 @@ SUMMARY="$P-summary.txt"
 FAILS=0
 
 # The tests read these two variables. The tests send no API key to the engine.
-export V41_BASE_URL="$API" V41_MODEL="$SERVED_NAME"
+export V41_BASE_URL="$API" V41_MODEL="$SERVED_MODEL_NAME"
 
 say() { echo "$*" | tee -a "$SUMMARY"; }
 pass() { say "[PASS] $1: $2"; }
@@ -73,11 +73,11 @@ tf_python() {
 have_tensorfold() { python3 -I -c 'import tensorfold' >/dev/null 2>&1; }
 have_image() { docker image inspect "$IMAGE" >/dev/null 2>&1; }
 
-say "run_all: server $API, model $SERVED_NAME, image tag $TAG, output runs/$DAY"
+say "run_all: server $API, model $SERVED_MODEL_NAME, image tag $TAG, output runs/$DAY"
 [ -z "${API_KEY_FILE:-}" ] || say "WARN: API_KEY_FILE is set. The tests send no API key, so the engine tests get HTTP 401."
 
 if ! healthy; then
-  fail "server" "no answer at $API/models for model $SERVED_NAME. Start it with ./start.sh and try again."
+  fail "server" "no answer at $API/models for model $SERVED_MODEL_NAME. Start it with ./serve.sh and try again."
   say "1 step failed. Summary: ${SUMMARY#"$ROOT/"}"
   exit 1
 fi

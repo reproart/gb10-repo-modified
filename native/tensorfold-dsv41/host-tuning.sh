@@ -3,8 +3,8 @@
 # Why: the engine holds about 102 GiB of the 128 GiB. Under load the kernel swaps, reclaims and compacts memory, and
 # long prompts then read 10-30% slower with 1-4 s stalls (runs/2026-10-18/). When memory runs out, the head can also
 # stop (no ssh) until you cut its power. The engine's RUNBOOK.md asks for the swap part.
-#   scripts/host_tuning.sh          apply on the head and the worker (you can run it again; the result is the same)
-#   scripts/host_tuning.sh --undo   remove the changes on both nodes and put back the sysctl values from before
+#   ./host-tuning.sh          apply on the head and the worker (you can run it again; the result is the same)
+#   ./host-tuning.sh --undo   remove the changes on both nodes and put back the sysctl values from before
 #                                   the first run (kept in /var/lib/tensorfold-host-tuning/sysctl.before)
 # It checks both nodes before it changes either one. If a step fails on a node, that node goes back to its state
 # before the first run; if the worker fails, the head goes back too, so the two nodes stay alike.
@@ -25,8 +25,8 @@
 #      (TF_DS_MEM_FLOOR_GIB), and a 1M-token prompt took the head down to 1.7 GiB, so a healthy engine is not
 #      stopped. Your old file stays as /etc/default/earlyoom.pre-tensorfold.
 set -euo pipefail
-# shellcheck source=common.sh
-. "$(dirname "$0")/common.sh"
+# shellcheck source=config.sh
+. "$(dirname "$0")/config.sh"
 
 node_script() {
   cat <<'EOF'
@@ -122,7 +122,7 @@ echo "$(hostname): swappiness $(cat /proc/sys/vm/swappiness), compaction_proacti
 EOF
 }
 
-case "${1:-}" in ""|--undo) ;; *) echo "usage: scripts/host_tuning.sh [--undo]" >&2; exit 2 ;; esac
+case "${1:-}" in ""|--undo) ;; *) echo "usage: ./host-tuning.sh [--undo]" >&2; exit 2 ;; esac
 # Root runs the script from mktemp files (random names, owner-only), never from a fixed path in /tmp.
 tmp=$(mktemp)
 rtmp=""
@@ -145,4 +145,4 @@ if ! ssh -t "$WORKER_SSH" "sudo bash '$rtmp' ${1:-}"; then
   sudo bash "$tmp" --undo
   exit 1
 fi
-log "done. Restart the server (./stop.sh, then ./start.sh): the engine sizes its memory at start."
+log "done. Restart the server (./stop.sh, then ./serve.sh): the engine sizes its memory at start."

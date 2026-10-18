@@ -697,6 +697,22 @@ SGLang cannot load, in the card's community vLLM container
 DGX Spark flags as knobs, on :8888 so `bench/` works unchanged. For an A/B on
 answers against the RadixArk build. Unmeasured.
 
+## DeepSeek-V4.1-Flash on two Sparks: `tensorfold-dsv41/`
+
+[`tensorfold-dsv41/`](tensorfold-dsv41/README.md) serves
+DeepSeek-V4.1-Flash-1017 (EXL3 2.9 bpw, 196 GiB plus 189 GiB of Engram
+tables on NVMe, 1M context) across both Sparks, TP=2 over the CX7 cable, on
+TensorFold (bertholomus's V4.1 port in Elevatormusic's fork: forced tool
+calls, structured output under speculative decoding, fault isolation). It is
+Elevatormusic's recipe (Apache-2.0) with the launch reshaped like ours:
+`config.sh` knobs, `config.local.sh` for the pair's addresses, `./serve.sh`.
+Their numbers: 92 / 57 tok/s decode on code / prose, 4 requests (140 tok/s
+aggregate), ~2,000-2,200 tok/s prefill to 128K; quality not measured. It
+holds both machines whole. Its `host-tuning.sh` (no swap for the engine,
+compaction off, earlyoom set to stop the engine first) changes the host's
+memory settings system-wide, also for the SGLang profiles, until `--undo`.
+Unmeasured here.
+
 ## GGUF models on llama.cpp: `llamacpp/`
 
 GLM-5.3-Flash (320B) in GSQ-RCO GGUFs needs llama.cpp with PR 27773, not
