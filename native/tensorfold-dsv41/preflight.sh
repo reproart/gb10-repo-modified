@@ -15,10 +15,30 @@ wssh true 2>/dev/null && ok "ssh to the worker ($WORKER_SSH)" || { no "ssh to th
 ping -c 2 -W 2 "$WORKER_IP" >/dev/null 2>&1 && ok "the worker answers on the CX7 link ($WORKER_IP)" \
   || no "no answer from $WORKER_IP: check the cable and docs/NETWORK.md"
 
+cpuset_fast() {  # $1 = a CPU list (5-9,15-19): OK when every core in it is one of the fastest (cpufreq)
+  local max f c part want="" fast="" bad=""
+  max=$(cat /sys/devices/system/cpu/cpu[0-9]*/cpufreq/cpuinfo_max_freq 2>/dev/null | sort -n | tail -1)
+  [ -n "$max" ] || { echo "OK CPUSET $1 (no cpufreq here: cores not checked)"; return; }
+  for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/cpuinfo_max_freq; do
+    c=${f#/sys/devices/system/cpu/cpu}; c=${c%%/*}
+    [ "$(cat "$f")" = "$max" ] && fast="$fast $c"
+  done
+  # shellcheck disable=SC2086  # a word list on purpose
+  fast=" $(printf '%s\n' $fast | sort -n | paste -sd' ')"
+  for part in ${1//,/ }; do
+    if [[ $part == *-* ]]; then want="$want $(seq -s ' ' "${part%-*}" "${part#*-}")"; else want="$want $part"; fi
+  done
+  for c in $want; do case " $fast " in *" $c "*) ;; *) bad="$bad $c" ;; esac; done
+  if [ -z "$bad" ]; then echo "OK CPUSET $1: the fast cores ($((max / 1000)) MHz)"
+  else echo "FAIL CPUSET $1 has slower cores:$bad (the fastest:$fast; set CPUSET, or empty for none)"; fi
+}
+
 check_node() {  # $1 = label, $2 = command runner ("" for here, wssh for the worker)
   local who=$1 run=$2 out
   out=$($run bash -s <<EOF
 set -u
+$(declare -f cpuset_fast)
+[ -z "$CPUSET" ] || cpuset_fast "$CPUSET"
 for d in "$MODEL_VIEW/model" "$MODEL_VIEW/engram"; do [ -d "\$d" ] || echo "FAIL missing \$d"; done
 [ -f "$MODEL_VIEW/model/chat_template.jinja" ] || echo "FAIL missing $MODEL_VIEW/model/chat_template.jinja"
 n=\$(ls "$MODEL_VIEW"/model/*.safetensors 2>/dev/null | wc -l); [ "\$n" -ge 43 ] || echo "FAIL \$n of 43 weight shards"

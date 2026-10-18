@@ -10,6 +10,7 @@
 #   CONTEXT_LENGTH=262144 ./serve.sh         shorter window (measured: no faster)
 #   PREFLIGHT=0 ./serve.sh                   skip ./preflight.sh
 #   EXTRA_ENV='TF_DS_TIMING=1' ./serve.sh    per-section timings in the rank logs
+#   CPUSET= ./serve.sh                       no CPU pinning (the recipe as measured)
 #
 # Then, as for the other servers here (same port, bench/ unchanged):
 #   ./verify.sh
@@ -65,6 +66,7 @@ run_args() {  # $1 = rank: the docker run words, one per line, for the head or t
   local r=$1 e
   printf '%s\n' -d --name "tfv41-r$r" --restart "$RESTART_POLICY"
   [ -n "$CGROUP_PARENT" ] && printf '%s\n' --cgroup-parent "$CGROUP_PARENT"
+  [ -n "$CPUSET" ] && printf '%s\n' --cpuset-cpus "$CPUSET"
   printf '%s\n' --gpus all --network host --ipc host --shm-size 32g --oom-score-adj 1000 \
     --ulimit memlock=-1 --ulimit stack=67108864 --device /dev/infiniband --cap-add IPC_LOCK --cap-add SYS_PTRACE \
     -v "$MODEL_VIEW/model:/model:ro" -v "$MODEL_VIEW/engram:/engram:ro" -v "$CACHE_DIR:/cache"
@@ -88,7 +90,7 @@ echo "image   $IMAGE ($TF_REPO @ $TF_COMMIT)"
 echo "model   $MODEL_VIEW (model/ + engram/), on both nodes"
 echo "nodes   head $HEAD_IP (rank 0), worker $WORKER_SSH / $WORKER_IP (rank 1), RDMA $RDMA_DEVICES, GID $GID_INDEX"
 echo "serve   ctx $CONTEXT_LENGTH, $MAX_RUNNING requests, DSpark $DRAFT_TOKENS drafts, chunk $CHUNKED_PREFILL," \
-  "spill $SPILL_GIB GiB, temperature $TEMPERATURE / top-p $TOP_P$([ "$VISION" = 1 ] && echo ", vision")"
+  "spill $SPILL_GIB GiB, temperature $TEMPERATURE / top-p $TOP_P$([ "$VISION" = 1 ] && echo ", vision"), CPUs ${CPUSET:-all}"
 echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\"$([ -n "$API_KEY_FILE" ] && echo " (key file $API_KEY_FILE)")"
 echo
 
