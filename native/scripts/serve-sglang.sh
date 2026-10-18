@@ -24,6 +24,10 @@ CPUSET="${CPUSET-5-9,15-19}"
 API_KEY="${API_KEY:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 HF_OFFLINE="${HF_OFFLINE:-1}"
+# No swap for the server: 1 = in a user scope with MemorySwapMax=0, 0 = as is,
+# auto = 1 once scripts/host-tuning.sh is applied (its A/B ran that way). The
+# systemd unit of scripts/install-service.sh sets MemorySwapMax=0 itself.
+NOSWAP="${NOSWAP:-auto}"
 
 [ -x "$VENV/bin/python" ] || {
   echo "no venv for SGLang $SGLANG_VERSION at $VENV - run ./serve.sh $PROFILE install" >&2; exit 1; }
@@ -96,6 +100,28 @@ args+=("${extra[@]}")
 pin=()
 if [ -n "$CPUSET" ] && command -v taskset >/dev/null; then pin=(taskset -c "$CPUSET"); fi
 
+# A transient scope of the user's systemd with swap off. Probed first: the
+# memory controller has to be delegated to the user manager (systemd 252+
+# does by default), else the limit would be accepted and do nothing.
+scope=() swap_note=""
+swap_max_in_scope() {  # memory.swap.max as a user scope with MemorySwapMax=0 sees it
+  command -v systemd-run >/dev/null || return 0
+  # shellcheck disable=SC2016  # expanded by the sh inside the scope
+  systemd-run --user --scope --quiet -p MemorySwapMax=0 \
+    sh -c 'cat "/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)/memory.swap.max"' 2>/dev/null || true
+}
+[ "$NOSWAP" = auto ] && { [ -f /etc/sysctl.d/99-gb10.conf ] && NOSWAP=1 || NOSWAP=0; }
+if [ "$NOSWAP" = 1 ]; then
+  if [ -n "${INVOCATION_ID:-}" ]; then
+    swap_note="swap per the systemd unit (MemorySwapMax=0 from install-service.sh)"
+  elif [ "$(swap_max_in_scope)" = 0 ]; then
+    scope=(systemd-run --user --scope --quiet -p MemorySwapMax=0 --)
+    swap_note="no swap (user scope, MemorySwapMax=0)"
+  else
+    swap_note="NOSWAP=1, but a user scope cannot limit swap here (no systemd user manager, or memory not delegated): swap allowed"
+  fi
+fi
+
 # The boot log does not say which revision a directory holds; these lines do.
 echo "profile $PROFILE"
 echo "target  $MODEL_DIR (revision $(revision_of "$MODEL_DIR"))"
@@ -104,6 +130,7 @@ if declare -F model_summary >/dev/null; then echo "model   $(model_summary)"; fi
 echo "sglang  $SGLANG_VERSION ($VENV), mem-fraction $MEM_FRACTION"
 echo "nvcc    $(command -v nvcc >/dev/null && nvcc --version | grep -oE 'release [0-9.]+' || echo 'not on PATH; set CUDA_HOME if kernel JIT fails')"
 echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\"   CPUs ${CPUSET:-all}"
+[ -n "$swap_note" ] && echo "memory  $swap_note"
 echo
 
-exec "${pin[@]}" "$VENV/bin/python" -m sglang.launch_server "${args[@]}"
+exec "${scope[@]}" "${pin[@]}" "$VENV/bin/python" -m sglang.launch_server "${args[@]}"

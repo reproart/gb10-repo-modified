@@ -49,6 +49,11 @@ if systemctl is-active --quiet earlyoom 2>/dev/null; then
   echo "earlyoom: active - it SIGTERMs the largest process when free memory runs"
   echo "          low (exit code -15, no traceback). See the README trap on 0.80."
 fi
+if [ -f /etc/sysctl.d/99-gb10.conf ]; then
+  echo "host tuning: applied (./scripts/host-tuning.sh --check shows the values, --undo removes them)"
+else
+  echo "host tuning: not applied (./scripts/host-tuning.sh: memory sysctls, earlyoom, no swap for the server)"
+fi
 
 if [ -x "$VENV/bin/python" ]; then
   echo

@@ -247,6 +247,26 @@ the installer with another profile switches it.
 - Logs go to the journal, which rotates them. The Docker setup needed a
   daemon-wide log cap for that; this doesn't.
 
+### Host memory settings (optional, measured as an A/B)
+
+`./scripts/host-tuning.sh` (sudo; `--check` shows the live values, `--undo`
+puts back the ones from before) applies, on this one Spark, what the
+two-Spark DeepSeek recipe found against prefill stalls
+(`tensorfold-dsv41/runs/2026-10-18`: slow prompt chunks 46 of 248 with
+background compaction on, 2 with these): `vm.swappiness=10`,
+`vm.compaction_proactiveness=0`, `vm.extfrag_threshold=500`,
+`vm.min_free_kbytes=1048576`, `vm.watermark_scale_factor=50` in
+`/etc/sysctl.d/99-gb10.conf`; earlyoom at 1 GiB / 0.5 GiB available
+(SIGTERM / SIGKILL) preferring the server (`sglang::scheduler`, python,
+tensorfold, llama-server, vLLM) and avoiding sshd, systemd, dockerd and the
+display stack; and, once applied, `./serve.sh` runs SGLang in a user scope
+with `MemorySwapMax=0` (`NOSWAP`, auto; the boot prints a `memory` line;
+the service unit has that limit already). `perf.py`'s prefill rows now print
+the kernel's direct compaction and reclaim stalls and swap-outs during each
+prompt (`/proc/vmstat`, local server only), so the A/B shows the cause and
+not only the rate: three `perf.py --only prefill` runs before, apply,
+restart the server, three after (results/RESULTS.md, "Host tuning").
+
 ## 7. Concurrency: three flags, one knob
 
 Concurrency on this hybrid (Gated DeltaNet) model is bought with **GDN state,
@@ -771,7 +791,8 @@ Each of these cost real time.
   log does not say which revision loaded. `serve.sh` loads local directories
   only, and prints the revision each one holds at startup; `unknown` means a
   directory it cannot vouch for.
-- **earlyoom kills the server at 0.85.** Memory is unified, so
+- **earlyoom kills the server at 0.85** (unless `scripts/host-tuning.sh`
+  moved its threshold to 1 GiB). Memory is unified, so
   `--mem-fraction-static` prices the host's memory too. 0.85 of 128 GB leaves
   ~8 GB, which is exactly DGX OS earlyoom's SIGTERM threshold, and the first
   long prefill or graph capture dips under it: the scheduler dies with
@@ -851,7 +872,7 @@ patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                gb10_fp8_hc.py (+ its kernel): FP8 hyper-connection mix ·
                gb10_nvfp4_scales.py: per-shard NVFP4 scales on Marlin ·
                sitecustomize.py (loads them) · test_*.py (CPU)
-scripts/       00-check-host · 01-install · serve-sglang · install-service
+scripts/       00-check-host · 01-install · serve-sglang · install-service · host-tuning (+ test-host-tuning)
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
 bench/         common.py · perf.py · longctx.py · profile_decode.py (GPU time per kernel group)

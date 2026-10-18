@@ -113,7 +113,8 @@ CUDA_GRAPH_BS="${CUDA_GRAPH_BS:-$MAX_RUNNING}"
 # state and KV. Not a speed lever: 0.82 / 0.85 / 0.90 measure the same. It is
 # a stability one: at 0.85 the host keeps ~8 GB, exactly DGX OS earlyoom's
 # threshold, and earlyoom SIGTERMs the scheduler during boot or a long
-# prefill (exit code -15, no traceback; journalctl -u earlyoom). The SGLang
+# prefill (exit code -15, no traceback; journalctl -u earlyoom;
+# scripts/host-tuning.sh lowers that threshold to 1 GiB). The SGLang
 # cookbook lost 15 of 48 GB10 configs at 0.85, none at 0.80. 0.85 ran fine
 # here under Docker. Above 0.85 add --max-total-tokens 1048576 to EXTRA_ARGS:
 # a bigger KV pool goes unused and the lost headroom cost 18% at 32 streams.

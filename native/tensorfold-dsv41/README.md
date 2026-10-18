@@ -102,7 +102,10 @@ before changing either, `--undo` restores the saved values) sets:
   `tensorfold` process and avoiding sshd, systemd, dockerd and the display
   stack, so a full node loses the engine, not ssh.
 
-These are system-wide: they stay for the SGLang profiles too (the earlyoom
+`../scripts/host-tuning.sh`, the one-Spark version for the SGLang profiles,
+sets the same sysctl values and an earlyoom that also prefers `tensorfold`,
+so preflight accepts either; only this one adds the no-swap slice the rank
+containers run in. These are system-wide: they stay for the SGLang profiles too (the earlyoom
 thresholds become 1 / 0.5 GiB instead of DGX OS's own), until `--undo`. The
 same settings are worth an A/B on one Spark with the 27B: its prefill varies
 from run to run (results/RESULTS.md), which compaction stalls could explain.
