@@ -249,19 +249,36 @@ the installer with another profile switches it.
 
 ### Host memory settings (optional, measured as an A/B)
 
-`./scripts/host-tuning.sh` (sudo; `--check` shows the live values, `--undo`
-puts back the ones from before) applies, on this one Spark, what the
-two-Spark DeepSeek recipe found against prefill stalls
-(`tensorfold-dsv41/runs/2026-10-18`: slow prompt chunks 46 of 248 with
-background compaction on, 2 with these): `vm.swappiness=10`,
-`vm.compaction_proactiveness=0`, `vm.extfrag_threshold=500`,
-`vm.min_free_kbytes=1048576`, `vm.watermark_scale_factor=50` in
-`/etc/sysctl.d/99-gb10.conf`; earlyoom at 1 GiB / 0.5 GiB available
-(SIGTERM / SIGKILL) preferring the server (`sglang::scheduler`, python,
-tensorfold, llama-server, vLLM) and avoiding sshd, systemd, dockerd and the
-display stack; and, once applied, `./serve.sh` runs SGLang in a user scope
-with `MemorySwapMax=0` (`NOSWAP`, auto; the boot prints a `memory` line;
-the service unit has that limit already). `perf.py`'s prefill rows now print
+```bash
+./scripts/host-tuning.sh --check   # the live values against these; changes nothing (no sudo)
+./scripts/host-tuning.sh           # apply (sudo); again gives the same result
+./scripts/host-tuning.sh --undo    # put back what was there before the first apply
+```
+
+Then restart the server. It applies, on this one Spark, what the two-Spark
+DeepSeek recipe found against prefill stalls (`tensorfold-dsv41/runs/2026-10-18`:
+slow prompt chunks 46 of 248 with background compaction on, 2 with these):
+
+| | Before (default) | After |
+|---|---|---|
+| `vm.swappiness` | 60 | 10 |
+| `vm.compaction_proactiveness` (background compaction) | 20 | 0 |
+| `vm.extfrag_threshold` | 500 | 500 |
+| `vm.min_free_kbytes` | set at boot | 1 GiB |
+| `vm.watermark_scale_factor` | 10 | 50 |
+| earlyoom | ~8 GB, kills the largest process | 1 / 0.5 GiB (SIGTERM / SIGKILL), the server first (`sglang::scheduler`, python, tensorfold, llama-server, vLLM), never sshd, systemd, dockerd or the display stack |
+| swap for SGLang | allowed | off |
+| `MEM_FRACTION`, 27B profiles | 0.80 | 0.85 |
+
+The sysctls go to `/etc/sysctl.d/99-gb10.conf`, the values from before to
+`/var/lib/gb10-host-tuning/`, earlyoom's file keeps its old self as
+`.pre-gb10`. Swap: once applied, `./serve.sh` runs SGLang in a user scope
+with `MemorySwapMax=0` (`NOSWAP`, `auto`), after checking the limit really
+takes on this machine (else it warns); the boot prints a `memory` line; the
+service unit has that limit already; `NOSWAP=0` runs as before. A failed
+apply rolls the machine back; `scripts/test-host-tuning.sh` runs the root
+part against stub `sysctl` / `systemctl` (16 checks); `scripts/00-check-host.sh`
+says whether it is applied. `perf.py`'s prefill rows now print
 the kernel's direct compaction and reclaim stalls and swap-outs during each
 prompt (`/proc/vmstat`, local server only). Measured on the 27B, three full
 runs without and three with (results/RESULTS.md, "Host tuning"): **no change

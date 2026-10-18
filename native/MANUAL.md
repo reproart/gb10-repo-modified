@@ -62,6 +62,7 @@ sudo mkdir -p /models && sudo chown $USER /models
 ./scripts/00-check-host.sh     # драйвер, CUDA, Python, память, earlyoom
 ./serve.sh install             # venv ~/spark/venv-sglang-0.5.21 со SGLang 0.5.21 и hf CLI (~10 ГБ)
 ./scripts/00-check-host.sh     # ещё раз: теперь проверит, что torch видит GPU
+./scripts/host-tuning.sh       # по желанию: память хоста, earlyoom, без swap (раздел 5); --undo откатывает
 ```
 
 `./serve.sh install` ставит пакеты строго по lock-файлу
@@ -497,11 +498,7 @@ YaRN строится из настроек RoPE самого чекпойнта
 ```bash
 cd tensorfold-dsv41
 cp config.local.sh.example config.local.sh   # адреса CX7, RDMA-устройства, ssh на вторую машину
-./download.sh              # ~400 ГБ, докачивается; sha256; копия на вторую машину
-# или вручную, двумя обычными hf download (команды — в tensorfold-dsv41/README.md, «Weights»):
-#   веса EXL3 → /models/LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw
-#   Engram    → /models/deepseek-ai/DeepSeek-V4.1-Flash-1017-engram
-# папки можно просто скопировать на вторую машину (cp -a, rsync); ./download.sh verify проверит
+./download.sh              # ~400 ГБ, докачивается; sha256; копия на вторую машину (или вручную, ниже)
 ./patch-template.py --worker   # шаблон чата по закреплённому коммиту + правка
 ./build.sh                 # образ движка, копия на вторую машину (~10 мин)
 ./host-tuning.sh           # один раз, sudo на обеих: без swap, sysctl памяти, earlyoom; --undo откатывает
@@ -510,6 +507,29 @@ cp config.local.sh.example config.local.sh   # адреса CX7, RDMA-устро
 ./stop.sh                  # остановить оба ранга, логи — в logs/
 MAX_RUNNING=2 ./serve.sh   # параметры — как у наших serve.sh (config.sh)
 ```
+
+**Веса вручную** — две обычные папки `hf download`, как у остальных моделей:
+их удобно качать по отдельности и переносить на вторую машину копированием.
+
+```bash
+HF=~/spark/venv/bin/hf
+# веса EXL3 2.9 бит (196 ГиБ, 43 шарда)
+$HF download LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw --revision afc7aa0aab98ee735c0f54e0a122019af1ac08f1 \
+  --exclude 'assets/*' --local-dir /models/LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw
+# Engram-таблицы (189 ГиБ: два шарда базового репозитория, индекс, config.json)
+$HF download deepseek-ai/DeepSeek-V4.1-Flash-1017 --revision 1bae0e1088993b9b82de08f59de5be5a34e42170 \
+  model-00047-of-00048.safetensors model-00048-of-00048.safetensors model.safetensors.index.json config.json \
+  --local-dir /models/deepseek-ai/DeepSeek-V4.1-Flash-1017-engram
+cd tensorfold-dsv41 && ./download.sh verify   # sha256 всех 53 файлов по списку автора (~385 ГиБ чтения)
+```
+
+На вторую машину — те же пути (`cp -a`, `rsync`, диск), там тоже
+`./download.sh verify`. Шарды Engram весят ~101 ГБ: файлы больше 50 ГБ хаб
+отдаёт только через `hf_xet`, которому на Spark может не хватить памяти —
+качайте, пока модели не запущены. Если `hf download` откажется,
+`./download.sh engram` скачает те же файлы в ту же папку через `curl` с
+докачкой. Шаблон чата `./patch-template.py --worker` кладёт в папку весов;
+`preflight.sh` проверяет его sha256.
 
 Оба ранга по умолчанию закреплены на быстрых ядрах Cortex-X925
 (`CPUSET=5-9,15-19`, как у нашего `serve.sh`; `preflight.sh` сверяет их с
@@ -537,18 +557,9 @@ SGLang-профилей, пока не сделать `--undo`. У earlyoom по
   (`sudo systemctl isolate multi-user.target`, обратно —
   `graphical.target`).
 - Одна модель за раз: перед другой моделью остановите службу.
-- **Настройки памяти хоста** (необязательно, проверяется A/B):
-  `./scripts/host-tuning.sh` (sudo; `--check` — показать, `--undo` —
-  вернуть как было). Убирает фоновое уплотнение памяти и снижает swappiness
-  (у рецепта DeepSeek медленных кусков префилла стало 2 из 248 вместо 46;
-  у нашего 27B префилл не изменился — SGLang берёт память заранее, и ядро
-  не останавливалось и без настройки),
-  ставит earlyoom на 1 ГиБ с приоритетом убить сервер, а не ssh, и
-  запускает SGLang без swap (строка `memory` при старте). Порог earlyoom
-  ~8 ГБ при 0.85 после этого не действует, и профили 27B сами берут 0.85
-  вместо 0.80: KV ~1.15M токенов, четыре сессии по 262K вместо трёх. Строки префилла в `perf.py`
-  теперь показывают, сколько раз ядро останавливало поток на уплотнение и
-  освобождение памяти.
+- **Настройки памяти хоста** (`./scripts/host-tuning.sh`): earlyoom на
+  1 ГиБ вместо ~8 ГБ, сервер без swap, и профили 27B сами берут 0.85.
+  Подробно — ниже, «Настройки памяти хоста».
 
 **Параллельность.** `MAX_RUNNING` выставляйте по реальной нагрузке, а не «с
 запасом»: каждый слот заранее занимает память под состояние GDN (у 27B это
@@ -584,6 +595,67 @@ sha256. После переустановки SGLang — применить за
 **Сравнение вариантов.** Разброс между перезапусками ~8% на одном потоке;
 выигрыш меньше этого перепроверяйте на новом старте. Температура 0 тоже не
 даёт побитово одинаковых ответов: ±2 задачи HumanEval — это шум.
+
+### Настройки памяти хоста
+
+Необязательно, но рекомендуется. Один раз на машине:
+
+```bash
+./scripts/host-tuning.sh --check   # текущие значения против наших, ничего не меняет (без sudo)
+./scripts/host-tuning.sh           # применить (sudo); повторный запуск даёт тот же результат
+./scripts/host-tuning.sh --undo    # вернуть то, что было до первого запуска
+```
+
+После применения перезапустите сервер (Ctrl-C и `./serve.sh` или
+`sudo systemctl restart gb10-sglang`).
+
+Что меняется:
+
+| Что | Было (по умолчанию) | Станет |
+|---|---|---|
+| `vm.swappiness` | 60 | 10 |
+| `vm.compaction_proactiveness` (фоновое уплотнение памяти) | 20 | 0 |
+| `vm.extfrag_threshold` | 500 | 500 |
+| `vm.min_free_kbytes` | задаётся при загрузке | 1 ГиБ |
+| `vm.watermark_scale_factor` | 10 | 50 |
+| earlyoom | ~8 ГБ, убивает самый большой процесс | 1 / 0.5 ГиБ (SIGTERM / SIGKILL), сначала сервер (`sglang::scheduler`, python, tensorfold, llama-server, vLLM), никогда sshd, systemd, dockerd и графику |
+| swap для SGLang | разрешён | выключен |
+| `MEM_FRACTION` у профилей 27B | 0.80 | 0.85 (KV ~1.15M токенов, четыре сессии по 262K вместо трёх) |
+
+Значения sysctl записываются в `/etc/sysctl.d/99-gb10.conf`, прежние —
+в `/var/lib/gb10-host-tuning/`, настройки earlyoom — в
+`/etc/default/earlyoom` (старый файл сохраняется как `.pre-gb10`).
+
+**Как выключается swap.** При ручном запуске `./serve.sh` поднимает SGLang в
+пользовательском scope с `MemorySwapMax=0` (параметр `NOSWAP`, по умолчанию
+`auto`). Это включается само, когда тюнинг применён. Перед этим
+проверяется, что ограничение на этой машине действительно работает, иначе
+печатается предупреждение. Что вышло, видно в строке `memory` при старте.
+Служба `gb10-sglang` (`scripts/install-service.sh`) и так работает без swap.
+`NOSWAP=0` запускает как раньше.
+
+**Поведение и проверки.**
+
+- Если применение сорвалось на полпути, машина откатывается в исходное
+  состояние.
+- `scripts/test-host-tuning.sh` прогоняет скрипт на заглушках `sysctl` и
+  `systemctl`, ничего не меняя в системе (16 проверок).
+- `./scripts/00-check-host.sh` показывает, применён ли тюнинг.
+- Строки префилла в `bench/perf.py` показывают, сколько раз ядро
+  останавливало поток на уплотнение и освобождение памяти и сколько ушло в
+  swap (`vm: ...`).
+
+**Что это даёт на деле** (A/B на 27B, по три полных прогона без и с,
+`results/RESULTS.md`, «Host tuning»): префилл не изменился — SGLang берёт
+всю память при старте, и ядро не останавливалось и без настройки. Выигрыш —
+в устойчивости: earlyoom больше не убивает сервер при 0.85, сервер не
+уходит в swap, а при нехватке памяти earlyoom снимает сервер, а не ssh. У
+рецепта DeepSeek на двух Spark (Engram-таблицы читаются через страничный
+кэш) медленных кусков префилла стало 2 из 248 вместо 46; для него есть свой
+`tensorfold-dsv41/host-tuning.sh` с теми же значениями.
+
+Настройки общие для всей машины: действуют для всех профилей, vLLM и
+llama.cpp, пока не сделать `--undo`.
 
 ---
 
