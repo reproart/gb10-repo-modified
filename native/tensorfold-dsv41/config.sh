@@ -76,6 +76,14 @@ VISION="${VISION:-1}"                      # 1: accept image input (--vision; no
 # The no-swap slice from ./host-tuning.sh; empty = Docker's default (swap allowed).
 CGROUP_PARENT="${CGROUP_PARENT-tensorfold.slice}"
 RESTART_POLICY="${RESTART_POLICY:-no}"     # docker's; see docs/OPERATIONS.md before changing it
+# CPU pinning for both rank containers (docker --cpuset-cpus), as ../serve.sh
+# pins SGLang: GB10's ten Cortex-X925 cores (3.9 GHz); 0-4 and 10-14 are the
+# Cortex-A725 (2.8 GHz). The recipe left open whether its 10-20% slow runs
+# (1 of 3 code replies at 69-71 tok/s instead of 85, same text, same steps)
+# come from the engine's main thread landing on a slow core: this rules it
+# out, unmeasured. ./preflight.sh checks the list against cpufreq on both
+# nodes. Empty = no pinning (the recipe as measured).
+CPUSET="${CPUSET-5-9,15-19}"
 PREFLIGHT="${PREFLIGHT:-1}"                # 0: ./serve.sh skips ./preflight.sh
 
 # Anything else: `tensorfold serve` flags, appended last; extra environment

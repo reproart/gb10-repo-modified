@@ -80,6 +80,7 @@ Thinking is off by default; per request `"reasoning_effort": "high"`
 | `HOST`, `PORT`, `API_KEY_FILE` | 0.0.0.0, 8888, none | as the other servers here; the key file has one key per line (the tests send none) |
 | `SERVED_MODEL_NAME`, `SERVED_ALIAS` | `DeepSeek-V4.1-Flash-1017`, none | |
 | `VISION` | 1 | image input on (not measured) |
+| `CPUSET` | `5-9,15-19` | both ranks on the ten Cortex-X925 cores (`docker --cpuset-cpus`), as `../serve.sh` pins SGLang; `./preflight.sh` checks them against cpufreq on both nodes; empty = no pinning, as the recipe measured |
 | `CGROUP_PARENT`, `RESTART_POLICY` | `tensorfold.slice`, no | the no-swap slice from `host-tuning.sh`; docker restarts (docs/OPERATIONS.md first) |
 | `PREFLIGHT` | 1 | 0 skips `./preflight.sh` |
 | `EXTRA_ARGS`, `EXTRA_ENV` | | more `tensorfold serve` flags; more `NAME=value` for both containers, replacing one above of the same name (`EXTRA_ENV='TF_DS_TIMING=1'`) |
@@ -125,6 +126,15 @@ Not measured yet.
 | `runs/` | every log and result behind the numbers; `weights.sha256` for `download.sh` |
 | `raw/` | the scripts as they ran on the measured pair |
 | `AGENTS.md` | the steps for an AI agent setting this up |
+
+One change from the recipe beyond the names: both ranks are pinned to the
+fast cores (`CPUSET`). The recipe's open question (docs/KNOWN-LIMITS.md) is
+whether its 10-20% slow runs, with the same text and the same number of
+steps, come from the engine's main thread moving to a Cortex-A725 core
+(2.8 GHz against 3.9). Pinning rules that out; whether it was the cause
+needs an A/B: `CPUSET= ./serve.sh` against the default, three code replies
+each (`python3 ../bench/perf.py --only decode`, five runs: the slow state
+shows as a spread).
 
 Traps from the recipe ([docs/OPERATIONS.md](docs/OPERATIONS.md)): never
 `docker exec` into a rank while it serves (the exec counts against its
