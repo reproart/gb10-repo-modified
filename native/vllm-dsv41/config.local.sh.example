@@ -1,0 +1,14 @@
+# shellcheck shell=bash disable=SC2034
+# Values of your pair that differ from ../tensorfold-dsv41/config.local.sh (read too, after this
+# file), or all of them if you only run this engine. Copy and edit:
+#   cp config.local.sh.example config.local.sh
+# Keep the NAME="${NAME:-value}" form, so the shell still wins.
+
+# HEAD_IP="${HEAD_IP:-10.100.80.1}"
+# WORKER_IP="${WORKER_IP:-10.100.80.2}"
+# WORKER_SSH="${WORKER_SSH:-10.100.80.2}"
+# The CX7 netdev that holds HEAD_IP / WORKER_IP; its RoCE device and GID are found from it.
+# FAB_IF="${FAB_IF:-enp1s0f1np1}"
+
+# Your measured round-cost table (./depth-sweep.py prints it).
+# ROUND_MS="${ROUND_MS:-31.9,35.2,38.6,42.6,45.3,48.1,51.0}"

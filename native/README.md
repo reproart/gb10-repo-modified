@@ -755,6 +755,18 @@ compaction off, earlyoom set to stop the engine first) changes the host's
 memory settings system-wide, also for the SGLang profiles, until `--undo`.
 Unmeasured here.
 
+## The same DeepSeek on tuned vLLM: `vllm-dsv41/`
+
+[`vllm-dsv41/`](vllm-dsv41/README.md) serves the same model from the same two
+weight folders on sudoingX's tuned vLLM with styles01's 1017 overlay
+(styles01's GHCR image, pinned by digest), TP=2 across both Sparks, on :8888
+under the same model id as `tensorfold-dsv41/`: `pull.sh`, `repack.sh` (the
+serving tree as hard links, built without touching the source folders, unlike
+the original script), `serve.sh`, and `depth-sweep.py` for the DSpark
+round-cost table its adaptive depth policy needs. Their numbers: code tie with
+TensorFold, prose and structured 10-15% lower, 262K context, 2 requests, images
+checked. Unmeasured here.
+
 ## GGUF models on llama.cpp: `llamacpp/`
 
 GLM-5.3-Flash (320B) in GSQ-RCO GGUFs needs llama.cpp with PR 27773, not

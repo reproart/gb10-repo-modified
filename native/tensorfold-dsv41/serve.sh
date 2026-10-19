@@ -25,10 +25,12 @@ if pgrep -f "sglang.launch_server" >/dev/null 2>&1; then
   echo "an SGLang server is running: stop it first (sudo systemctl stop gb10-sglang, or Ctrl-C it)" >&2
   exit 1
 fi
-if docker ps --format '{{.Names}}' | grep -qx gb10-vllm-b12x; then
-  echo "the vllm-b12x container runs: stop it first (docker stop gb10-vllm-b12x)" >&2
-  exit 1
-fi
+for c in gb10-vllm-b12x gb10-vllm-dsv41; do
+  if docker ps --format '{{.Names}}' | grep -qx "$c"; then
+    echo "the $c container runs: stop it first (docker stop $c, or ../vllm-dsv41/stop.sh)" >&2
+    exit 1
+  fi
+done
 if [ "$PREFLIGHT" = 1 ]; then
   "$ROOT/preflight.sh" || exit 1
 fi

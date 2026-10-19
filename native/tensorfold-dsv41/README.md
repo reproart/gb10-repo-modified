@@ -31,6 +31,10 @@ single-stream speed, holding both machines and at most 4 requests. Its
 output quality is not measured by the recipe (docs/KNOWN-LIMITS.md):
 HumanEval and `bench/answers.py` here would be the first numbers.
 
+Another engine for the same model and folders: [`../vllm-dsv41/`](../vllm-dsv41/README.md)
+(sudoingX's tuned vLLM with styles01's 1017 overlay): code the same, prose and
+structured 10-15% lower, 262K and 2 requests, images checked; for an A/B.
+
 ## What it takes
 
 - **Both Sparks, cabled** (one QSFP cable between the CX7 ports, NVIDIA's
