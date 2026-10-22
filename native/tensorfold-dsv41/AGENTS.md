@@ -23,11 +23,14 @@ Then give the user the three client settings from [docs/CONNECT.md](docs/CONNECT
 - **The API listens on the network** (`HOST=0.0.0.0`, as the project's other servers), with no key. On a shared network suggest `API_KEY_FILE` or `HOST=127.0.0.1` ([docs/CONNECT.md](docs/CONNECT.md)).
 - **If the server stops with exit code 75**, the lane broke on a device fault. Run `./stop.sh && ./serve.sh`.
 - **If NCCL hangs at start after a cable or reboot event**, the RoCE GID index moved. Set `GID_INDEX=-1` in `config.local.sh` and restart ([docs/NETWORK.md](docs/NETWORK.md)).
+- **The CX7 ports need MTU 9000.** The engine's RDMA gather sets `IBV_MTU_4096`, and at the default 1500 the first start dies ~11 min in with `transport retry counter exceeded` while `ib_write_bw` still looks healthy. `preflight.sh` checks the MTU and the GID (it must be the IPv4 RoCE v2 entry) on both nodes ([docs/DEPLOY.md](docs/DEPLOY.md) steps 2-3).
 
 ## Where to look
 
 | Question | File |
 |---|---|
+| A fresh pair, from two bare Sparks | [docs/DEPLOY.md](docs/DEPLOY.md) |
+| After a reboot | [docs/START-AFTER-REBOOT.md](docs/START-AFTER-REBOOT.md) |
 | A start fails | `logs/` (saved by `./stop.sh`), `docker logs tfv41-r0`, [docs/OPERATIONS.md](docs/OPERATIONS.md) |
 | How to call the API | [docs/CONNECT.md](docs/CONNECT.md) |
 | Run the tests | [tests/README.md](tests/README.md) |

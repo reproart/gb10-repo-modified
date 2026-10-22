@@ -25,6 +25,18 @@ ip -br addr
 
 RoCE v2 over IPv4 uses one entry of the port's GID table. On the measured pair it was index 3 (`GID_INDEX=3`).
 
+**A pair that has just been given its IPv4 addresses is not that pair.** The table then has six entries per device and index 3 is the *link-local* RoCE v2 entry. Take the entry whose row has an IPv4 address and `v2` — on this pair that is index **5**:
+
+```text
+rocep1s0f1 1 0..3 fe80::…                      v1/v2  (link-local)
+rocep1s0f1 1 4    0000:…:ffff:0a64:5001 10.100.80.1 v1
+rocep1s0f1 1 5    0000:…:ffff:0a64:5001 10.100.80.1 v2   <-- this one
+```
+
+**MTU.** The engine's RDMA gather sets `rtr.path_mtu = IBV_MTU_4096` in `src/tensorfold/cuda/rdma_gather.cu`, so both CX7 interfaces must be at MTU 9000 (the port's default 1500 makes every gather fail with `transport retry counter exceeded`, ~11 min into the first start, while `ib_write_bw` still reports 111 Gb/s). Check end to end with `ping -M do -s 8972 10.100.80.2`. Both settings are in [DEPLOY.md](DEPLOY.md) steps 1-3.
+
+`preflight.sh` now checks both on each node and both devices: `OK <dev> (<netdev>) MTU 9000` and `OK <dev> GID <n> 0000:…:ffff:… (RoCE v2)`. A wrong or link-local GID (`FAIL … is link-local (RoCE v2)`) and a port under 4096 (`FAIL … MTU 1500`) stop the start in five seconds instead of eleven minutes.
+
 **Trap:** after a link flap (a cable reseat, or one node rebooting), the GID tables on the two nodes can shift, and a fixed index then points at different entries on each side. NCCL init then hangs or fails. If that happens:
 
 1. Look at the table on both nodes:

@@ -1,23 +1,18 @@
 #!/usr/bin/env bash
 # Checks before a start, on both nodes. It refuses (exit 1) on the faults that otherwise show as a hang or a crash
-# minutes into the start: missing files, different images, a bad RoCE GID, no memory, no disk, a busy port.
+# minutes into the start: missing files, different images, a bad RoCE GID, a port MTU the engine's RDMA gather cannot
+# use, no memory, no disk, a busy port.
 #   ./preflight.sh          (./serve.sh runs it first; PREFLIGHT=0 ./serve.sh skips it)
 set -uo pipefail
 # shellcheck source=config.sh
 . "$(dirname "$0")/config.sh"
 
 bad=0
-running=0
 TEMPLATE_SHA256=defbdfc2a28ea921d9ad4c6be7244fa82c53f6d552507527a944ad4cbdd24a6d   # patch-template.py's OUT_SHA256
 wrun() { ssh -o BatchMode=yes -o ConnectTimeout=10 "$WORKER_SSH" "$@"; }   # (stdin open: wssh closes it)
 ok() { echo "[ ok ] $*"; }
 no() { echo "[FAIL] $*"; bad=1; }
 
-# Run on the head: on the worker the ssh check below fails with no hint why.
-if ip -o -4 addr show 2>/dev/null | grep -q " $WORKER_IP/"; then
-  echo "[FAIL] this machine is the worker ($WORKER_IP): run ./preflight.sh and ./serve.sh on the head ($HEAD_IP)"
-  exit 1
-fi
 wssh true 2>/dev/null && ok "ssh to the worker ($WORKER_SSH)" || { no "ssh to the worker ($WORKER_SSH) failed"; exit 1; }
 ping -c 2 -W 2 "$WORKER_IP" >/dev/null 2>&1 && ok "the worker answers on the CX7 link ($WORKER_IP)" \
   || no "no answer from $WORKER_IP: check the cable and docs/NETWORK.md"
@@ -56,20 +51,30 @@ for f in model-00047-of-00048.safetensors model-00048-of-00048.safetensors model
 done
 docker image inspect "$IMAGE" --format '{{.Id}}' 2>/dev/null | sed 's/^/IMAGE /' || echo "FAIL no image $IMAGE"
 for dev in \$(echo "$RDMA_DEVICES" | tr ',' ' '); do
+  # The engine's gather sets rtr.path_mtu = IBV_MTU_4096 (cuda/rdma_gather.cu), so a port at the default 1500 drops
+  # every packet of a gather: the start gets ~11 min in and then says "transport retry counter exceeded".
+  for ifc in \$(ls /sys/class/infiniband/\$dev/device/net 2>/dev/null); do
+    mtu=\$(cat /sys/class/net/\$ifc/mtu 2>/dev/null)
+    [ -n "\$mtu" ] || continue
+    [ "\$mtu" -ge 4096 ] && echo "OK \$dev (\$ifc) MTU \$mtu" \
+      || echo "FAIL \$dev (\$ifc) MTU \$mtu: the engine sets IBV_MTU_4096, so the port needs 4096 or more (9000 is what the pair was measured at): docs/DEPLOY.md step 2"
+  done
   if [ "$GID_INDEX" = "-1" ]; then echo "OK gid auto (\$dev)"; continue; fi
   g=\$(cat /sys/class/infiniband/\$dev/ports/1/gids/$GID_INDEX 2>/dev/null)
   t=\$(cat /sys/class/infiniband/\$dev/ports/1/gid_attrs/types/$GID_INDEX 2>/dev/null)
-  case "\$g" in ""|0000:0000:0000:0000:0000:0000:0000:0000) echo "FAIL \$dev GID $GID_INDEX is empty: see docs/NETWORK.md";;
-    *) [ "\$t" = "RoCE v2" ] && echo "OK \$dev GID $GID_INDEX \$g (\$t)" || echo "FAIL \$dev GID $GID_INDEX is \$t, not RoCE v2";; esac
+  case "\$g" in
+    ""|0000:0000:0000:0000:0000:0000:0000:0000) echo "FAIL \$dev GID $GID_INDEX is empty: see docs/NETWORK.md";;
+    # After a pair gets its IPv4 addresses the table grows and the old index becomes a link-local entry: the type is
+    # still "RoCE v2" and the GID is not empty, so only the address family tells the two apart.
+    fe80:*) case "\$dev" in
+              roce*) echo "FAIL \$dev GID $GID_INDEX is link-local (\$t): the IPv4 RoCE v2 entry is a later index: run show_gids and set GID_INDEX (docs/NETWORK.md)";;
+              *) [ "\$t" = "RoCE v2" ] && echo "OK \$dev GID $GID_INDEX \$g (\$t)" || echo "FAIL \$dev GID $GID_INDEX is \$t, not RoCE v2";;
+            esac;;
+    *) [ "\$t" = "RoCE v2" ] && echo "OK \$dev GID $GID_INDEX \$g (\$t)" || echo "FAIL \$dev GID $GID_INDEX is \$t, not RoCE v2";;
+  esac
 done
-# A running rank holds the memory (and the head's port) itself: one FAIL for it, not three.
-if docker ps --format '{{.Names}}' | grep -q '^tfv41-r'; then
-  echo "FAIL a tfv41 rank already runs: ./stop.sh first (free memory not checked while it runs)"
-  echo "RUNNING"
-else
-  avail=\$(awk '/MemAvailable/ {print int(\$2/1048576)}' /proc/meminfo); [ "\$avail" -ge 100 ] \
-    && echo "OK \$avail GiB memory available" || echo "FAIL only \$avail GiB memory available (need ~100): stop other GPU programs"
-fi
+avail=\$(awk '/MemAvailable/ {print int(\$2/1048576)}' /proc/meminfo); [ "\$avail" -ge 100 ] \
+  && echo "OK \$avail GiB memory available" || echo "FAIL only \$avail GiB memory available (need ~100): stop other GPU programs"
 mkdir -p "$CACHE_DIR"; free=\$(df -BG --output=avail "$CACHE_DIR" | tail -1 | tr -dc 0-9)
 [ -d "$CACHE_DIR/tf-ds-rank" ] && need=5 || need=110
 [ "\$free" -ge "\$need" ] && echo "OK \$free GiB free for the cache" || echo "FAIL \$free GiB free in $CACHE_DIR (need \$need)"
@@ -85,6 +90,7 @@ done
 systemctl is-active -q earlyoom && grep -qE -- "--prefer [^ ]*tensorfold" /etc/default/earlyoom 2>/dev/null \
   && echo "OK earlyoom stops the engine before the node runs out of memory" \
   || echo "FAIL earlyoom is not running with the settings of ./host-tuning.sh: run it again"
+docker ps --format '{{.Names}}' | grep -q '^tfv41-r' && echo "FAIL a tfv41 rank already runs: ./stop.sh first" || true
 EOF
 )
   while IFS= read -r line; do
@@ -92,7 +98,6 @@ EOF
       FAIL*) no "$who: ${line#FAIL }" ;;
       OK*) ok "$who: ${line#OK }" ;;
       IMAGE*) echo "${line#IMAGE }" > "/tmp/tfv41-image-$who" ;;
-      RUNNING) [ "$who" = head ] && running=1 ;;
     esac
   done <<< "$out"
 }
@@ -104,6 +109,5 @@ else
   no "the nodes hold different images (or none) for $IMAGE: run ./build.sh"
 fi
 rm -f /tmp/tfv41-image-head /tmp/tfv41-image-worker
-if [ "$running" = 1 ]; then :   # the rank holds it: already reported
-elif ss -ltn | grep -q ":$PORT "; then no "port $PORT is in use on the head"; else ok "port $PORT is free"; fi
+ss -ltn | grep -q ":$PORT " && no "port $PORT is in use on the head" || ok "port $PORT is free"
 [ "$bad" = 0 ] && echo "preflight: all checks passed" || { echo "preflight: fix the FAIL lines, then start again"; exit 1; }

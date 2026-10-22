@@ -31,10 +31,6 @@ single-stream speed, holding both machines and at most 4 requests. Its
 output quality is not measured by the recipe (docs/KNOWN-LIMITS.md):
 HumanEval and `bench/answers.py` here would be the first numbers.
 
-Another engine for the same model and folders: [`../vllm-dsv41/`](../vllm-dsv41/README.md)
-(sudoingX's tuned vLLM with styles01's 1017 overlay): code the same, prose and
-structured 10-15% lower, 262K and 2 requests, images checked; for an A/B.
-
 ## What it takes
 
 - **Both Sparks, cabled** (one QSFP cable between the CX7 ports, NVIDIA's
@@ -92,6 +88,10 @@ cp config.local.sh.example config.local.sh   # your CX7 addresses, RDMA devices,
 ./stop.sh              # both ranks; their logs go to logs/
 ```
 
+Step by step, with what each check must print and the failures that cost time on
+this pair: [docs/DEPLOY.md](docs/DEPLOY.md). After a reboot:
+[docs/START-AFTER-REBOOT.md](docs/START-AFTER-REBOOT.md).
+
 Then, as for the other servers (same port 8888, so `../bench/` works):
 `python3 ../bench/perf.py --levels 1 2 4`, model `DeepSeek-V4.1-Flash-1017`.
 Thinking is off by default; per request `"reasoning_effort": "high"`
@@ -102,7 +102,7 @@ Thinking is off by default; per request `"reasoning_effort": "high"`
 | Variable | Default | |
 |---|---|---|
 | `HEAD_IP`, `WORKER_IP`, `WORKER_SSH` | 10.100.80.1, .2, = `WORKER_IP` | the CX7 link; set in `config.local.sh` |
-| `RDMA_DEVICES`, `NCCL_SOCKET_IFNAME`, `GID_INDEX` | both CX7 RoCE devices, `enp1s0f1np1`, 3 | from `ibdev2netdev`, `ip -br addr`, `show_gids`; `GID_INDEX=-1` after a link flap |
+| `RDMA_DEVICES`, `NCCL_SOCKET_IFNAME`, `GID_INDEX` | both CX7 RoCE devices, `enp1s0f1np1`, 3 | from `ibdev2netdev`, `ip -br addr`, `show_gids`; 5 on a pair that has just been given its IPv4 addresses, `-1` after a link flap ([docs/NETWORK.md](docs/NETWORK.md)) |
 | `MODEL_DIR`, `ENGRAM_DIR` | `/models/LibertAIDAI/DeepSeek-V4.1-Flash-1017-EXL3-2.9bpw`, `/models/deepseek-ai/DeepSeek-V4.1-Flash-1017-engram` | the two `hf download` folders, the same paths on both nodes (`MODEL_VIEW` for the recipe's one-folder layout) |
 | `CACHE_DIR` | `~/.cache/gb10-tensorfold-dsv41` | rank weight caches, spilled prompts, kernels (~100 GiB a node) |
 | `TF_COMMIT`, `IMAGE` | `92aa710b533d`, `tensorfold-dsv41:<commit>` | the engine build (`./build.sh`) |
@@ -153,11 +153,11 @@ Not measured yet.
 |---|---|
 | `config.sh`, `config.local.sh.example` | settings and the helpers the scripts share |
 | `serve.sh`, `stop.sh`, `status.sh`, `verify.sh` | run it |
-| `preflight.sh` | the checks `serve.sh` runs on both nodes: files, same image, RoCE GID, memory, disk, host settings, port |
+| `preflight.sh` | the checks `serve.sh` runs on both nodes: files, same image, the port MTU and the RoCE GID the engine needs, memory, disk, host settings, port |
 | `download.sh`, `patch-template.py`, `build.sh`, `docker/Dockerfile` | weights, chat template, engine image |
 | `host-tuning.sh`, `deploy-gate.sh` | host memory settings; a new engine image with automatic rollback |
 | `tests/` | the 32-test agent suite, the grammar check, prompt-encoding tests, a benchmark, the Hermes gate ([tests/README.md](tests/README.md)) |
-| `docs/` | the recipe page, what was changed in the engine and why, benchmarks, network, operations, known limits |
+| `docs/` | the recipe page, what was changed in the engine and why, benchmarks, network, operations, known limits, and the deploy and reboot guides (`DEPLOY.md`, `START-AFTER-REBOOT.md`) |
 | `runs/` | every log and result behind the numbers; `weights.sha256` for `download.sh` |
 | `raw/` | the scripts as they ran on the measured pair |
 | `AGENTS.md` | the steps for an AI agent setting this up |
