@@ -958,9 +958,12 @@ Every run records what it measured:
 - **Saved output.** The full output is saved under `results/runs/`
   (`GB10_RUN_DIR`; set it empty to skip saving).
 - **GPU.** When the server is local, peak temperature, lowest SM clock and
-  throttle reasons come from `nvidia-smi` per section or row
-  (`GB10_GPU_WATCH=0|1`). A row is flagged when the GPU throttled or came
-  within 2 °C of the 80 °C suspend threshold.
+  the margin to the GPU's own thermal limit (`temperature.gpu.tlimit`,
+  ~95 °C on GB10) come from `nvidia-smi` per section or row
+  (`GB10_GPU_WATCH=0|1`), and on newer drivers the share of the time held at
+  the power cap. A row is flagged within 5 °C of the limit or on a thermal
+  slowdown; the power cap alone is how GB10 runs any heavy load, so it is
+  shown, not flagged.
 - **Engine restarts.** A restart mid-run, detected from
   `process_start_time_seconds`, is flagged too, and such rows are left out of
   the peak.

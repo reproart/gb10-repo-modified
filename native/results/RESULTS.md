@@ -196,8 +196,30 @@ At 96% GPU utilisation, sustained:
 | Throttle reasons active | `0x0` — none |
 | ACPI thermal zones | 59–70 °C |
 
-Prefill, not decode, is the thermally interesting workload: 74 °C leaves 6 °C of
-margin to the 80 °C suspend threshold, against 21 °C on decode-heavy work.
+Prefill, not decode, is the thermally interesting workload: 15 °C hotter than
+decode.
+
+**The limit is ~95 °C, not 80 °C (corrected 2026-10-22).** Earlier versions of
+this file called 80 °C a "suspend threshold"; no run here suspended at it, and
+the 27B ended 101K prompts at 80-87 °C many times. What GB10 itself reports
+(`nvidia-smi -q -d TEMPERATURE,POWER,PERFORMANCE`, both Sparks of the
+DeepSeek pair):
+
+| | |
+|---|---|
+| `GPU T.Limit Temp` | 50 °C at 45 °C current: the margin left to the GPU's own slowdown limit, so ~95 °C |
+| Shutdown / slowdown temperature, power limits | N/A (set by the SoC firmware, not settable) |
+| SW thermal / HW thermal slowdown counters | 0 µs since boot |
+| SW power cap counter | ~82 min since boot on each node, after the DeepSeek prefill runs |
+| SM clock under prefill | 2350-2410 MHz (max 3003, application 2418) |
+
+So under load the clocks are held by the **power budget**, not by heat, and
+82-87 °C on a long prefill is inside the envelope. perf.py and longctx.py now
+report the margin to T.Limit (`temperature.gpu.tlimit`) and flag within 5 °C
+of it, and on drivers with `clocks_event_reasons_counters` the share of the
+section spent at the power cap or in thermal slowdown. A box that does
+suspend or reset under load points at its airflow or power supply, not at a
+GPU threshold.
 
 Reported ~32 W board power under load is implausibly low for GB10 — that rail
 appears to cover only part of the SoC. Don't use it for power budgeting.
@@ -335,8 +357,8 @@ Two things to re-check:
   (1,300–2,000 tok/s).
 - **83 °C at 101K prefill**, with no throttle reported and no suspend,
   against 74 °C sustained prefill in the Docker-era measurements (at 121K).
-  Room temperature, the box, or the 80 °C suspend figure under "Thermals":
-  one run cannot tell which, but the 80 °C figure was not a hard limit here.
+  Room temperature or the box; the 80 °C "suspend" figure this file used
+  then is not a limit (T.Limit is ~95 °C, "Thermals").
 
 ### Draft 16 / cap 16 on the native build
 
@@ -694,7 +716,8 @@ earlyoom (1 GiB) and no kill; single-stream decode at 0.85 here is 88.3,
 the same as 0.80 on the other Spark, so the earlier 93.8 at 0.85 was that
 box's numerics, not the memory split (as concluded above). The GPU reached
 85-86 °C at the end of the 101K prompt in each run without a suspend: the
-80 °C "threshold" perf.py flags is lower than this machine's.
+80 °C "threshold" perf.py flagged then is not a limit (T.Limit is ~95 °C,
+"Thermals").
 
 **The A/B on one machine** (same day, gx10-1cc3, 0.85, the same server
 config): three full runs after `--undo` and a restart, then the tuning, a
@@ -814,7 +837,7 @@ The same speed, as expected: YaRN changes the RoPE frequencies of the 16
 attention layers, not the work, and a 1M context limit only caps request
 length. The 4-stream row (171) is the dip seen at draft 11 and 12 on the
 nvidia checkpoint; one run, not chased. The 101K prefill ended at 80 °C,
-the suspend threshold, without a suspend. What YaRN x4 costs in answers at
+15 °C under the GPU's T.Limit ("Thermals"). What YaRN x4 costs in answers at
 ordinary lengths is not measured (HumanEval against the RadixArk profile).
 
 ### Decode profile of the 27B (2026-09-30)
@@ -902,7 +925,7 @@ short ones (67 vs 71 at one stream, "draft 11 vs 15" below). Now the draft
 step costs half, and 15 is +22% single-stream, even or ahead at 1-8
 streams and -14% at 12. The base profile moved to 15; 11 stays the choice
 when 10-12 requests at once are the norm. The 101K prefill reached 79 °C,
-1 °C under the suspend threshold.
+~16 °C under the GPU's T.Limit ("Thermals").
 
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
