@@ -32,10 +32,10 @@ another stream prefills, a resident stream only decodes a few hundred tokens.
 The "gen" column shows what was actually generated (a gateway may drop
 ignore_eos).
 
-This is the thermally heaviest workload in the suite (sustained prefill
-measured 74 °C against an 80 °C suspend threshold): with a local nvidia-smi
-every row reports its peak temperature and lowest SM clock, and throttling is
-flagged. The output is saved under results/runs/ like perf.py's.
+This is the thermally heaviest workload in the suite (101K prompts end at
+80-87 °C, against a T.Limit near 95 °C on GB10): with a local nvidia-smi
+every row reports its peak temperature, lowest SM clock and margin to the
+GPU's thermal limit, and thermal slowdown is flagged. The output is saved under results/runs/ like perf.py's.
 """
 import argparse
 import os

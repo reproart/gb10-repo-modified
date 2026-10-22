@@ -428,12 +428,41 @@ def save_output(script):
 # Throttle bits that mean the GPU was slowed: SW power cap, HW slowdown,
 # SW / HW thermal slowdown, HW power brake. Idle (0x1) and app-clock (0x2)
 # settings are normal between requests.
-_THROTTLE_MASK = 0x4 | 0x8 | 0x40 | 0x80 | 0x100
-# RESULTS.md: the box suspends at 80 °C; sustained prefill measured 74 °C.
-GPU_TEMP_WARN = 78
-_GPU_QUERIES = ("temperature.gpu,clocks.sm,clocks_event_reasons.active",
+# Clock-event bits that mean "held below its clock": SW power cap, HW slowdown,
+# SW / HW thermal slowdown, HW power brake.
+_THROTTLE_MASK = 0x4 | 0x8 | 0x20 | 0x40 | 0x80
+_REASON_NAMES = ((0x4, "SW power cap"), (0x8, "HW slowdown"), (0x20, "SW thermal"),
+                 (0x40, "HW thermal"), (0x80, "HW power brake"))
+# The GPU's own thermal limit, as nvidia-smi reports it: temperature.gpu.tlimit
+# is the margin (°C) left to the T.Limit where it starts slowing itself down
+# (GB10: 50 °C of margin at 45 °C, so ~95 °C). Warn when the margin gets this
+# small. (Earlier versions flagged 80 °C as a "suspend threshold": a Spark ran
+# prefill at 84-87 °C with zero thermal-slowdown time on its counters.)
+GPU_TLIMIT_WARN = 5
+_GPU_QUERIES = ("temperature.gpu,clocks.sm,clocks_event_reasons.active,temperature.gpu.tlimit",
+                "temperature.gpu,clocks.sm,clocks_event_reasons.active",
                 "temperature.gpu,clocks.sm,clocks_throttle_reasons.active")
 _GPU_QUERY = [None]
+# Microseconds spent held down, by reason, since boot (newer drivers).
+_GPU_COUNTERS = ("clocks_event_reasons_counters.sw_power_cap",
+                 "clocks_event_reasons_counters.sw_thermal_slowdown",
+                 "clocks_event_reasons_counters.hw_thermal_slowdown",
+                 "clocks_event_reasons_counters.hw_power_brake_slowdown")
+_GPU_COUNTERS_OK = [None]
+
+
+def gpu_counters():
+    """(power-cap, thermal) µs held down since boot, or None where the driver has no counters."""
+    if _GPU_COUNTERS_OK[0] is False:
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", f"--query-gpu={','.join(_GPU_COUNTERS)}",
+                              "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10)
+        v = [int(float(x)) for x in out.stdout.splitlines()[0].split(",")] if not out.returncode else None
+    except Exception:  # noqa: BLE001 - optional
+        v = None
+    _GPU_COUNTERS_OK[0] = v is not None
+    return None if v is None else (v[0] + v[3], v[1] + v[2])
 
 
 def gpu_watch_enabled():
@@ -488,7 +517,7 @@ def vm_summary(v0, v1):
 
 
 def gpu_sample():
-    """(temp °C, SM MHz, throttle bits) of GPU 0, or None."""
+    """(temp °C, SM MHz, throttle bits, T.Limit margin °C or None) of GPU 0, or None."""
     for q in ([_GPU_QUERY[0]] if _GPU_QUERY[0] else _GPU_QUERIES):
         try:
             out = subprocess.run(["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"],
@@ -505,17 +534,20 @@ def gpu_sample():
             except ValueError:
                 return None
         f = [x.strip() for x in out.stdout.splitlines()[0].split(",")]
-        return num(f[0]), num(f[1]), num(f[2], 16)
+        return num(f[0]), num(f[1]), num(f[2], 16), (num(f[3]) if len(f) > 3 else None)
     return None
 
 
 class GpuWatch:
-    """Peak temperature, lowest SM clock and any throttle bits while active;
-    a no-op when disabled. str() gives a short summary for a table row."""
+    """Peak temperature, lowest SM clock, smallest margin to the GPU's thermal
+    limit, any clock-event bits, and (newer drivers) the share of the time the
+    GPU was held at its power cap or slowed for heat, while active; a no-op
+    when disabled. str() gives a short summary for a table row."""
 
     def __init__(self, every=2.0):
         self.enabled = gpu_watch_enabled()
         self.every, self.max_temp, self.min_clock, self.reasons = every, None, None, 0
+        self.min_margin, self._c0, self._t0, self.held = None, None, None, None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -523,11 +555,13 @@ class GpuWatch:
         s = gpu_sample()
         if not s:
             return
-        t, c, r = s
+        t, c, r, m = s
         if t is not None:
             self.max_temp = t if self.max_temp is None else max(self.max_temp, t)
         if c is not None:
             self.min_clock = c if self.min_clock is None else min(self.min_clock, c)
+        if m is not None:
+            self.min_margin = m if self.min_margin is None else min(self.min_margin, m)
         self.reasons |= (r or 0) & _THROTTLE_MASK
 
     def _run(self):
@@ -536,6 +570,7 @@ class GpuWatch:
 
     def __enter__(self):
         if self.enabled:
+            self._c0, self._t0 = gpu_counters(), time.perf_counter()
             self._thread.start()
         return self
 
@@ -544,17 +579,28 @@ class GpuWatch:
             self._stop.set()
             self._thread.join()
             self._take()
+            c1, wall = gpu_counters(), time.perf_counter() - self._t0
+            if self._c0 and c1 and wall > 0:
+                self.held = tuple(min(1.0, (b - a) / 1e6 / wall) for a, b in zip(self._c0, c1))
 
     def __str__(self):
         if self.max_temp is None:
             return ""
         s = f"GPU {self.max_temp}°C / {self.min_clock} MHz"
-        if self.reasons:
-            s += f"  !! throttled (0x{self.reasons:x})"
-        if self.max_temp >= 80:
-            s += f"  !! {self.max_temp - 80}°C above the 80°C suspend threshold in RESULTS.md"
-        elif self.max_temp >= GPU_TEMP_WARN:
-            s += f"  !! within {80 - self.max_temp}°C of the 80°C suspend threshold"
+        if self.min_margin is not None:
+            s += f" ({self.min_margin}°C below its T.Limit)"
+        if self.held and (self.held[0] >= 0.05 or self.held[1] > 0):
+            s += f", power-capped {self.held[0]:.0%} of the time"
+            if self.held[1] > 0:
+                s += f", thermal slowdown {self.held[1]:.0%}"
+        # The power cap alone is how GB10 runs any heavy load (its clocks are
+        # set by the SoC's power budget), so only the rest is flagged.
+        if self.reasons & ~0x4:
+            s += "  !! " + ", ".join(n for b, n in _REASON_NAMES if self.reasons & b)
+        elif self.reasons and not self.held:
+            s += " [power cap]"
+        if self.min_margin is not None and self.min_margin <= GPU_TLIMIT_WARN:
+            s += f"  !! within {self.min_margin}°C of the GPU's thermal limit"
         return s
 
 

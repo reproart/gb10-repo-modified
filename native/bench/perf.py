@@ -33,8 +33,11 @@ What the columns mean (and the traps they avoid):
     `--only <section>`; `--only warmup` does just that (useful right after a
     server start), and `--no-warmup` measures the cold server on purpose.
   * GPU: peak temperature / lowest SM clock per section or row from the local
-    nvidia-smi (GB10_GPU_WATCH), flagged on throttling or near the 80 °C
-    suspend threshold. A server restart mid-run is flagged too.
+    nvidia-smi (GB10_GPU_WATCH), with the margin to the GPU's own thermal
+    limit (T.Limit, ~95 °C on GB10) and, on drivers with the counters, the
+    share of the time it was held at its power cap or slowed for heat;
+    flagged near the limit or on a clock-event bit. A server restart
+    mid-run is flagged too.
   * the run header records the engine's effective settings (SGLang
     /get_server_info: revision, draft tokens, request cap ...), and the whole
     output is saved under results/runs/ (GB10_RUN_DIR).
