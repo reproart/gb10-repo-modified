@@ -434,8 +434,9 @@ _THROTTLE_MASK = 0x4 | 0x8 | 0x20 | 0x40 | 0x80
 _REASON_NAMES = ((0x4, "SW power cap"), (0x8, "HW slowdown"), (0x20, "SW thermal"),
                  (0x40, "HW thermal"), (0x80, "HW power brake"))
 # The GPU's own thermal limit, as nvidia-smi reports it: temperature.gpu.tlimit
-# is the margin (°C) left to the T.Limit where it starts slowing itself down
-# (GB10: 50 °C of margin at 45 °C, so ~95 °C). Warn when the margin gets this
+# is the margin (°C) left to the T.Limit where it starts slowing itself down.
+# On GB10 it follows a hotter sensor than temperature.gpu (40 °C of margin at
+# 55 °C, 8 °C at 81 °C), so the margin is what to watch. Warn when it gets this
 # small. (Earlier versions flagged 80 °C as a "suspend threshold": a Spark ran
 # prefill at 84-87 °C with zero thermal-slowdown time on its counters.)
 GPU_TLIMIT_WARN = 5
