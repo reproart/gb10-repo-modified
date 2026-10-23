@@ -34,7 +34,7 @@ What the columns mean (and the traps they avoid):
     server start), and `--no-warmup` measures the cold server on purpose.
   * GPU: peak temperature / lowest SM clock per section or row from the local
     nvidia-smi (GB10_GPU_WATCH), with the margin to the GPU's own thermal
-    limit (T.Limit, ~95 °C on GB10) and, on drivers with the counters, the
+    limit (T.Limit margin, the number to watch on GB10) and, on drivers with the counters, the
     share of the time it was held at its power cap or slowed for heat;
     flagged near the limit or on a clock-event bit. A server restart
     mid-run is flagged too.

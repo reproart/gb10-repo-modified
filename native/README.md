@@ -958,8 +958,9 @@ Every run records what it measured:
 - **Saved output.** The full output is saved under `results/runs/`
   (`GB10_RUN_DIR`; set it empty to skip saving).
 - **GPU.** When the server is local, peak temperature, lowest SM clock and
-  the margin to the GPU's own thermal limit (`temperature.gpu.tlimit`,
-  ~95 °C on GB10) come from `nvidia-smi` per section or row
+  the margin to the GPU's own thermal limit (`temperature.gpu.tlimit`;
+  it shrinks faster than the temperature rises, so read the margin, not a
+  fixed limit) come from `nvidia-smi` per section or row
   (`GB10_GPU_WATCH=0|1`), and on newer drivers the share of the time held at
   the power cap. A row is flagged within 5 °C of the limit or on a thermal
   slowdown; the power cap alone is how GB10 runs any heavy load, so it is

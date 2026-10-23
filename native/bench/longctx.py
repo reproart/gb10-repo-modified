@@ -33,7 +33,7 @@ The "gen" column shows what was actually generated (a gateway may drop
 ignore_eos).
 
 This is the thermally heaviest workload in the suite (101K prompts end at
-80-87 °C, against a T.Limit near 95 °C on GB10): with a local nvidia-smi
+80-87 °C, 8 °C of margin to GB10's T.Limit on Flint): with a local nvidia-smi
 every row reports its peak temperature, lowest SM clock and margin to the
 GPU's thermal limit, and thermal slowdown is flagged. The output is saved under results/runs/ like perf.py's.
 """
