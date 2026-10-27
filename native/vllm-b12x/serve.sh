@@ -37,6 +37,9 @@ if pgrep -f "sglang.launch_server" >/dev/null 2>&1; then
   echo "an SGLang server is running: stop it first (sudo systemctl stop gb10-sglang, or Ctrl-C it)" >&2
   exit 1
 fi
+for c in tfv41-r0 gb10-vllm-dsv41 glm53-flash-tf; do
+  docker ps --format '{{.Names}}' | grep -qx "$c" && { echo "container $c runs (a two-Spark server): stop it first" >&2; exit 1; }
+done
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
   echo "container $CONTAINER_NAME already runs (docker stop $CONTAINER_NAME)" >&2
   exit 1
