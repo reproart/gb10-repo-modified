@@ -25,6 +25,8 @@
   Spark.
 - **Настроенный vLLM в Docker** (`vllm-dsv41/`) — та же DeepSeek на двух Spark,
   другой движок (для сравнения и для картинок).
+- **TensorFold в Docker** (`tensorfold-glm53/`) — GLM-5.3-Flash на двух Spark
+  (рецепт MiaAI-Lab).
 
 | Профиль | Модель | Веса на диске | Скорость, 1 поток | Состояние |
 |---|---|---:|---:|---|
@@ -44,6 +46,7 @@
 | `vllm-b12x/` | Qwen3.8-Flash-Next-FP4-Local (QAD от NVIDIA), vLLM в Docker | ~96 ГиБ | 61.0 (MTP 3) | измерена, качество не сравнивали |
 | `tensorfold-dsv41/` | DeepSeek-V4.1-Flash-1017, EXL3 2.9 бит, контекст 1M, TensorFold в Docker, **на двух Spark** (TP=2) | 196 + 189 ГиБ на каждом | 92 код / 57 текст (по рецепту) | у нас не измерена |
 | `vllm-dsv41/` | та же DeepSeek, те же веса, настроенный vLLM (sudoingX + styles01) в Docker, **на двух Spark**, 262K, картинки | те же папки + дерево из жёстких ссылок | 94 код / 52 текст (по рецепту) | у нас не измерена |
+| `tensorfold-glm53/` | GLM-5.3-Flash 321B, EXL3 4 бит + DFlash2, контекст 1M, TensorFold в Docker, **на двух Spark** | ~205 ГБ на каждом | 114 коротко / 50 текст / 70 код (по замерам LimeChain) | у нас не измерена |
 | `llamacpp/` | GLM-5.3-Flash 320B, GGUF 3.0/3.5 бит | 117 / 137 ГБ | | на одном Spark — проверка, на двух — рабочий вариант |
 
 Главное правило: **одна модель за раз**. Память GPU и оперативная память на
@@ -592,6 +595,47 @@ DEPTH_PROBE=1 ./serve.sh && python3 depth-sweep.py   # печатает ROUND_MS
 
 ---
 
+### 4.13. GLM-5.3-Flash на двух Spark (TensorFold)
+
+Рецепт MiaAI-Lab (TensorFold 0.6.0 и 123 патча, Apache-2.0): эксперты в EXL3
+4 бита, остальное BF16, черновик DFlash2, контекст 1M, картинки. Мы не
+копируем его код, а держим их репозиторий на закреплённом коммите
+(`KIT_COMMIT`) и запускаем их скрипты с нашими адресами пары, папкой весов и
+портом 8888. Подробно — [`tensorfold-glm53/README.md`](tensorfold-glm53/README.md).
+
+По сравнению LimeChain на одном железе (у нас пока не мерили): один короткий
+запрос 114 ток/с (текст 50, код 70 без рассуждений), 8 запросов — 528 суммарно,
+префил 128K — ~1700 ток/с. vLLM с NVFP4 на тех же машинах: 37 и 185. Нужно
+~205 ГБ диска и ~110 ГиБ свободной памяти на каждой машине, поэтому вместе с
+DeepSeek не запускается.
+
+```bash
+cd tensorfold-glm53
+./setup.sh                    # один раз: их репозиторий, образ на обе машины, веса (~176 ГБ) и копия на вторую
+./serve.sh                    # первый старт ~10 мин, дальше меньше минуты
+./status.sh / ./stop.sh
+PARALLEL=8 ./serve.sh restart # 8 запросов: так у LimeChain в работе (минимум памяти ~7 ГиБ на head)
+```
+
+Черновик DFlash2 — под CC BY-NC-ND 4.0, только некоммерческое использование.
+`DRAFTER=mtp` — встроенная MTP-голова: медленнее и по одному запросу.
+Уровень рассуждений по умолчанию `EFFORT=high`: у LimeChain с ним вызовы
+инструментов 40/42 против 36/42 на «max» (их значение по умолчанию).
+
+Веса лежат в кэше Hugging Face (`/models/huggingface`), один путь на обеих
+машинах. Скачать вручную или перенести на другую машину:
+
+```bash
+HF_HOME=/models/huggingface hf download Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold \
+  --revision 078455ffe6472f9a52fbc1139f58b9db2881b25c
+HF_HOME=/models/huggingface hf download incoai/GLM-5.3-Flash-DFlash2 \
+  --revision bf582e4eacc1810f76656d1811693ff6c6737d2a
+rsync -a /models/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-TensorFold \
+  /models/huggingface/hub/models--incoai--GLM-5.3-Flash-DFlash2  вторая-машина:/models/huggingface/hub/
+```
+
+---
+
 ## 5. Как выжать максимум из машины
 
 **Память.**
@@ -817,6 +861,7 @@ llamacpp/             сборка и запуск GLM-5.3-Flash на llama.cpp 
 vllm-b12x/            Flash-Next FP4-Local от NVIDIA на vLLM (Docker)
 tensorfold-dsv41/     DeepSeek-V4.1-Flash на двух Spark, TensorFold (Docker)
 vllm-dsv41/           та же DeepSeek на двух Spark, настроенный vLLM (Docker)
+tensorfold-glm53/     GLM-5.3-Flash на двух Spark, TensorFold по рецепту MiaAI-Lab (Docker)
 results/RESULTS.md    все замеры с датами и условиями
 README.md             подробности и обоснования (англ.)
 ```

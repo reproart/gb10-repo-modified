@@ -1,0 +1,8 @@
+# shellcheck shell=bash disable=SC2034
+# Only what differs from ../tensorfold-dsv41/config.local.sh (the pair's
+# addresses and ssh are read from there). cp config.local.sh.example config.local.sh
+# Keep the NAME="${NAME:-value}" form, so the shell still wins.
+
+# HF_CACHE="${HF_CACHE:-/models/huggingface}"   # the weights, the same path on both nodes
+# PARALLEL="${PARALLEL:-8}"                       # LimeChain's production setting
+# KIT_DIR="${KIT_DIR:-$HOME/GLM-5.3-Flash-EXL3-2x-DGX-Sparks-TensorFold}"

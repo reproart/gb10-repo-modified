@@ -767,6 +767,18 @@ round-cost table its adaptive depth policy needs. Their numbers: code tie with
 TensorFold, prose and structured 10-15% lower, 262K context, 2 requests, images
 checked. Unmeasured here.
 
+## GLM-5.3-Flash on two Sparks, TensorFold: `tensorfold-glm53/`
+
+[`tensorfold-glm53/`](tensorfold-glm53/README.md) runs MiaAI-Lab's recipe
+(TensorFold 0.6.0 with 123 patches, EXL3 4 bpw routed experts, DFlash2
+drafts, 1M context, images; Apache-2.0) from a checkout pinned by commit,
+with this project's pair, a Hugging Face cache under `/models`, :8888 and the
+one-server-at-a-time checks: `setup.sh` (her `prepare.sh`: image, download,
+rsync to the worker), `serve.sh`, `stop.sh`, `status.sh`. LimeChain's matched
+bake-off puts it at 114 tok/s for one short request and 528 aggregate at 8
+(vLLM TP2 NVFP4: 37 / 185); `PARALLEL=8` and effort High are their production
+settings. The DFlash2 drafter is CC BY-NC-ND (non-commercial). Unmeasured here.
+
 ## GGUF models on llama.cpp: `llamacpp/`
 
 GLM-5.3-Flash (320B) in GSQ-RCO GGUFs needs llama.cpp with PR 27773, not
