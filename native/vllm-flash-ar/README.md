@@ -275,6 +275,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `BATCHED_TOKENS` | `8192` | Prefill chunk (`--max-num-batched-tokens`). Smaller keeps other streams decoding during a long prefill, at a prefill cost (blazux's table, NVFP4 base: a decoding client at 0.2 / 0.4–0.6 / 1.0 / 1.6 tok/s during a big prefill at 8192 / 2048 / 1024 / 512, long prefill −17–36% at 1024). `../bench/perf.py --only interference` measures it here |
 | `MARLIN_ATOMIC_ADD` | `1` | `VLLM_MARLIN_USE_ATOMIC_ADD`: Marlin's split-K reduction by atomic adds, for speed, in the dense Marlin GEMMs; the MoE kernel never uses it (`marlin_moe.py`: `use_atomic_add=False`). `0` changed nothing in `consistency.py` here; see patch 15 |
 | `DET_MOE_ALIGN` | `0` | `1` = deterministic MoE token alignment (patch 15): the same prompt gives the same logprobs every run, cold or from the cache (measured). Off until its serving cost is measured |
+| `DET_MOE_ALIGN_MIN_TOKENS` | `auto` | the steps it applies to, from this many tokens up; `auto` = `SEQS` × (1 + `MTP`) + 1 (33), one more than the largest decode-only step: prefill takes it, decode keeps the kernel. `9` = every step where an expert can fill more than one block |
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
 | `MEM_PREP` / `WAIT_MIN` | `1` / `15` | `./serve.sh`: page cache dropped and memory compacted before the start (`../scripts/mem-prep.sh`); wait up to N minutes for the API (`0` = return at once) |
@@ -711,14 +712,23 @@ one of 10 runs of a 100-8192-token batch; one call costs ~0.2 ms against
 plus the MTP layer per step). Serving cost: `../bench/perf.py --only prefill`
 and `--only concurrency` with `DET_MOE_ALIGN` 0 and 1.
 
-With `VLLM_DET_MOE_ALIGN=1` batches of at least 9 tokens
-(`VLLM_DET_MOE_ALIGN_MIN_TOKENS`) are aligned by torch ops: the same blocks,
+With `VLLM_DET_MOE_ALIGN=1` steps of at least `VLLM_DET_MOE_ALIGN_MIN_TOKENS`
+tokens are aligned by torch ops: the same blocks,
 padding and expert ids as the kernel, each expert's routes in ascending route
 order, no host sync. Routes to an id outside the experts (vLLM gives padding
 tokens -1) are left out, as the kernel leaves them out: the first version
 indexed with them and stopped the engine in its profile run with a
-device-side assert (2026-10-31). Decode-size batches keep the kernel (a block holds them
-whole; rows are independent). The idea and the implementation are
+device-side assert (2026-10-31). Smaller steps keep the kernel. The patch's
+own floor is 9 tokens: below it no expert can get more routes than a block of
+8 holds, and the order inside a block is harmless (a block's rows are computed
+alike wherever they sit). The launcher passes `DET_MOE_ALIGN_MIN_TOKENS`,
+`auto` by default: `SEQS` × (1 + `MTP`) + 1, one more than the largest step
+of decode alone (33 with 8 streams and MTP 3), so a step that carries a
+prefill chunk takes the deterministic path and decode keeps the kernel's
+~12 us. Decode gives up nothing by it: one stream's step (1 + `MTP` tokens)
+is below the floor anyway, and a step of several streams depends on what
+else is in the batch, whatever the alignment. With 9 every multi-stream
+decode step paid ~0.2 ms a MoE layer (49 of them a step) instead. The idea and the implementation are
 prestonlogan's (Flint-vLLM-Single-DGX-Spark, `fast/patch_align.py`,
 Apache-2.0; ~3.7% prefill there); the patcher here locates the call by name
 in this image's `moe_align_block_size.py`. `src/test_det_moe_align_cpu.py`

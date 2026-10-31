@@ -312,6 +312,12 @@ case "$DRAFT_VOCAB" in
   *) echo "WARNING: DRAFT_VOCAB='$DRAFT_VOCAB' — the container only sees /model and /ple-table. Put the ids.npy in the checkpoint dir and pass /model/<name>.npy (or bake it into a custom image)." >&2 ;;
 esac
 
+# The deterministic MoE alignment from this many tokens a step up (DET_MOE_ALIGN=1);
+# auto = one more than the largest decode-only step, SEQS x (1 + MTP) tokens.
+DET_MIN="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
+[ "$DET_MIN" = auto ] && DET_MIN=$(( SEQS * (1 + MTP) + 1 ))
+case "$DET_MIN" in ''|*[!0-9]*) echo "DET_MOE_ALIGN_MIN_TOKENS='$DET_MIN': a number of tokens or auto" >&2; exit 1 ;; esac
+
 # The container's environment, as NAME=value: EXTRA_ENV (space-separated
 # NAME=value pairs) replaces a value of the same name instead of adding a second
 # one (docker keeps the first of two).
@@ -326,6 +332,7 @@ ENVS=(
 for e in ${MTENV[@]+"${MTENV[@]}"}; do [ "$e" = -e ] || ENVS+=("$e"); done
 ENVS+=(
   "VLLM_MARLIN_USE_ATOMIC_ADD=${MARLIN_ATOMIC_ADD:-1}" "VLLM_DET_MOE_ALIGN=${DET_MOE_ALIGN:-0}"
+  "VLLM_DET_MOE_ALIGN_MIN_TOKENS=$DET_MIN"
   "VLLM_FP8_HYBRID=${FP8_HYBRID:-1}" VLLM_USE_DEEP_GEMM=0
   VLLM_USE_FLASHINFER_SAMPLER=1 "VLLM_ALLOW_LONG_MAX_MODEL_LEN=$ALLOW_LONG" "CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}"
 )
@@ -362,5 +369,5 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
     --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3 \
     ${PIN_ARG[@]+"${PIN_ARG[@]}"} ${SPEC[@]+"${SPEC[@]}"}
 
-echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0}, metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
+echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
 echo ">> follow with: docker logs -f $NAME"
