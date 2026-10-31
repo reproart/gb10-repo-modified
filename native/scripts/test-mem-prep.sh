@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # scripts/test-mem-prep.sh: scripts/mem-prep.sh against stub nvidia-smi, docker,
-# pgrep, sudo, ssh and a made-up /proc/buddyinfo; changes nothing on the
+# ps, sudo, ssh and a made-up /proc/buddyinfo; changes nothing on the
 # machine. Checks: the 2 MiB+ share of free memory (4 KiB and 64 KiB pages);
-# idle / busy from a GPU process, a GPU container, a server process, on the
-# worker too; ALLOW_BUSY_GPU; an unreachable worker; prep drops and compacts
+# idle / busy from a GPU process, a GPU container, a server process (by its
+# name: earlyoom's arguments name them all), on the worker too; ALLOW_BUSY_GPU; an unreachable worker; prep drops and compacts
 # only with the GPU idle and passwordless sudo, and logs each start.
 set -euo pipefail
 src=$(cd "$(dirname "$0")" && pwd)/mem-prep.sh
@@ -29,10 +29,14 @@ case "$1" in
 esac
 exit 0
 STUB
-cat > "$T/bin/pgrep" <<'STUB'
+# ps -eo pid=,comm=,args=: earlyoom (whose --prefer list names every server) always,
+# and FAKE_SERVER ("comm args") as pid 4242
+cat > "$T/bin/ps" <<'STUB'
 #!/bin/sh
-[ -n "${FAKE_SERVER:-}" ] && { echo "4242 $FAKE_SERVER"; exit 0; }
-exit 1
+echo " 1698 earlyoom        /usr/bin/earlyoom -r 3600 -p -M 1048576,524288 -s 100,100 --prefer ^(sglang|python|tensorfold|llama-server|VLLM) --avoid ^(systemd|sshd)"
+echo " 2001 bash            bash ./tensorfold-glm53/setup.sh vllm serve"
+[ -n "${FAKE_SERVER:-}" ] && echo " 4242 $FAKE_SERVER"
+exit 0
 STUB
 cat > "$T/bin/id" <<'STUB'
 #!/bin/sh
@@ -67,7 +71,7 @@ out=$(FAKE_PAGESIZE=65536 run status)
 check "status: with 64 KiB pages order 5 is 2 MiB" "echo \"\$out\" | grep -q 'free 4112.0 GiB, 4096.0 GiB'"
 
 out=$(run idle 2>&1); rc=$?
-check "idle: nothing on the GPU, exit 0" "[ $rc = 0 ] && [ -z \"\$out\" ]"
+check "idle: nothing on the GPU (earlyoom's --prefer list and a script's arguments are no server)" "[ $rc = 0 ] && [ -z \"\$out\" ]"
 set +e
 out=$(FAKE_GPU_APP="77, python3" run idle 2>&1); rc=$?
 check "idle: a GPU process, exit 1 and its pid" "[ $rc = 1 ] && echo \"\$out\" | grep -q 'GPU process 77 python3' && echo \"\$out\" | grep -q 'ALLOW_BUSY_GPU'"
@@ -75,8 +79,12 @@ out=$(FAKE_CTR=glm53-flash-tf FAKE_CTR_REQ='[{\"Capabilities\":[[\"gpu\"]]}]' ru
 check "idle: a container with a GPU" "[ $rc = 1 ] && echo \"\$out\" | grep -q 'GPU container glm53-flash-tf'"
 out=$(FAKE_CTR=gpu-named-but-cpu-only run idle 2>&1); rc=$?
 check "idle: a container without a GPU does not count" "[ $rc = 0 ]"
-out=$(FAKE_SERVER="python -m sglang.launch_server --model x" run idle 2>&1); rc=$?
-check "idle: a server process" "[ $rc = 1 ] && echo \"\$out\" | grep -q 'server process 4242'"
+out=$(FAKE_SERVER="python3         python3 -m sglang.launch_server --model x" run idle 2>&1); rc=$?
+check "idle: an SGLang server process" "[ $rc = 1 ] && echo \"\$out\" | grep -q 'server process 4242 python3 -m sglang'"
+out=$(FAKE_SERVER="llama-server    /home/u/llama.cpp/build/bin/llama-server -m x.gguf" run idle 2>&1); rc=$?
+check "idle: a llama-server process" "[ $rc = 1 ] && echo \"\$out\" | grep -q 'server process 4242'"
+out=$(FAKE_SERVER="vllm            /usr/bin/python3 /usr/local/bin/vllm serve /model" run idle 2>&1); rc=$?
+check "idle: vllm serve" "[ $rc = 1 ] && echo \"\$out\" | grep -q 'server process 4242'"
 out=$(FAKE_WORKER_GPU_APP="9, tensorfold" run idle worker 2>&1); rc=$?
 check "idle: busy on the worker fails it too" "[ $rc = 1 ] && echo \"\$out\" | grep -q 'GPU process 9 tensorfold'"
 out=$(ALLOW_BUSY_GPU=1 FAKE_GPU_APP="77, python3" run idle 2>&1); rc=$?

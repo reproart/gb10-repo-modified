@@ -323,7 +323,7 @@ refuse while anything runs on a GPU of a node they touch: their Spark
 stopped answering (no ssh, no ping) during a 25 GB copy beside a GPU job.
 `ALLOW_BUSY_GPU=1` goes on anyway. `hf download` by hand is the same risk:
 stop the server first. `scripts/test-mem-prep.sh` runs it against stubs
-(15 checks).
+(17 checks).
 
 ## 7. Concurrency: three flags, one knob
 

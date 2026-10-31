@@ -55,8 +55,16 @@ busy() {  # what runs on the GPU here, one line each; nothing when idle
         awk 'tolower($2 " " $3) ~ /gpu|nvidia/ { sub(/^\//, "", $1); print "GPU container " $1 }'
     done
   fi
-  pgrep -af 'sglang\.launch_server|llama-server|ggml-rpc-server|vllm\.entrypoints|vllm serve|tensorfold serve' 2>/dev/null |
-    awk '{ $1 = "server process " $1; print substr($0, 1, 120) }'
+  # Model servers outside containers, by process name (the kernel's comm, 15
+  # characters): a word in some other program's arguments is no server (earlyoom's
+  # --prefer list names them all).
+  ps -eo pid=,comm=,args= 2>/dev/null | awk '
+    { name = $2 }
+    (name ~ /^python/ && $0 ~ /sglang[.]launch_server|vllm[.]entrypoints/) ||
+    name ~ /^(sglang|VLLM)::/ || name == "llama-server" || name == "ggml-rpc-server" ||
+    ((name == "vllm" || name == "tensorfold") && $0 ~ / serve( |$)/) {
+      pid = $1; sub(/^ *[0-9]+ +[^ ]+ +/, ""); print "server process " pid " " substr($0, 1, 100)
+    }'
 }
 
 wr() {  # write 1 to /proc/sys/vm/$1 as root, without asking for a password
