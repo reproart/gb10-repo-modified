@@ -204,7 +204,7 @@ done
 #   metrics — the vllm_custom_metrics module: the engine-side metrics sidecar.
 #             Without it PLE stats are neither served nor logged unless
 #             PLE_STATS_SEC brings the log lines back (handled below).
-IMAGE_OK=1 DRAFT_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0 FENCES_OK=0
+IMAGE_OK=1 DRAFT_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0 FENCES_OK=0 DETALIGN_OK=0
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   IMAGE_OK=0  # the main `docker run` fails loudly on its own; don't add noise
 else
@@ -231,6 +231,7 @@ if spec is not None:
     print("exact", int(has(qsa, "_qsa_exact_topk")))
     print("iter", int(has(os.path.join(pkg, "v1/metrics/loggers.py"), "_q38_prefill_metrics")))
     print("fences", int(has(os.path.join(pkg, "parser/engine/parser_engine_config.py"), "guard_literal_tool_markers")))
+    print("detalign", int(has(os.path.join(pkg, "model_executor/layers/fused_moe/moe_align_block_size.py"), "_deterministic_align")))
 ' 2>/dev/null) || probe=""
   case "$probe" in *"draft 1"*) DRAFT_OK=1 ;; esac
   case "$probe" in *"metrics 1"*) METRICS_OK=1 ;; esac
@@ -238,6 +239,7 @@ if spec is not None:
   case "$probe" in *"exact 1"*) EXACT_OK=1 ;; esac
   case "$probe" in *"iter 1"*) ITER_OK=1 ;; esac
   case "$probe" in *"fences 1"*) FENCES_OK=1 ;; esac
+  case "$probe" in *"detalign 1"*) DETALIGN_OK=1 ;; esac
   if [ -z "$probe" ]; then
     IMAGE_OK=0
     echo "WARNING: could not probe '$IMAGE' (python3/entrypoint missing?) — skipping patch checks." >&2
@@ -260,6 +262,10 @@ fi
 if [ "$IMAGE_OK" = 1 ] && [ "$FENCES_OK" = 0 ]; then
   echo "WARNING: image '$IMAGE' predates the tool-call parser fixes (patches 12-13): a tool call the model" >&2
   echo "  shows as an example in a code block is parsed as a real call and the rest of the answer is lost." >&2
+  echo "  Rebuild: docker build -t '$IMAGE' .  (../build.sh in this project)." >&2
+fi
+if [ "$IMAGE_OK" = 1 ] && [ "${DET_MOE_ALIGN:-0}" = 1 ] && [ "$DETALIGN_OK" = 0 ]; then
+  echo "WARNING: DET_MOE_ALIGN=1 will be IGNORED: image '$IMAGE' predates the deterministic MoE alignment patch." >&2
   echo "  Rebuild: docker build -t '$IMAGE' .  (../build.sh in this project)." >&2
 fi
 if [ "$IMAGE_OK" = 1 ] && [ "$EXACT_TOPK" != 0 ] && [ "$EXACT_OK" = 0 ]; then
@@ -319,7 +325,8 @@ ENVS=(
 )
 for e in ${MTENV[@]+"${MTENV[@]}"}; do [ "$e" = -e ] || ENVS+=("$e"); done
 ENVS+=(
-  "VLLM_MARLIN_USE_ATOMIC_ADD=${MARLIN_ATOMIC_ADD:-1}" "VLLM_FP8_HYBRID=${FP8_HYBRID:-1}" VLLM_USE_DEEP_GEMM=0
+  "VLLM_MARLIN_USE_ATOMIC_ADD=${MARLIN_ATOMIC_ADD:-1}" "VLLM_DET_MOE_ALIGN=${DET_MOE_ALIGN:-0}"
+  "VLLM_FP8_HYBRID=${FP8_HYBRID:-1}" VLLM_USE_DEEP_GEMM=0
   VLLM_USE_FLASHINFER_SAMPLER=1 "VLLM_ALLOW_LONG_MAX_MODEL_LEN=$ALLOW_LONG" "CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}"
 )
 # shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list, split on purpose
@@ -355,5 +362,5 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
     --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3 \
     ${PIN_ARG[@]+"${PIN_ARG[@]}"} ${SPEC[@]+"${SPEC[@]}"}
 
-echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
+echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0}, metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
 echo ">> follow with: docker logs -f $NAME"

@@ -10,7 +10,10 @@ layers, the patches in src/) -> reproart/qwen3.8-Flash-DGX-AutoRound-modified
 Changed here, as Apache-2.0 section 4(b) asks (details: README.md, top):
 - Dockerfile: blazux's tool-call parser patches 12 and 13 (src/patches/,
   from blazux/qwen3.8-Flash-DGX at 2ba2d77) applied after the existing steps.
-- scripts/serve-intel-ar.sh: several served model ids, the prefill chunk,
+- Dockerfile: src/patch_det_moe_align.py (deterministic MoE token alignment,
+  opt-in; after prestonlogan/Flint-vLLM-Single-DGX-Spark fast/patch_align.py,
+  Apache-2.0).
+- scripts/serve-intel-ar.sh: --enable-prompt-tokens-details, several served model ids, the prefill chunk,
   Marlin's atomic adds and CPU pinning as settings, EXTRA_ENV with
   replace-by-name, an image probe for the parser patches.
 - serve.sh became config.sh (the settings, defaults changed: port 8888,
