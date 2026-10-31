@@ -15,8 +15,10 @@
 #         CUTLASS W4A8 path), picked by SGLang itself. Spark, 8K in / 1K out:
 #         TPOT 30.2 ms (~33 tok/s) alone, 111.6 ms at 16 streams (1,070 tok/s
 #         in+out); MMMU-Pro 76.24%, GSM8K 96.66%.
-#   int4  GPTQ W4A16, group 32, compressed-tensors (Marlin MoE). Spark:
-#         TPOT 44.2 ms (~23 tok/s) alone; MMMU-Pro 77.51%, GSM8K 96.97%.
+#   int4  GPTQ W4A16, group 32, compressed-tensors. Spark: TPOT 44.2 ms
+#         (~23 tok/s) alone, on SGLang's auto MoE pick there (Marlin);
+#         MMMU-Pro 77.51%, GSM8K 96.97% on B300, whose auto pick is triton.
+#         This profile runs int4 on triton: see MOE_RUNNER_BACKEND.
 # BF16 (~250 GB) and FP8 (~126 GB) do not fit one Spark.
 #
 # SGLang 0.5.21 has everything the recipe needs (checked in the wheel):
@@ -63,7 +65,14 @@ MAX_RUNNING="${MAX_RUNNING:-16}"
 # Empty = SGLang's choice (what the recipe ran).
 CHUNKED_PREFILL="${CHUNKED_PREFILL:-}"
 ATTENTION_BACKEND="${ATTENTION_BACKEND:-}"
+# MoE expert kernels. The backbone clamps the experts' SwiGLU after SiLU in
+# layers 35-41 (expert_swiglu_limit_list: 4; gemm1_clamp_limit in SGLang).
+# flashinfer_mxfp4 (fp4, SGLang's own pick) and triton apply it; Marlin (SGLang's
+# auto pick for int4 on GB10) takes it only with a gemm1_alpha, and Humming
+# (0.5.21, 0.5.22) not at all: those layers would run unclamped. So int4 defaults
+# to triton here, and humming / marlin are refused (models/ling-3.0-flash.sh).
 MOE_RUNNER_BACKEND="${MOE_RUNNER_BACKEND:-}"
+if [ -z "$MOE_RUNNER_BACKEND" ] && [ "$WEIGHTS" = int4 ]; then MOE_RUNNER_BACKEND=triton; fi
 
 # Thinking is on by default in the chat template; per request:
 # "chat_template_kwargs": {"enable_thinking": false}. ling3 is what "auto"
@@ -74,6 +83,13 @@ TOOL_CALL_PARSER="${TOOL_CALL_PARSER:-ling3}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 model_env() {
+  case "$MOE_RUNNER_BACKEND" in
+    humming|marlin)
+      echo "MOE_RUNNER_BACKEND=$MOE_RUNNER_BACKEND would run the experts in layers 35-41 without" \
+        "their SwiGLU clamp (SGLang $SGLANG_VERSION passes it to flashinfer_mxfp4 and triton only):" \
+        "see models/$PROFILE.sh" >&2
+      exit 1 ;;
+  esac
   # SGLang derives 131072 from the config; the YaRN override allows more.
   if [ "$YARN" = 1 ]; then
     export SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1

@@ -531,7 +531,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b  ling-3.0-flash-vl  meerkat-triz  mimo-v2.6-flash  ornith-1.5-35b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next(-abliterated)  zen6
+ls models/                        # gemma4-31b  ling-3.0-flash(-vl)  meerkat-triz  mimo-v2.6-flash  ornith-1.5-35b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next(-abliterated)  zen6
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest
@@ -750,6 +750,36 @@ Knobs to measure: `DRAFT_TOKENS` (8, the cookbook's), `MOE_RUNNER_BACKEND=
 flashinfer_mxfp4`, `EP=1`, `KV_CACHE_DTYPE=fp8_e4m3`; `WEIGHTS=rl` for the
 -RL checkpoint.
 
+### Ling-3.0-flash
+
+[`models/ling-3.0-flash.sh`](models/ling-3.0-flash.sh): inclusionAI's 124B
+text MoE (5.1B active; 35 KDA linear-attention layers + 7 gated MLA; thinking,
+tool calls, native 256K context) with its built-in MTP layer as the draft
+(NEXTN, 3 steps / 4 tokens), on stock SGLang 0.5.21, the MXFP4 export
+(65.6 GiB) by default. NVIDIA measured this model on one Spark at 36.1 tok/s
+for the cookbook recipe and 102.9 with Humming MoE kernels, an FP8 lm_head and
+MTP (a repetitive greedy test; on GSM8K 37.8 -> 53.9 tok/s, accuracy
+unchanged), on inclusionAI's own SGLang branches. Here, on the release:
+- MTP as theirs; 0.5.21 does not point the draft at the target checkpoint
+  for this architecture, so the profile passes it.
+- The FP8 lm_head is this project's `patches/gb10_fp8_side.py` (as in the
+  Flash-Next profile), with the draft running the converted head too: the
+  draft-sharing trap NVIDIA describes (accept length 1.00) cannot happen,
+  and a test covers Ling's layout.
+- No Humming: Ling clamps the experts' SwiGLU after SiLU in layers 35-41,
+  and the Humming runner (0.5.21 and 0.5.22) drops that clamp; so does the
+  Marlin runner. The profile refuses both and runs flashinfer_mxfp4 (fp4) or
+  triton (`WEIGHTS=int4`), which apply it. The same holds for the VL profile,
+  whose int4 default moved from SGLang's Marlin pick to triton.
+- No generation_config.json in the repository: the profile's header gives the
+  one-line file that makes the card's sampling (0.6 / 0.95 / 20) the default.
+Unmeasured here.
+
+```bash
+$HF download inclusionAI/Ling-3.0-flash-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-fp4
+./serve.sh ling-3.0-flash install && ./serve.sh ling-3.0-flash
+```
+
 ### Ling-3.0-flash-VL
 
 [`models/ling-3.0-flash-vl.sh`](models/ling-3.0-flash-vl.sh): inclusionAI's
@@ -758,7 +788,8 @@ images and video, thinking, tool calls; no draft) on one Spark, from the
 SGLang cookbook's recipe, whose DGX Spark cells are verified: the MXFP4
 export at TPOT 30.2 ms single-stream (~33 tok/s, 8K in) and 1,070 tok/s
 in+out at 16 streams, the GPTQ INT4 one at 44.2 ms. SGLang 0.5.21 picks the
-flashinfer_mxfp4 MoE path on GB10 by itself. `WEIGHTS=int4`, `YARN=0` (native
+flashinfer_mxfp4 MoE path on GB10 by itself; `WEIGHTS=int4` runs on triton
+here (the SwiGLU clamp above). `WEIGHTS=int4`, `YARN=0` (native
 128K instead of the recipe's 256K YaRN x2). Unmeasured here.
 
 ```bash
