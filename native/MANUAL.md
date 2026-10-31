@@ -846,6 +846,7 @@ python3 bench/perf.py --only decode      # только один поток
 python3 bench/perf.py --only interference  # декод других потоков, пока идёт префилл промпта ~32K
 python3 bench/longctx.py                 # несколько длинных контекстов разом
 python3 bench/profile_decode.py          # куда уходит шаг декода (по группам ядер)
+python3 bench/consistency.py             # примеры вызовов инструментов, детерминизм, кэш префиксов
 ../scripts/run-humaneval.sh              # HumanEval без размышления
 ../scripts/run-humaneval.sh think-medium # с размышлением medium
 ```
@@ -869,6 +870,32 @@ python3 bench/answers.py compare runs/a.jsonl runs/b.jsonl > compare.md
 Понимает JSONL с `messages`, `conversations`, Alpaca
 (`instruction`/`input`/`output`), `question`/`answer` и просто строки.
 `--thinking --effort medium` — с размышлением.
+
+**Проверка правильности ответов** — `bench/consistency.py` (по мотивам
+blazux/qwen3.8-Flash-DGX, где всё это нашли сломанным у Qwen3.8 на vLLM).
+Работает с любым нашим сервером:
+
+1. **Синтаксис вызова как текст.** С переданными инструментами модель
+   повторяет блок ```` ```xml ```` с примером вызова и строку с
+   `<function=NAME>` посреди фразы, потом `DONE`. Оба должны вернуться
+   текстом, без вызова, в потоке и без. Контроль — «погода в Париже» —
+   должен вернуться настоящим вызовом `get_weather`.
+2. **Тот же жадный запрос ещё раз:** холодный, два попадания в кэш, снова
+   холодный после сброса кэша, на 2K и 32K. Сравниваются текст и топ-5
+   вероятностей первого токена. «Холодный против холодного» разошлись —
+   недетерминированные ядра; «холодный против кэша» с другим первым
+   токеном — кэш восстанавливает не то состояние; маленький разрыв и
+   расхождение ближе к концу — численные мелочи.
+
+Стоковый парсер `qwen3_coder` в SGLang (0.5.20–0.5.22, файл один и тот же)
+принимает пример в блоке кода за настоящий вызов и выбрасывает остаток
+ответа; в потоке любой `<function=NAME>` в тексте открывает вызов. Патч
+`patches/gb10_tool_fences.py` оставляет такие маркеры текстом (блоки кода
+по CommonMark, как патч 13 у blazux) и включён для всех профилей SGLang
+(`TOOL_FENCES=1` в `serve.sh`, `0` — стоковый парсер). Проверка на CPU:
+`python3 patches/test_gb10_tool_fences.py` прогоняет настоящий файл
+детектора из venv без патча и с ним: ошибка воспроизводится без патча,
+настоящие вызовы с ним разбираются так же, как без.
 
 ---
 
@@ -903,8 +930,9 @@ patches/              патчи SGLang, включаются профилями
   gb10_fp8_hc           hyper-connections Flash-Next → FP8
   gb10_marlin_lean      перепаковка MoE в Marlin без лишней копии
   gb10_ablate           абляция векторами (ABLATE=...)
+  gb10_tool_fences      пример вызова инструмента в блоке кода остаётся текстом (TOOL_FENCES, вкл.)
   test_gb10_*.py        проверки на CPU: python3 patches/test_gb10_<имя>.py
-bench/                perf.py, longctx.py, profile_decode.py, answers.py
+bench/                perf.py, longctx.py, profile_decode.py, answers.py, consistency.py
 moe-configs/          настроенные под GB10 конфиги ядер MoE (Ornith)
 llamacpp/             сборка и запуск GLM-5.3-Flash на llama.cpp (1 или 2 Spark)
 vllm-b12x/            Flash-Next FP4-Local от NVIDIA на vLLM (Docker)

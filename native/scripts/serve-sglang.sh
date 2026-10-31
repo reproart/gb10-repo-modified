@@ -81,6 +81,14 @@ export PYTHONUNBUFFERED=1
 # FlashInfer's JIT passes MAX_JOBS to ninja as -j (see JIT_JOBS in serve.sh).
 export MAX_JOBS="${JIT_JOBS:-${MAX_JOBS:-2}}"
 [ "$HF_OFFLINE" = 1 ] && export HF_HUB_OFFLINE=1
+# Tool-call markers inside a fenced code block stay text (patches/gb10_tool_fences.py,
+# the qwen3_coder parser; TOOL_FENCES in ../serve.sh). Before model_env, so a
+# profile can unset it.
+if [ "${TOOL_FENCES:-1}" = 1 ]; then
+  export GB10_TOOL_FENCES=1 PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
+else
+  unset GB10_TOOL_FENCES
+fi
 # The profile's own environment for the server (e.g. patches/ on PYTHONPATH).
 if declare -F model_env >/dev/null; then model_env; fi
 
