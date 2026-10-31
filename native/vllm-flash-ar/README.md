@@ -699,13 +699,24 @@ does not run on Marlin, measured deterministic first tokens.
 With `VLLM_DET_MOE_ALIGN=1` batches of at least 9 tokens
 (`VLLM_DET_MOE_ALIGN_MIN_TOKENS`) are aligned by torch ops: the same blocks,
 padding and expert ids as the kernel, each expert's routes in ascending route
-order, no host sync. Decode-size batches keep the kernel (a block holds them
+order, no host sync. Routes to an id outside the experts (vLLM gives padding
+tokens -1) are left out, as the kernel leaves them out: the first version
+indexed with them and stopped the engine in its profile run with a
+device-side assert (2026-10-31). Decode-size batches keep the kernel (a block holds them
 whole; rows are independent). The idea and the implementation are
 prestonlogan's (Flint-vLLM-Single-DGX-Spark, `fast/patch_align.py`,
 Apache-2.0; ~3.7% prefill there); the patcher here locates the call by name
 in this image's `moe_align_block_size.py`. `src/test_det_moe_align_cpu.py`
 checks the layout against a reference of the kernel's on CPU (random batches,
-512 experts top-10) and the patcher on the PR #53896 file.
+512 experts top-10, padding tokens, ids past the last expert) and the patcher
+on the PR #53896 file. `src/test_det_moe_align_gpu.py` checks it in the image
+against the CUDA kernel itself, counts how often the kernel's own order moves
+between runs of one batch, and times both; `./build.sh` runs it after a build
+(a few seconds on the idle GPU; `DET_ALIGN_CHECK=0` skips it):
+
+```bash
+docker run --rm --gpus all --entrypoint python3 -v "$PWD/src:/w:ro" qwen38-flash-dgx /w/test_det_moe_align_gpu.py
+```
 
 ## Speculative decoding and TTFT
 
@@ -772,6 +783,7 @@ scripts/serve-intel-ar.sh     the recipe's launcher: image probes, the docker ru
 src/patches/                  tool-call parser fixes 12-13 (from blazux) and their tests
 src/patch_det_moe_align.py    deterministic MoE token alignment (DET_MOE_ALIGN; after prestonlogan)
 src/test_det_moe_align_cpu.py its CPU check (torch, no GPU)
+src/test_det_moe_align_gpu.py its GPU check against the image's kernel (./build.sh runs it)
 scripts/smoke-test.sh         health + coherence + prefill/decode numbers
 src/patch_prefill_metrics.py  per-step prefill counters for Prometheus (ITER_DETAILS=1)
 bench/ppwatch.sh              live prefill tok/s from those counters

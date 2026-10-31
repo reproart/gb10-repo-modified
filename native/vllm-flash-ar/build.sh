@@ -3,6 +3,8 @@
 # Dockerfile) + this recipe's patches. Each step prints its "... OK" line; a
 # missing one means it did not run. Pulls a ~20 GiB base the first time; a
 # rebuild after a patch change takes minutes (layer cache).
+# Then src/test_det_moe_align_gpu.py checks DET_MOE_ALIGN's layout against the
+# image's CUDA kernel (seconds on the GPU; DET_ALIGN_CHECK=0 skips it).
 #   ./build.sh
 #   ./build.sh --no-cache        anything docker build takes
 set -euo pipefail
@@ -13,3 +15,13 @@ need_docker
 log "building $IMAGE"
 docker build -t "$IMAGE" "$@" "$VFA_ROOT"
 log "built $IMAGE ($(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)); ./serve.sh starts it (a running server keeps its old image until then)"
+# DET_MOE_ALIGN's layout against the image's own CUDA kernel, a few seconds on the
+# GPU (still idle: checked above). A failure only concerns DET_MOE_ALIGN=1.
+if [ "${DET_ALIGN_CHECK:-1}" = 1 ]; then
+  log "checking the deterministic MoE alignment against the kernel (src/test_det_moe_align_gpu.py; DET_ALIGN_CHECK=0 skips)"
+  if docker run --rm --gpus all --entrypoint python3 -v "$VFA_ROOT/src:/w:ro" "$IMAGE" /w/test_det_moe_align_gpu.py; then
+    log "DET_MOE_ALIGN=1 is safe to try on this image"
+  else
+    log "WARNING: the check failed or could not run: do not start with DET_MOE_ALIGN=1 (the default 0 is unaffected)"
+  fi
+fi
