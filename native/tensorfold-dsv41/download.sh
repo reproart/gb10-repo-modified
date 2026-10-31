@@ -249,6 +249,9 @@ else
 fi
 
 if has download || has engram; then check_head_setup; fi
+# Hundreds of GB through the page cache: never beside a GPU job (../scripts/mem-prep.sh idle; a Spark has hung so).
+targets=(); if has worker; then targets+=("$WORKER_SSH"); fi
+"$ROOT/../scripts/mem-prep.sh" idle "${targets[@]}" || exit 1
 for p in "${PHASES[@]}"; do
   if has "$p"; then "phase_$p"; fi
 done

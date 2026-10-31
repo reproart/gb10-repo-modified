@@ -92,8 +92,10 @@ rsync -a /models/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-Tens
 ## Settings
 
 `config.sh`: `KIT_COMMIT` / `KIT_DIR` (the recipe), `HF_CACHE`, `HOST` /
-`PORT`, `PARALLEL` (4), `DRAFTER` (dflash2), `EFFORT` (high), `DROP_CACHES`
-(the page cache on both nodes before a start, with passwordless sudo).
+`PORT`, `PARALLEL` (4), `DRAFTER` (dflash2), `EFFORT` (high), `MEM_PREP`
+(page cache dropped and free memory compacted on both nodes before a start,
+`../scripts/mem-prep.sh`; passwordless sudo for it: `../scripts/mem-prep.sh
+sudoers <worker>`). `setup.sh` refuses while anything runs on either GPU.
 Everything else is Mia's and passes through from the shell; her
 `scripts/config.sh` documents each with its measured effect.
 

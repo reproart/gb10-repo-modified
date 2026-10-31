@@ -31,6 +31,10 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8889}"
 API_KEY="${API_KEY:-}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-glm-5.3-flash}"
+# Before a start, with the GPU idle: drop the page cache and compact free
+# memory (../scripts/mem-prep.sh; passwordless sudo for the two writes:
+# ../scripts/mem-prep.sh sudoers). 0 = memory as it is.
+MEM_PREP="${MEM_PREP:-1}"
 
 # The card's evaluation runtime: no TF32 in F32 matrix products
 # (patches/native-f32-mmf.patch + these two variables). Kept on so outputs
@@ -65,6 +69,11 @@ no_sglang() {
       "the GPU and the CPU share the same 128 GB" >&2
     exit 1
   fi
+}
+
+# This machine's memory before the weights load (../scripts/mem-prep.sh).
+mem_prep() {
+  "$LLAMACPP_ROOT/../scripts/mem-prep.sh" "$([ "$MEM_PREP" = 1 ] && echo prep || echo status)" || true
 }
 
 strict_f32_env() {

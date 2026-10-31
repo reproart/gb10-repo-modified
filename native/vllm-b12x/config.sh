@@ -23,6 +23,10 @@ image_ref() {
   if [ -n "$IMAGE_DIGEST" ]; then echo "$IMAGE@$IMAGE_DIGEST"; else echo "$IMAGE:latest"; fi
 }
 CONTAINER_NAME="${CONTAINER_NAME:-gb10-vllm-b12x}"
+# Before the start, with the GPU idle: drop the page cache and compact free
+# memory (../scripts/mem-prep.sh; passwordless sudo for the two writes:
+# ../scripts/mem-prep.sh sudoers). 0 = memory as it is.
+MEM_PREP="${MEM_PREP:-1}"
 
 # The weights (~96 GiB), downloaded once with the venv's hf CLI:
 #   hf download nvidia/Qwen3.8-Flash-Next-FP4-Local --local-dir /models/nvidia/Qwen3.8-Flash-Next-FP4-Local

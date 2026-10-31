@@ -25,20 +25,15 @@ wssh "docker ps --format '{{.Names}}'" | grep -qxE 'tfv41-r1|gb10-vllm-dsv41' &&
 "$NATIVE_DIR/scripts/host-tuning.sh" --check 2>/dev/null | grep -q "applied$" ||
   echo "note: host tuning not applied here (earlyoom, no swap for the engine): ../scripts/host-tuning.sh" >&2
 
-running=0
-docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME" && running=1
-if [ "$DROP_CACHES" = 1 ] && { [ "$running" = 0 ] || [ "${1:-}" = restart ]; }; then
-  drop='sync; sudo -n sh -c "echo 1 > /proc/sys/vm/drop_caches"'
-  if bash -c "$drop" 2>/dev/null && wssh "$drop" 2>/dev/null; then
-    log "page cache dropped on both nodes"
-  else
-    log "page cache not dropped (no passwordless sudo): TensorFold sizes its pool to what is free"
-  fi
+kit_env
+# A restart stops both ranks first, so that the memory below is prepared with the GPUs idle.
+if [ "${1:-}" = restart ]; then shift; "$KIT_DIR/stop.sh"; fi
+# Both nodes' memory before the ranks take it (../scripts/mem-prep.sh): page cache dropped, free memory compacted.
+if [ "$MEM_PREP" = 1 ] && ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+  "$NATIVE_DIR/scripts/mem-prep.sh" prep "$WORKER_SSH" || true
 fi
 
 args=()
-[ "${1:-}" = restart ] && { args+=(restart); shift; }
 [ -n "$EFFORT" ] && args+=(--reasoning-effort "$EFFORT")
-kit_env
 log "PARALLEL $PARALLEL, drafter $DRAFTER, effort ${EFFORT:-the recipe default}, weights in $HF_CACHE"
 exec "$KIT_DIR/start.sh" "${args[@]}" "$@"

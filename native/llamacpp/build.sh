@@ -17,6 +17,8 @@
 set -euo pipefail
 
 . "$(dirname "${BASH_SOURCE[0]}")/config.sh"
+# A build on every core: not beside a GPU job (../scripts/mem-prep.sh idle; heavy work beside one has hung a Spark).
+"$LLAMACPP_ROOT/../scripts/mem-prep.sh" idle || exit 1
 
 JOBS="${JOBS:-$(nproc)}"
 UI="${UI:-1}"

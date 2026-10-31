@@ -57,10 +57,12 @@ DRAFTER="${DRAFTER:-dflash2}"
 # Reasoning effort when a request does not say: high (LimeChain: tool harness
 # 40/42 at high, 36/42 at max, Mia's default). Empty = Mia's default.
 EFFORT="${EFFORT-high}"
-# Drop the page cache on both nodes before a start (sudo -n; skipped with a note
-# without passwordless sudo): TensorFold budgets from free memory, and a node
-# that just copied ~170 GB of weights holds most of it as cache.
-DROP_CACHES="${DROP_CACHES:-1}"
+# Before a start, on both nodes with the GPU idle: drop the page cache and
+# compact free memory (../scripts/mem-prep.sh; skipped with a note without
+# passwordless sudo for the two writes: ../scripts/mem-prep.sh sudoers <worker>).
+# TensorFold budgets from free memory, and a node that just copied ~170 GB of
+# weights holds most of it as cache. DROP_CACHES, its earlier name, still works.
+MEM_PREP="${MEM_PREP:-${DROP_CACHES:-1}}"
 
 # Anything else of Mia's (CONTEXT, KV, DENSE, VISION, KV_POOL_GIB, ... her
 # scripts/config.sh lists them with what each does) passes through from the

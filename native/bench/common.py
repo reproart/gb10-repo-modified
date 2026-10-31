@@ -395,6 +395,12 @@ def print_header(extra=""):
               "columns show n/a (set GB10_METRICS_URL; SGLang needs --enable-metrics)")
     if gpu_watch_enabled():
         print("GPU: sampling the local nvidia-smi (GB10_GPU_WATCH=0 to disable)")
+    mb = mem_blocks()
+    if mb:
+        print(f"memory: free {mb[0]:.1f} GiB, {mb[1]:.1f} GiB of it in 2 MiB+ blocks, up {mb[2]:.1f} days")
+        note = last_mem_prep()
+        if note:
+            print(f"        {note}")
 
 
 class _Tee:
@@ -503,6 +509,51 @@ def vmstat():
         elif key == "pswpout":
             out["swap_out"] = int(val)
     return out
+
+
+def mem_blocks():
+    """(free GiB, GiB of it in free blocks of 2 MiB or more, uptime in days) on
+    this machine, from /proc/buddyinfo; None when the server is not local (the
+    rule of vmstat(), GB10_VMSTAT overrides) or on another OS. Over days of
+    uptime free memory splits into small blocks, and on GB10 a boot's decode
+    speed follows how much is left in large ones (scripts/mem-prep.sh)."""
+    flag = os.environ.get("GB10_VMSTAT")
+    local = urlparse(BASE_URL).hostname in ("127.0.0.1", "localhost", "::1")
+    if (flag is not None and flag != "1") or (flag is None and not local):
+        return None
+    try:
+        ps = os.sysconf("SC_PAGE_SIZE")
+        with open("/proc/buddyinfo") as f:
+            rows = [line.split()[4:] for line in f if " zone " in line]
+        with open("/proc/uptime") as f:
+            up = float(f.read().split()[0]) / 86400
+    except (OSError, ValueError):
+        return None
+    k = 0
+    while ps * 2 ** k < 2 * 2 ** 20:
+        k += 1
+    free = big = 0
+    for row in rows:
+        for order, n in enumerate(row):
+            b = int(n) * ps * 2 ** order
+            free += b
+            big += b if order >= k else 0
+    return free / 2 ** 30, big / 2 ** 30, up
+
+
+def last_mem_prep():
+    """The last line scripts/mem-prep.sh logged here at a server start, as one
+    short note, '' if there is none."""
+    try:
+        with open(os.path.expanduser("~/.cache/gb10/mem-prep.log")) as f:
+            line = f.readlines()[-1].split()
+    except (OSError, IndexError):
+        return ""
+    kv = dict(x.split("=", 1) for x in line[3:] if "=" in x)
+    how = ("after the cache drop and compaction" if line[2] == "dropped"
+           else "not dropped or compacted (scripts/mem-prep.sh sudoers)")
+    return (f"at the last server start ({line[0]}): free {kv.get('free')} GiB, "
+            f"{kv.get('big')} GiB in 2 MiB+ blocks {how}")
 
 
 def vm_summary(v0, v1):

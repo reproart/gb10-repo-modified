@@ -34,6 +34,8 @@ done
 if [ "$PREFLIGHT" = 1 ]; then
   "$ROOT/preflight.sh" || exit 1
 fi
+# Both nodes' memory before the ranks take it (../scripts/mem-prep.sh): page cache dropped, free memory compacted.
+if [ "$MEM_PREP" = 1 ]; then "$ROOT/../scripts/mem-prep.sh" prep "$WORKER_SSH" || true; fi
 mkdir -p "$CACHE_DIR" "$LOGS"
 wssh "mkdir -p '$CACHE_DIR'"
 

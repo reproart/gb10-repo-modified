@@ -95,6 +95,9 @@ RESTART_POLICY="${RESTART_POLICY:-no}"     # docker's; see docs/OPERATIONS.md be
 # nodes. Empty = no pinning (the recipe as measured).
 CPUSET="${CPUSET-5-9,15-19}"
 PREFLIGHT="${PREFLIGHT:-1}"                # 0: ./serve.sh skips ./preflight.sh
+# 1: before the start, on both nodes with the GPU idle, drop the page cache and compact free memory
+# (../scripts/mem-prep.sh; passwordless sudo for the two writes: ../scripts/mem-prep.sh sudoers <worker>)
+MEM_PREP="${MEM_PREP:-1}"
 
 # Anything else: `tensorfold serve` flags, appended last; extra environment
 # for both containers, as space-separated NAME=value pairs (replacing a value

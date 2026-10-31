@@ -289,6 +289,41 @@ it does give: earlyoom at 1 GiB, so the 27B profiles default to
 sessions), and a server that cannot swap. Flash-Next's n-gram table, read
 through mmap, is where it could still matter; not measured.
 
+### Memory before each start, and no large copies beside a server
+
+```bash
+./scripts/mem-prep.sh sudoers [worker]   # once: lets the two writes below run without a password (here and on a worker)
+./scripts/mem-prep.sh status [worker]    # free memory, the part of it in blocks of 2 MiB or more, uptime
+./scripts/mem-prep.sh idle [worker]      # exit 1, saying what, while anything runs on a GPU
+```
+
+Every server here (`./serve.sh`, `vllm-b12x/`, `tensorfold-dsv41/`,
+`vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`) now runs `mem-prep.sh prep`
+before it starts, on both nodes for the pairs: with the GPU idle, it drops
+the page cache and compacts free memory, and prints a line with how much is
+free and how much of that is in blocks of 2 MiB or more (`MEM_PREP=0` skips
+it). From sudoingX's DeepSeek recipe (`dgx-spark-deepseek-v41`, FINDINGS 1,
+22, 24; their measurements): CUDA allocations on GB10 do not reclaim the page
+cache (a 67 MB one failed with 45 GB "available"); after days of uptime free
+memory splits into small blocks and a GPU job ran ~2x slower than on its
+twin; over 16 boots of one server the decode rounds were faster the more
+free 2 MiB+ blocks there were at boot. The drop and compaction take under a
+second with the GPU idle. That is one candidate for this project's ~8%
+boot-to-boot spread ("Boot-to-boot variance" in results/RESULTS.md); `perf.py`
+now prints the free memory, the 2 MiB+ part and the uptime in its header,
+and what `mem-prep.sh` logged at the server's start, so runs can be compared
+on it. It is a one-off before a start: `vm.compaction_proactiveness=0`
+(background compaction while serving) stays.
+
+The downloads, image pulls and copies (`tensorfold-dsv41/download.sh` and
+`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`,
+`tensorfold-glm53/setup.sh`, `./serve.sh install`, `llamacpp/build.sh`)
+refuse while anything runs on a GPU of a node they touch: their Spark
+stopped answering (no ssh, no ping) during a 25 GB copy beside a GPU job.
+`ALLOW_BUSY_GPU=1` goes on anyway. `hf download` by hand is the same risk:
+stop the server first. `scripts/test-mem-prep.sh` runs it against stubs
+(15 checks).
+
 ## 7. Concurrency: three flags, one knob
 
 Concurrency on this hybrid (Gated DeltaNet) model is bought with **GDN state,

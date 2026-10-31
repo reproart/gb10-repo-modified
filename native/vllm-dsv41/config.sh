@@ -93,7 +93,10 @@ ROUND_MS="${ROUND_MS:-31.9,35.2,38.6,42.6,45.3,48.1,51.0}"
 DEPTH_PROBE="${DEPTH_PROBE:-0}"
 VISION="${VISION:-1}"                      # 0 stubs the vision tower (~0.9 GiB a rank back to KV)
 CPUSET="${CPUSET-}"                        # docker --cpuset-cpus on both; empty = as measured (5-9,15-19: the X925 cores)
-DROP_CACHES="${DROP_CACHES:-1}"            # drop the page cache before start (sudo -n): vLLM sizes its pools to "free"
+# 1: before the start, on both nodes with the GPU idle, drop the page cache (vLLM sizes its pools to "free") and
+# compact free memory (../scripts/mem-prep.sh; passwordless sudo for the two writes: mem-prep.sh sudoers <worker>).
+# DROP_CACHES, its earlier name, still works.
+MEM_PREP="${MEM_PREP:-${DROP_CACHES:-1}}"
 
 # The engine's tuned knobs (styles01's launcher RECIPE_ENV, as measured):
 # EXL3 MoE kernels, the RDMA all-reduce ring, the paced L2 prefetch, the

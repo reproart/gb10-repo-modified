@@ -102,7 +102,7 @@ changes.
 | `VISION` | 1 | 0: text only, ~0.9 GiB a rank back to KV |
 | `HOST`, `PORT`, `SERVED_MODEL_NAME`, `API_KEY` | 0.0.0.0, 8888, `DeepSeek-V4.1-Flash-1017`, none | |
 | `CPUSET` | empty | `--cpuset-cpus` on both (`5-9,15-19`: the X925 cores); empty as measured |
-| `DROP_CACHES` | 1 | needs `sudo -n` on both, else a note |
+| `MEM_PREP` | 1 | page cache dropped and free memory compacted on both before the start (`../scripts/mem-prep.sh`; passwordless sudo for it: `../scripts/mem-prep.sh sudoers <worker>`, else a note). `DROP_CACHES` still works |
 | `RECIPE_ENV`, `ENGRAM_CONFIG` | their launcher's | the tuned EXL3 / RDMA / L2-prefetch / Engram-reader knobs; `RECIPE_ENV=` runs without them |
 | `EXTRA_ARGS`, `EXTRA_ENV` | | more `vllm serve` flags; more `NAME=value` for both, replacing one of the same name |
 

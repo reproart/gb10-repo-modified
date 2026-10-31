@@ -12,6 +12,8 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
 need_docker
+# ~9 GB compressed: never beside a GPU job (../scripts/mem-prep.sh idle; a Spark has hung so).
+"$B12X_ROOT/../scripts/mem-prep.sh" idle || exit 1
 ref="$(image_ref)"
 echo "== docker pull $ref (~9 GB compressed) =="
 docker pull "$ref"

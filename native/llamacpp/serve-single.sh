@@ -38,6 +38,7 @@ MODEL="$(gguf_for "$QUANT")"
 need_file "$MODEL"
 [ "$MMPROJ" = 1 ] && need_file "$MMPROJ_FILE"
 no_sglang
+mem_prep
 
 # The memory budget, before loading 110 GiB into it.
 weights=$(stat -c %s "$MODEL")

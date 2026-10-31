@@ -25,6 +25,7 @@ RPC_CACHE="${RPC_CACHE:-1}"
 
 need_build ggml-rpc-server
 no_sglang
+mem_prep
 
 if [ "$BIND" = 0.0.0.0 ] || [ "$BIND" = "::" ]; then
   if [ "${ALLOW_ANY_ADDRESS:-0}" != 1 ]; then

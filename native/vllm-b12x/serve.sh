@@ -48,6 +48,8 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models
   echo "something already serves :$PORT" >&2
   exit 1
 fi
+# GB10 memory before the start (../scripts/mem-prep.sh): page cache dropped, free memory compacted.
+mem_line=$("$B12X_ROOT/../scripts/mem-prep.sh" "$([ "$MEM_PREP" = 1 ] && echo prep || echo status)" 2>&1 || true)
 # Where the n-gram table goes, and the memory budget that follows from it.
 case "$PLE_OFFLOAD" in
   disk) ple_env=(VLLM_PLE_CPU_OFFLOAD=1 VLLM_PLE_TABLE_MEMORY=disk B12X_DISK_BACKEND=io_uring)
@@ -201,6 +203,7 @@ echo "model   $MODEL_DIR (revision $(head -1 "$MODEL_DIR/.cache/huggingface/down
 echo "serve   ctx $MAX_MODEL_LEN$([ "$YARN" = 1 ] && echo " (YaRN x$YARN_FACTOR)"), $MAX_NUM_SEQS seqs, chunk $MAX_BATCHED_TOKENS, mem $GPU_UTIL, KV $KV_CACHE_DTYPE," \
   "MTP $([ "$MTP_TOKENS" -gt 0 ] && echo "$MTP_TOKENS tokens" || echo off), PLE table $([ "$PLE_OFFLOAD" = none ] && echo "in GPU memory (no offload)" || echo "offloaded: $PLE_OFFLOAD")"
 echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\""
+[ -n "$mem_line" ] && echo "${mem_line#\[*\] }"
 [ "$PROFILE" = 1 ] && echo "profile torch profiler on, traces to $PROFILE_DIR (python3 ../bench/profile_decode.py)"
 echo
 exec docker run "${docker_args[@]}" "$ref" "${args[@]}"

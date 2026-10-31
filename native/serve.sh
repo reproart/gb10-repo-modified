@@ -57,6 +57,12 @@ export API_KEY=''
 # Empty = no pinning.
 export CPUSET=5-9,15-19
 
+# Before each start, with the GPU idle: drop the page cache (CUDA allocations
+# on GB10 do not reclaim it) and compact free memory (a boot's decode speed
+# follows how much of it is in blocks of 2 MiB or more). The two writes need
+# passwordless sudo, once: scripts/mem-prep.sh sudoers. 0 = memory as it is.
+export MEM_PREP="${MEM_PREP:-1}"
+
 cmd=serve
 for arg in "$@"; do
   case "$arg" in

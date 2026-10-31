@@ -23,5 +23,7 @@ log "recipe at $(git -C "$KIT_DIR" log -1 --format='%h %ad %s' --date=short)"
 mkdir -p "$HF_CACHE" 2>/dev/null || { echo "cannot create $HF_CACHE: sudo mkdir -p $HF_CACHE && sudo chown $(id -un) $HF_CACHE" >&2; exit 1; }
 wssh "mkdir -p '$HF_CACHE'" || { echo "cannot create $HF_CACHE on the worker (same fix there)" >&2; exit 1; }
 
+# ~200 GB of downloads, an image copy and an rsync: never beside a GPU job (a Spark has hung so).
+"$NATIVE_DIR/scripts/mem-prep.sh" idle "$WORKER_SSH" || exit 1
 kit_env
 exec "$KIT_DIR/scripts/prepare.sh" "$@"
