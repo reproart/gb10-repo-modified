@@ -76,7 +76,11 @@ def patch(src: str) -> str:
     args = [a.strip().rstrip(",") for a in m.group("args").split("\n") if a.strip()]
     assert tuple(args[:6]) == NEEDED, f"unexpected kernel arguments {args[:6]}"
     ind = m.group("ind")
-    cond = "_DET_ALIGN and topk_ids.shape[0] >= _DET_MIN_TOKENS and expert_map is None"
+    cond = "_DET_ALIGN and topk_ids.shape[0] >= _DET_MIN_TOKENS"
+    # expert parallelism (an expert_map) keeps the kernel; only names the function has
+    signature = src[fn.end():src.index(":\n", fn.end())]
+    if re.search(r"\bexpert_map\b", signature):
+        cond += " and expert_map is None"
     if any("scatter_idx" in a for a in args[6:]):
         cond += " and scatter_idx is None"
     body = "\n".join(("    " + line) if line else line for line in m.group(0).rstrip("\n").split("\n")) + "\n"
