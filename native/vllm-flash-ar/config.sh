@@ -81,8 +81,9 @@ export YARN="${YARN:-0}"
 # -0 / ? / -17-36% / -32-49%). ../bench/perf.py --only interference measures it.
 export BATCHED_TOKENS="${BATCHED_TOKENS:-8192}"
 # Marlin's split-K reduction with atomic adds (VLLM_MARLIN_USE_ATOMIC_ADD): the
-# recipe's setting, for speed; the sums then land in arrival order, which is the
-# run-to-run jitter its README mentions. 0 = ordered reduction (not measured).
+# recipe's setting, for speed. Dense Marlin GEMMs only: the MoE kernel always
+# reduces in order (marlin_moe.py passes use_atomic_add=False), so 0 left the
+# run-to-run differences below as they were (../bench/consistency.py).
 export MARLIN_ATOMIC_ADD="${MARLIN_ATOMIC_ADD:-1}"
 # 1: deterministic MoE token alignment (src/patch_det_moe_align.py): the routes of an
 # expert in a fixed order, so the Marlin MoE sums run in the same order every time. On

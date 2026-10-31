@@ -271,7 +271,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `CUDA_LAUNCH_BLOCKING` | `0` | `1` — synchronous CUDA errors, for debugging Xid 31 (much slower; not for production) |
 | `RESTART` | `no` | Container restart policy. `unless-stopped` (the recipe's earlier default; bare script too) survives reboots and crashes — only where this is the machine's one server, else two servers start at boot. The next `./serve.sh` re-creates the container with this value |
 | `BATCHED_TOKENS` | `8192` | Prefill chunk (`--max-num-batched-tokens`). Smaller keeps other streams decoding during a long prefill, at a prefill cost (blazux's table, NVFP4 base: a decoding client at 0.2 / 0.4–0.6 / 1.0 / 1.6 tok/s during a big prefill at 8192 / 2048 / 1024 / 512, long prefill −17–36% at 1024). `../bench/perf.py --only interference` measures it here |
-| `MARLIN_ATOMIC_ADD` | `1` | `VLLM_MARLIN_USE_ATOMIC_ADD`: Marlin's split-K reduction by atomic adds, for speed; the sums land in arrival order (the run-to-run jitter in patch 5's notes). `0` = ordered, not measured |
+| `MARLIN_ATOMIC_ADD` | `1` | `VLLM_MARLIN_USE_ATOMIC_ADD`: Marlin's split-K reduction by atomic adds, for speed, in the dense Marlin GEMMs; the MoE kernel never uses it (`marlin_moe.py`: `use_atomic_add=False`). `0` changed nothing in `consistency.py` here; see patch 15 |
 | `DET_MOE_ALIGN` | `0` | `1` = deterministic MoE token alignment (patch 15): the same prompt sums in the same order every run. Off until measured here |
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
@@ -689,8 +689,11 @@ Marlin's split-K stripes depend on the m-block, so a prompt's sums run in
 another order from one run to the next. Measured here with
 `../bench/consistency.py` (2026-10-31, 4K and 32K prompts, greedy): three cold
 runs of one prompt, first-token top-5 logprobs 0.16-0.45 nats apart, replies
-forking after 8-117 characters, with `MARLIN_ATOMIC_ADD` 1 and 0 alike; the
-QSA top-k is deterministic already (patch 9). blazux's NVFP4 path, whose MoE
+forking after 8-117 characters, with `MARLIN_ATOMIC_ADD` 1 and 0 alike (that
+switch never reaches the MoE: its Marlin call reduces in order, fp32, no
+atomics, so given one block layout its sums are fixed); the QSA top-k is
+deterministic already (patch 9). The first token comes from the prefill
+alone, so MTP is out of it too. blazux's NVFP4 path, whose MoE
 does not run on Marlin, measured deterministic first tokens.
 
 With `VLLM_DET_MOE_ALIGN=1` batches of at least 9 tokens
