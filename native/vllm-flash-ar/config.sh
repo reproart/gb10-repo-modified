@@ -93,6 +93,14 @@ export MARLIN_ATOMIC_ADD="${MARLIN_ATOMIC_ADD:-1}"
 # serving cost is measured (prestonlogan: ~3.7% prefill on Flint). ./build.sh checks it
 # against the image's CUDA kernel on the GPU.
 export DET_MOE_ALIGN="${DET_MOE_ALIGN:-0}"
+# The steps it applies to: from this many tokens up. auto = SEQS x (1 + MTP) + 1 (33 as
+# set here), one more than the largest decode-only step: prefill and steps that carry a
+# prefill chunk take it, decode keeps the kernel. Decode loses nothing by that: one
+# stream (1 + MTP tokens) fits one block, where the kernel's order is harmless, and a
+# step of several streams depends on what else is in the batch whatever the alignment.
+# 9 = every step where an expert can fill more than one block of 8 (the patch's own
+# default; single-stream decode is still below it).
+export DET_MOE_ALIGN_MIN_TOKENS="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
 # docker --cpuset-cpus; empty = all cores (as the recipe measured). 5-9,15-19 are
 # GB10's Cortex-X925 cores (blazux's concurrent profile pins to them).
 export CPUSET="${CPUSET:-}"
