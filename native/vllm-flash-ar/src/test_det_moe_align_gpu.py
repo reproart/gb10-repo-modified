@@ -12,8 +12,10 @@ padding tokens with -1 and ids past the last expert, as vLLM passes them):
    id, the -1 blocks after them, the same routes in each expert's blocks, numel in the
    rest. Only the order inside an expert may differ, and that is the point.
 2. the deterministic path gives one layout in every run; how many of the kernel's runs
-   put an expert's routes in another order than its first run (the variation the patch
-   removes; 0 for a batch does not prove the kernel is stable, more than 0 shows it is not);
+   moved a route to another block than in its first run (the variation that changes
+   Marlin's sums and that the patch removes), and how many only reordered routes inside
+   a block (harmless: a block's rows are computed alike wherever they sit). 0 for a
+   batch does not prove the kernel stable; more than 0 shows it is not;
 3. time per call of both (CUDA events).
 Then, on an image built with the patch, moe_align_block_size itself with the switch on:
 the wrapper takes the deterministic path for a prefill batch and the kernel for a
@@ -82,6 +84,12 @@ def per_expert(s, e, p, block):
     return total, torch.sort(key).values
 
 
+def by_block(s, total, block):
+    """Which routes each block holds, with the order inside a block sorted."""
+    blk = torch.arange(total, device=s.device, dtype=torch.int64) // block
+    return torch.sort(blk * (2 ** 32) + s[:total].to(torch.int64)).values
+
+
 def ms(fn, *a, reps=20):
     for _ in range(3):
         fn(*a)
@@ -125,12 +133,15 @@ for tokens, block, pad, stray, dtype in [(8192, 64, 0, 0, torch.int32), (4000, 6
     if not det_same:
         problems.append("the deterministic path gave two layouts")
     k_runs = [kernel(topk_ids, block)[0] for _ in range(10)]
-    k_moved = sum(not torch.equal(r[:total], ks[:total]) for r in k_runs)
+    first = by_block(ks, total, block)
+    k_moved = sum(not torch.equal(by_block(r, total, block), first) for r in k_runs)
+    k_inner = sum(not torch.equal(r[:total], ks[:total]) for r in k_runs) - k_moved
     t_k, t_d = ms(kernel, topk_ids, block), ms(ours, topk_ids, block)
     fails += bool(problems)
     print(f"{'FAIL' if problems else 'PASS'} {tokens} tokens + {pad} padding (-1) + {stray} stray ids, "
           f"{str(dtype).split('.')[-1]}, block {block}: {total} rows, {blocks} blocks; "
-          f"kernel order changed in {k_moved} of 10 runs; {t_k * 1000:.0f} us kernel, {t_d * 1000:.0f} us deterministic"
+          f"kernel: a route in another block in {k_moved} of 10 runs, reordered inside blocks only in {k_inner}; "
+          f"{t_k * 1000:.0f} us kernel, {t_d * 1000:.0f} us deterministic"
           + ("" if not problems else "\n     " + "; ".join(problems)))
 
 if hasattr(mod, "_DET_ALIGN"):

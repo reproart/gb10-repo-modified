@@ -31,8 +31,10 @@
 >   blazux #43 on this base), and an opt-in **deterministic MoE token
 >   alignment** (`DET_MOE_ALIGN=1`, patch 15 below): `../bench/consistency.py`
 >   found three cold runs of one greedy prompt apart from the first token's
->   logprobs (0.16-0.45 nats), with `MARLIN_ATOMIC_ADD` on or off. Off until a
->   run shows what it fixes and costs.
+>   logprobs (0.16-0.45 nats), with `MARLIN_ATOMIC_ADD` on or off; with
+>   `DET_MOE_ALIGN=1` cold, cold again and cache hits gave the same text and
+>   the same first-token logprobs (gap 0.0000, 4K and 32K). Off by default
+>   until its serving cost is measured.
 > - **Port 8888** and model ids `qwen3.8-flash-next` plus `qwen` (the old id,
 >   still answered); `PORT=8000` in `config.local.sh` keeps old clients.
 > - **`RESTART=no`** by default, like every server here; `unless-stopped`
@@ -272,7 +274,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `RESTART` | `no` | Container restart policy. `unless-stopped` (the recipe's earlier default; bare script too) survives reboots and crashes — only where this is the machine's one server, else two servers start at boot. The next `./serve.sh` re-creates the container with this value |
 | `BATCHED_TOKENS` | `8192` | Prefill chunk (`--max-num-batched-tokens`). Smaller keeps other streams decoding during a long prefill, at a prefill cost (blazux's table, NVFP4 base: a decoding client at 0.2 / 0.4–0.6 / 1.0 / 1.6 tok/s during a big prefill at 8192 / 2048 / 1024 / 512, long prefill −17–36% at 1024). `../bench/perf.py --only interference` measures it here |
 | `MARLIN_ATOMIC_ADD` | `1` | `VLLM_MARLIN_USE_ATOMIC_ADD`: Marlin's split-K reduction by atomic adds, for speed, in the dense Marlin GEMMs; the MoE kernel never uses it (`marlin_moe.py`: `use_atomic_add=False`). `0` changed nothing in `consistency.py` here; see patch 15 |
-| `DET_MOE_ALIGN` | `0` | `1` = deterministic MoE token alignment (patch 15): the same prompt sums in the same order every run. Off until measured here |
+| `DET_MOE_ALIGN` | `0` | `1` = deterministic MoE token alignment (patch 15): the same prompt gives the same logprobs every run, cold or from the cache (measured). Off until its serving cost is measured |
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
 | `MEM_PREP` / `WAIT_MIN` | `1` / `15` | `./serve.sh`: page cache dropped and memory compacted before the start (`../scripts/mem-prep.sh`); wait up to N minutes for the API (`0` = return at once) |
@@ -695,6 +697,19 @@ atomics, so given one block layout its sums are fixed); the QSA top-k is
 deterministic already (patch 9). The first token comes from the prefill
 alone, so MTP is out of it too. blazux's NVFP4 path, whose MoE
 does not run on Marlin, measured deterministic first tokens.
+
+**Measured with the patch on (2026-10-31, GX10, `DET_MOE_ALIGN=1`):**
+`consistency.py --only repeat` at ~4K and ~32K tokens, cold, two cache hits
+(1600 / 30400 tokens from the cache) and cold again with its own
+`cache_salt`: the same text every time and a first-token top-5 gap of 0.0000
+for cold vs cold, hit vs hit and cold vs hit. So the alignment was the whole
+run-to-run difference on this stack, and a prefix-cache hit (Mamba state at a
+1600-token boundary plus the KV after it) reproduces a cold prefill bit for
+bit. The GPU check (`./build.sh`) found the kernel moving routes on every
+one of 10 runs of a 100-8192-token batch; one call costs ~0.2 ms against
+12-43 us for the kernel (mostly launches of small torch ops; 48 MoE layers
+plus the MTP layer per step). Serving cost: `../bench/perf.py --only prefill`
+and `--only concurrency` with `DET_MOE_ALIGN` 0 and 1.
 
 With `VLLM_DET_MOE_ALIGN=1` batches of at least 9 tokens
 (`VLLM_DET_MOE_ALIGN_MIN_TOKENS`) are aligned by torch ops: the same blocks,

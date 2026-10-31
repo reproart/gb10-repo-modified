@@ -88,9 +88,10 @@ export MARLIN_ATOMIC_ADD="${MARLIN_ATOMIC_ADD:-1}"
 # 1: deterministic MoE token alignment (src/patch_det_moe_align.py): the routes of an
 # expert in a fixed order, so the Marlin MoE sums run in the same order every time. On
 # this recipe three cold runs of one greedy prompt gave first-token logprobs 0.16-0.45
-# nats apart (../bench/consistency.py), with MARLIN_ATOMIC_ADD 1 or 0. Off until a run
-# here shows what it fixes and costs (prestonlogan measured ~3.7% prefill on Flint).
-# ./build.sh checks it against the image's CUDA kernel on the GPU.
+# nats apart (../bench/consistency.py), with MARLIN_ATOMIC_ADD 1 or 0; with 1 here, cold,
+# cold again and cache hits matched exactly (gap 0.0000, 4K and 32K). Off until its
+# serving cost is measured (prestonlogan: ~3.7% prefill on Flint). ./build.sh checks it
+# against the image's CUDA kernel on the GPU.
 export DET_MOE_ALIGN="${DET_MOE_ALIGN:-0}"
 # docker --cpuset-cpus; empty = all cores (as the recipe measured). 5-9,15-19 are
 # GB10's Cortex-X925 cores (blazux's concurrent profile pins to them).
