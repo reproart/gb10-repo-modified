@@ -21,6 +21,10 @@ set -euo pipefail
 
 . "$(dirname "${BASH_SOURCE[0]}")/lib/config.sh"
 
+# ~4 GB of wheels through the page cache: not beside a model server (scripts/mem-prep.sh idle; large copies beside
+# GPU work have hung a Spark). ALLOW_BUSY_GPU=1 installs anyway.
+"$ROOT/scripts/mem-prep.sh" idle || exit 1
+
 # Empty SGLANG_CONSTRAINTS drops the CUDA 13.0 hold, for a newer driver.
 # Relative to the project root, which is where the lock is resolved.
 CONSTRAINTS="${SGLANG_CONSTRAINTS-requirements/constraints-cuda130.txt}"

@@ -4,6 +4,8 @@
 set -euo pipefail
 # shellcheck source=config.sh
 . "$(dirname "$0")/config.sh"
+# A build and a ~25 GB image copy: never beside a GPU job (../scripts/mem-prep.sh idle; a Spark has hung so).
+"$ROOT/../scripts/mem-prep.sh" idle "$WORKER_SSH" || exit 1
 
 log "building $IMAGE from $TF_REPO @ $TF_COMMIT"
 docker build --build-arg TF_REPO="$TF_REPO" --build-arg TF_COMMIT="$TF_COMMIT" -t "$IMAGE" "$ROOT/docker"

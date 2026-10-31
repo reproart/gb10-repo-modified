@@ -45,6 +45,12 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models
   exit 1
 fi
 
+# GB10 memory before the start (scripts/mem-prep.sh, MEM_PREP in ../serve.sh):
+# with the GPU idle, page cache dropped and free memory compacted; the line in
+# the summary says how much is free and in 2 MiB+ blocks.
+MEM_PREP="${MEM_PREP:-1}"
+mem_line=$("$ROOT/scripts/mem-prep.sh" "$([ "$MEM_PREP" = 1 ] && echo prep || echo status)" 2>&1 || true)
+
 # Unified memory: the GPU's pool is the machine's RAM. A leftover process
 # holding most of it (a server that did not exit, a llama.cpp test, a merge
 # script) shows up inside SGLang as "CUDA error: out of memory" before any
@@ -131,6 +137,7 @@ echo "sglang  $SGLANG_VERSION ($VENV), mem-fraction $MEM_FRACTION"
 echo "nvcc    $(command -v nvcc >/dev/null && nvcc --version | grep -oE 'release [0-9.]+' || echo 'not on PATH; set CUDA_HOME if kernel JIT fails')"
 echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\"   CPUs ${CPUSET:-all}"
 [ -n "$swap_note" ] && echo "memory  $swap_note"
+[ -n "$mem_line" ] && echo "        ${mem_line#\[*\] }"
 echo
 
 exec "${scope[@]}" "${pin[@]}" "$VENV/bin/python" -m sglang.launch_server "${args[@]}"

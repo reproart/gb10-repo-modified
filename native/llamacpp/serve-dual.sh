@@ -47,6 +47,7 @@ MODEL="$(gguf_for "$QUANT")"
 need_file "$MODEL"
 [ "$MMPROJ" = 1 ] && need_file "$MMPROJ_FILE"
 no_sglang
+mem_prep
 
 # Is the worker there, and how far away?
 if ! timeout 3 bash -c "exec 3<>/dev/tcp/$WORKER/$RPC_PORT" 2>/dev/null; then

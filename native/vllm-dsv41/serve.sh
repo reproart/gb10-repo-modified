@@ -76,11 +76,9 @@ if [ "$DEPTH_PROBE" = 1 ]; then
              "VLLM_DSPARK_ROUND_MS=$ROUND_MS")
   echo fixed:5 > "$CACHE_DIR/dspark_depth" 2>/dev/null || sudo -n tee "$CACHE_DIR/dspark_depth" <<< fixed:5 >/dev/null || true
 fi
-# GB10: CUDA allocations do not reclaim the page cache, and vLLM sizes its pools to "free".
-if [ "$DROP_CACHES" = 1 ]; then
-  sync; echo 3 | sudo -n tee /proc/sys/vm/drop_caches >/dev/null 2>&1 || echo "note: drop_caches needs sudo -n here" >&2
-  wssh "sync; echo 3 | sudo -n tee /proc/sys/vm/drop_caches >/dev/null 2>&1" || echo "note: drop_caches needs sudo -n on the worker" >&2
-fi
+# GB10: CUDA allocations do not reclaim the page cache, and vLLM sizes its pools to "free"; free memory compacted
+# too (../scripts/mem-prep.sh), on both nodes.
+if [ "$MEM_PREP" = 1 ]; then "$VD_ROOT/../scripts/mem-prep.sh" prep "$WORKER_SSH" || true; fi
 
 # shellcheck disable=SC2206  # RECIPE_ENV / EXTRA_ENV are NAME=value lists, split on purpose
 envs=($RECIPE_ENV "${depth_env[@]}" VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1800 VLLM_ALLOW_LONG_MAX_MODEL_LEN=1

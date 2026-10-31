@@ -8,6 +8,8 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 
 need_docker
+# ~20 GB of image on each node: never beside a GPU job (../scripts/mem-prep.sh idle; a Spark has hung so).
+"$VD_ROOT/../scripts/mem-prep.sh" idle "$WORKER_SSH" || exit 1
 if [ -z "$IMAGE_DIGEST" ]; then
   log "pulling $IMAGE:$IMAGE_TAG (no image.lock yet)"
   docker pull "$IMAGE:$IMAGE_TAG"
