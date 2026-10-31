@@ -76,6 +76,17 @@ def main():
     assert pd.patch(patched) == patched
     print(f"PASS patcher on {'MOE_ALIGN_SRC' if src_path else 'a stand-in of the PR #53896 file'}: wrapped once, "
           "helper above, parses, idempotent")
+    if "expert_map" in src:
+        assert "and expert_map is None:" in patched
+    # a version without expert_map: the condition must not name it
+    no_map = STANDIN.replace("    expert_map: torch.Tensor | None = None,\n", "") \
+        .replace("        expert_map if ignore_invalid_experts else None,\n", "") \
+        .replace("    if expert_map is not None and not ignore_invalid_experts:\n        expert_ids = expert_map[expert_ids]\n", "")
+    assert "expert_map" not in no_map
+    patched = pd.patch(no_map)
+    ast.parse(patched)
+    assert "expert_map" not in patched.split(pd.MARK.replace("# ---", "# --- end"))[1]
+    print("PASS patcher on a signature without expert_map: the condition does not name it")
     print("ALL OK")
 
 
