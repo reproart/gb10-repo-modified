@@ -50,6 +50,8 @@ API_KEY="${API_KEY:-}"
 LOG_MAX_SIZE="${LOG_MAX_SIZE:-10m}"
 LOG_MAX_FILE="${LOG_MAX_FILE:-3}"
 
+# --enable-prompt-tokens-details (below): usage.prompt_tokens_details.cached_tokens
+# in every reply, the prefix-cache hit a client sees (blazux #43 on this base).
 # Model ids: SERVED_NAME may list several, space-separated (vLLM takes them all;
 # the first is the one replies carry).
 read -r -a SERVED_NAMES <<< "${SERVED_NAME:-qwen3.8-flash-next}"
@@ -344,7 +346,7 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
   /model --served-model-name "${SERVED_NAMES[@]}" \
     --host 0.0.0.0 --port 8000 --load-format "${LOAD_FORMAT:-fastsafetensors}" \
     --max-model-len "$CTX" --max-num-seqs "$SEQS" --gpu-memory-utilization "$GPU_MEM" \
-    $PC_ARG --enable-chunked-prefill --max-num-batched-tokens "${BATCHED_TOKENS:-8192}" \
+    $PC_ARG --enable-prompt-tokens-details --enable-chunked-prefill --max-num-batched-tokens "${BATCHED_TOKENS:-8192}" \
     $CC \
     $AT_ARG \
     --kv-cache-dtype auto \
