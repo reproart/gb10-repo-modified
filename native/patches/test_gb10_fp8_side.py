@@ -278,8 +278,10 @@ class HeadTest(unittest.TestCase):
             if v is not None:
                 os.environ[k] = v
 
-    def worker(self, *, token_map=True, layers=1, tied=False):
-        """What EagleDraftWorker.init_lm_head leaves behind."""
+    def worker(self, *, token_map=True, layers=1, tied=False, own_module=False):
+        """What EagleDraftWorker.init_lm_head leaves behind. own_module: a single
+        draft that takes the target's head tensor into a module of its own
+        (set_embed_and_head without set_lm_head_from_target: Ling's NEXTN)."""
         target_head = Head(self.embed.data if tied else self.head_w.clone())
         target = Model(target_head, self.embed)
         drafts = []
@@ -287,7 +289,7 @@ class HeadTest(unittest.TestCase):
             if token_map:               # head.clone(); head.data = head.data[hot_token_id]
                 hot = torch.arange(0, self.VOCAB, self.VOCAB // self.HOT)
                 d_head = Head(target_head.weight.data[hot].clone())
-            elif layers > 1:            # multi-layer: set_embed_and_head(embed, head)
+            elif layers > 1 or own_module:  # set_embed_and_head(embed, head)
                 d_head = Head(target_head.weight.data)
             else:                       # set_lm_head_from_target(target_lm_head)
                 d_head = target_head
@@ -356,6 +358,30 @@ class HeadTest(unittest.TestCase):
         self.assertIs(drafts[1].lm_head.weight, drafts[0].lm_head.weight)
         self.assertEqual(target.lm_head.weight.dtype, torch.bfloat16)   # its own module stays
         self.assert_close(drafts[2].lm_head, self.head_w)
+
+    def test_both_heads_draft_module_holds_the_target_tensor(self):
+        # Ling-3.0-flash's NEXTN draft: its own head module, the target's tensor.
+        # The draft must run the converted weights through the FP8 kernel, never
+        # read FP8 bytes as a BF16 matmul (NVIDIA's accept-length-1.00 failure).
+        self.env_set(draft="1", target="1")
+        w, target, (draft,) = self.worker(token_map=False, own_module=True)
+        self.assertIsNot(draft.lm_head, target.lm_head)
+        report = self.f.heads_after_init_lm_head(w)
+        self.assertEqual(report, [("target", "converted"), ("draft", "shared")])
+        self.assertEqual(len(self.prepared), 1)
+        self.assertIs(draft.lm_head.weight, target.lm_head.weight)
+        self.assertIsInstance(draft.lm_head.quant_method, self.f.Fp8MarlinSideMethod)
+        self.assert_close(draft.lm_head, self.head_w)
+        self.assert_close(target.lm_head, self.head_w)
+
+    def test_target_head_only_leaves_the_draft_on_the_bf16_tensor(self):
+        self.env_set(draft="0", target="1")
+        w, target, (draft,) = self.worker(token_map=False, own_module=True)
+        report = self.f.heads_after_init_lm_head(w)
+        self.assertEqual(report, [("target", "converted")])
+        self.assertEqual(draft.lm_head.weight.dtype, torch.bfloat16)
+        self.assertTrue(torch.equal(draft.lm_head.weight, self.head_w))
+        self.assertTrue(self.f._is_unquant_head(getattr(draft.lm_head, "quant_method", None)))
 
     def test_tied_head_is_left_alone(self):
         self.env_set(target="1")
