@@ -37,20 +37,27 @@ _DET_MIN_TOKENS = int(_os.environ.get("VLLM_DET_MOE_ALIGN_MIN_TOKENS", "9"))
 
 def _deterministic_align(topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad):
     """moe_align_block_size's outputs with each expert's routes in ascending route order
-    (the CUDA kernel: atomicAdd arrival order). Torch ops only, no host sync."""
+    (the CUDA kernel: atomicAdd arrival order). Routes to an id outside [0, num_experts)
+    (the -1 of padding tokens) are left out, as the kernel leaves them out. Torch ops
+    only, no host sync."""
     import torch as _torch
     dev = topk_ids.device
     flat = topk_ids.reshape(-1).to(_torch.int64)
     n = flat.numel()
-    counts = _torch.zeros(num_experts, dtype=_torch.int64, device=dev).scatter_add_(0, flat, _torch.ones_like(flat))
-    padded = ((counts + block_size - 1) // block_size) * block_size
+    cap = sorted_ids.numel()
+    # invalid routes go to an extra bucket after the last expert, which takes no blocks
+    key = _torch.where((flat >= 0) & (flat < num_experts), flat, _torch.full_like(flat, num_experts))
+    counts = _torch.zeros(num_experts + 1, dtype=_torch.int64, device=dev).scatter_add_(0, key, _torch.ones_like(key))
+    padded = ((counts[:num_experts] + block_size - 1) // block_size) * block_size
     pad_end = padded.cumsum(0)
-    pad_start = pad_end - padded
+    pad_start = _torch.cat([pad_end - padded, pad_end.new_zeros(1)])
     cnt_start = counts.cumsum(0) - counts
-    sv, si = _torch.sort(flat, stable=True)
-    rank = _torch.arange(n, device=dev) - cnt_start[sv]
-    sorted_ids.fill_(n)
-    sorted_ids[pad_start[sv] + rank] = si.to(_torch.int32)
+    sv, si = _torch.sort(key, stable=True)
+    dest = pad_start[sv] + _torch.arange(n, device=dev) - cnt_start[sv]
+    dest = _torch.where(sv < num_experts, dest, _torch.full_like(dest, cap))  # invalid: one slot past the end
+    out = _torch.full((cap + 1,), n, dtype=sorted_ids.dtype, device=dev)
+    out[dest] = si.to(sorted_ids.dtype)
+    sorted_ids.copy_(out[:cap])
     blk_start = _torch.arange(expert_ids.numel(), device=dev, dtype=_torch.int64) * block_size
     e = _torch.searchsorted(pad_end, blk_start, right=True)
     expert_ids.copy_(_torch.where(e >= num_experts, _torch.full_like(e, -1), e).to(_torch.int32))
