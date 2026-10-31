@@ -1,0 +1,11 @@
+docs/
+scripts/
+bench/
+tools/
+.github/
+*.md
+.git/
+
+# Not part of the image (and config.local.sh may hold an API key)
+*.sh
+config.local.sh*

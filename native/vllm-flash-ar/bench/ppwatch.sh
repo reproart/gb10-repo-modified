@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Live prefill throughput from vllm:scheduled_ctx_tokens_total (needs the image's
 # prefill-metrics patch and the server started with ITER_DETAILS=1).
-#   bench/ppwatch.sh [http://localhost:8000] [interval_s]
+#   bench/ppwatch.sh [http://localhost:8888] [interval_s]
 # API_KEY (serve.sh's) is sent as a bearer token when set.
-BASE="${1:-${BASE:-http://localhost:8000}}"; DT="${2:-1}"
+BASE="${1:-${BASE:-http://localhost:8888}}"; DT="${2:-1}"
 AUTH=(); [ -n "${API_KEY:-}" ] && AUTH=(-H "Authorization: Bearer $API_KEY")
 get() { curl -s ${AUTH[@]+"${AUTH[@]}"} "$BASE/metrics" | awk '/^vllm:scheduled_ctx_tokens_total/{c=$NF} /^vllm:scheduled_iterations_total/{i=$NF} END{print c+0, i+0}'; }
 read -r c0 i0 < <(get); t0=$(date +%s.%N)

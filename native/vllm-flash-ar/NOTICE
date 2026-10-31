@@ -1,0 +1,23 @@
+qwen3.8-Flash-DGX-AutoRound, as carried in this project (native/vllm-flash-ar)
+Copyright 2026 blazux, Saren-Arterius and contributors; Apache-2.0 (LICENSE).
+
+Lineage: blazux/qwen3.8-Flash-DGX (the mmap-PLE recipe) -> Saren-Arterius/
+qwen3.8-Flash-DGX-AutoRound (Intel's AutoRound int4 + int8 lm_head + fp8 side
+layers, the patches in src/) -> reproart/qwen3.8-Flash-DGX-AutoRound-modified
+(metrics sidecar, API key, BIND_ADDR, healthcheck, resumable prepare.sh, CI)
+-> this directory (2026-10-31). Third-party credits: README.md, "Credits".
+
+Changed here, as Apache-2.0 section 4(b) asks (details: README.md, top):
+- Dockerfile: blazux's tool-call parser patches 12 and 13 (src/patches/,
+  from blazux/qwen3.8-Flash-DGX at 2ba2d77) applied after the existing steps.
+- scripts/serve-intel-ar.sh: several served model ids, the prefill chunk,
+  Marlin's atomic adds and CPU pinning as settings, EXTRA_ENV with
+  replace-by-name, an image probe for the parser patches.
+- serve.sh became config.sh (the settings, defaults changed: port 8888,
+  model ids, RESTART=no); new serve.sh, stop.sh, status.sh, build.sh,
+  download.sh, config.local.sh.example.
+- prepare.sh: absolute paths before its cd, pinned source revisions, the
+  idle-GPU check; tools/fetch-ple-table-fp8.sh: a pinned revision.
+- bench/: perf.py, longctx.py and common.py removed (this project's ../bench/
+  has them); the others point at port 8888. .github/ CI and the
+  docs/OPTIMIZATIONS.md stub removed.

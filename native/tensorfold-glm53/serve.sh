@@ -16,7 +16,7 @@ need_kit
 # One server at a time: each wants port 8888 and most of the memory of both nodes.
 pgrep -f "sglang.launch_server" >/dev/null 2>&1 && {
   echo "an SGLang server is running: stop it first (sudo systemctl stop gb10-sglang, or Ctrl-C it)" >&2; exit 1; }
-for c in gb10-vllm-b12x gb10-vllm-dsv41 tfv41-r0; do
+for c in gb10-vllm-b12x gb10-vllm-dsv41 tfv41-r0 qwen38-flash; do
   docker ps --format '{{.Names}}' | grep -qx "$c" && { echo "container $c runs: stop it first" >&2; exit 1; }
 done
 wssh "docker ps --format '{{.Names}}'" | grep -qxE 'tfv41-r1|gb10-vllm-dsv41' && {

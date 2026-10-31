@@ -12,6 +12,10 @@
 #   TABLE_DIR=/models/ple-table-fp8 scripts/serve-intel-ar.sh
 #
 #   MTP=0 ... scripts/serve-intel-ar.sh     # no speculation (first-boot sanity)
+#
+# In this project ../serve.sh runs it with config.sh's values (port 8888, the
+# one-server checks, memory preparation); its own defaults below stay the
+# recipe's for a direct call.
 set -euo pipefail
 
 NAME="${NAME:-qwen38-flash}"
@@ -45,6 +49,10 @@ API_KEY="${API_KEY:-}"
 # every 30s, so an unbounded container log grows to GBs over months.
 LOG_MAX_SIZE="${LOG_MAX_SIZE:-10m}"
 LOG_MAX_FILE="${LOG_MAX_FILE:-3}"
+
+# Model ids: SERVED_NAME may list several, space-separated (vLLM takes them all;
+# the first is the one replies carry).
+read -r -a SERVED_NAMES <<< "${SERVED_NAME:-qwen3.8-flash-next}"
 
 # HEALTHCHECK probes vLLM's /health (503 while loading, 200 when serving);
 # python3 because the base image does not guarantee curl. start-period covers
@@ -194,7 +202,7 @@ done
 #   metrics — the vllm_custom_metrics module: the engine-side metrics sidecar.
 #             Without it PLE stats are neither served nor logged unless
 #             PLE_STATS_SEC brings the log lines back (handled below).
-IMAGE_OK=1 DRAFT_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0
+IMAGE_OK=1 DRAFT_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0 FENCES_OK=0
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   IMAGE_OK=0  # the main `docker run` fails loudly on its own; don't add noise
 else
@@ -220,12 +228,14 @@ if spec is not None:
     print("det", int(os.path.exists("/opt/llm/kernel-det/_C_det.so") and has(qsa, "QSADET")))
     print("exact", int(has(qsa, "_qsa_exact_topk")))
     print("iter", int(has(os.path.join(pkg, "v1/metrics/loggers.py"), "_q38_prefill_metrics")))
+    print("fences", int(has(os.path.join(pkg, "parser/engine/parser_engine_config.py"), "guard_literal_tool_markers")))
 ' 2>/dev/null) || probe=""
   case "$probe" in *"draft 1"*) DRAFT_OK=1 ;; esac
   case "$probe" in *"metrics 1"*) METRICS_OK=1 ;; esac
   case "$probe" in *"det 1"*) DET_OK=1 ;; esac
   case "$probe" in *"exact 1"*) EXACT_OK=1 ;; esac
   case "$probe" in *"iter 1"*) ITER_OK=1 ;; esac
+  case "$probe" in *"fences 1"*) FENCES_OK=1 ;; esac
   if [ -z "$probe" ]; then
     IMAGE_OK=0
     echo "WARNING: could not probe '$IMAGE' (python3/entrypoint missing?) — skipping patch checks." >&2
@@ -244,6 +254,11 @@ if [ "$IMAGE_OK" = 1 ] && [ "$DET_TOPK" = 1 ] && [ "$DET_OK" = 0 ] && [ "$EXACT_
   echo "WARNING: DET_TOPK=1 will be IGNORED: image '$IMAGE' has no deterministic QSA top-k kernel" >&2
   echo "  (/opt/llm/kernel-det/_C_det.so + qsa.py wiring). The stock, non-deterministic kernel runs" >&2
   echo "  (vllm#51782). Rebuild: docker build -t '$IMAGE' .  — or EXACT_TOPK=1 on an image that has it." >&2
+fi
+if [ "$IMAGE_OK" = 1 ] && [ "$FENCES_OK" = 0 ]; then
+  echo "WARNING: image '$IMAGE' predates the tool-call parser fixes (patches 12-13): a tool call the model" >&2
+  echo "  shows as an example in a code block is parsed as a real call and the rest of the answer is lost." >&2
+  echo "  Rebuild: docker build -t '$IMAGE' .  (../build.sh in this project)." >&2
 fi
 if [ "$IMAGE_OK" = 1 ] && [ "$EXACT_TOPK" != 0 ] && [ "$EXACT_OK" = 0 ]; then
   echo "WARNING: EXACT_TOPK=$EXACT_TOPK will be IGNORED: image '$IMAGE' predates the exact QSA top-k patch. Rebuild." >&2
@@ -289,34 +304,47 @@ case "$DRAFT_VOCAB" in
   *) echo "WARNING: DRAFT_VOCAB='$DRAFT_VOCAB' — the container only sees /model and /ple-table. Put the ids.npy in the checkpoint dir and pass /model/<name>.npy (or bake it into a custom image)." >&2 ;;
 esac
 
+# The container's environment, as NAME=value: EXTRA_ENV (space-separated
+# NAME=value pairs) replaces a value of the same name instead of adding a second
+# one (docker keeps the first of two).
+ENVS=(
+  VLLM_PLE_MMAP=1 "VLLM_PLE_MMAP_WORKERS=${WORKERS:-32}" "VLLM_PLE_MMAP_PREWARM=$PREWARM"
+  "VLLM_PLE_MMAP_PREFETCH=${PLE_PREFETCH:-0}" "VLLM_PLE_MMAP_MADV_RANDOM=${PLE_MADV_RANDOM:-1}"
+  "VLLM_PLE_MMAP_CHUNK=${PLE_CHUNK:-2048}" "VLLM_PLE_MMAP_FAST_ROWS=${PLE_FAST_ROWS:-512}"
+  "VLLM_PLE_MMAP_STATS_SEC=${PLE_STATS_SEC:-$PLE_STATS_DEFAULT}"
+  "VLLM_HIT_DEBUG=${HIT_DEBUG:-0}" "VLLM_HIT_DEBUG_N=${HIT_DEBUG_N:-0}" "VLLM_STEP_PROFILE=${STEP_PROFILE:-0}"
+  VLLM_PLE_MMAP_DIR=/ple-table
+)
+for e in ${MTENV[@]+"${MTENV[@]}"}; do [ "$e" = -e ] || ENVS+=("$e"); done
+ENVS+=(
+  "VLLM_MARLIN_USE_ATOMIC_ADD=${MARLIN_ATOMIC_ADD:-1}" "VLLM_FP8_HYBRID=${FP8_HYBRID:-1}" VLLM_USE_DEEP_GEMM=0
+  VLLM_USE_FLASHINFER_SAMPLER=1 "VLLM_ALLOW_LONG_MAX_MODEL_LEN=$ALLOW_LONG" "CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}"
+)
+# shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list, split on purpose
+EXTRA_ENVS=(${EXTRA_ENV:-})
+for e in ${EXTRA_ENVS[@]+"${EXTRA_ENVS[@]}"}; do
+  for i in "${!ENVS[@]}"; do [ "${ENVS[$i]%%=*}" = "${e%%=*}" ] && unset 'ENVS[i]'; done
+  ENVS+=("$e")
+done
+ENV_ARGS=()
+for e in "${ENVS[@]}"; do ENV_ARGS+=(-e "$e"); done
+CPU_ARGS=()
+[ -n "${CPUSET:-}" ] && CPU_ARGS=(--cpuset-cpus "$CPUSET")
+
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 # shellcheck disable=SC2086
-docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" \
+docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@]+"${CPU_ARGS[@]}"} \
   --gpus all --ipc=host --shm-size 16g -p "${BIND_PFX}${PORT}:8000" ${METRICS_PUBLISH[@]+"${METRICS_PUBLISH[@]}"} \
   --log-opt max-size="$LOG_MAX_SIZE" --log-opt max-file="$LOG_MAX_FILE" \
   --health-cmd "$HEALTH_CMD" --health-start-period=10m \
   --health-interval=60s --health-timeout=15s --health-retries=10 \
   -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" \
-  -e VLLM_PLE_MMAP=1 -e VLLM_PLE_MMAP_WORKERS="${WORKERS:-32}" -e VLLM_PLE_MMAP_PREWARM="$PREWARM" -e VLLM_PLE_MMAP_PREFETCH="${PLE_PREFETCH:-0}" \
-  -e VLLM_PLE_MMAP_MADV_RANDOM="${PLE_MADV_RANDOM:-1}" \
-  -e VLLM_PLE_MMAP_CHUNK="${PLE_CHUNK:-2048}" -e VLLM_PLE_MMAP_FAST_ROWS="${PLE_FAST_ROWS:-512}" \
-  -e VLLM_PLE_MMAP_STATS_SEC="${PLE_STATS_SEC:-$PLE_STATS_DEFAULT}" \
-  -e VLLM_HIT_DEBUG="${HIT_DEBUG:-0}" \
-  -e VLLM_HIT_DEBUG_N="${HIT_DEBUG_N:-0}" \
-  -e VLLM_STEP_PROFILE="${STEP_PROFILE:-0}" \
-  -e VLLM_PLE_MMAP_DIR=/ple-table \
-  ${MTENV[@]+"${MTENV[@]}"} \
-  -e VLLM_MARLIN_USE_ATOMIC_ADD=1 \
-  -e VLLM_FP8_HYBRID="${FP8_HYBRID:-1}" \
-  -e VLLM_USE_DEEP_GEMM=0 \
-  -e VLLM_USE_FLASHINFER_SAMPLER=1 \
-  -e VLLM_ALLOW_LONG_MAX_MODEL_LEN="$ALLOW_LONG" \
-  -e CUDA_LAUNCH_BLOCKING="${CUDA_LAUNCH_BLOCKING:-0}" \
+  "${ENV_ARGS[@]}" \
   "$IMAGE" \
-  /model --served-model-name "${SERVED_NAME:-qwen3.8-flash-next}" \
+  /model --served-model-name "${SERVED_NAMES[@]}" \
     --host 0.0.0.0 --port 8000 --load-format "${LOAD_FORMAT:-fastsafetensors}" \
     --max-model-len "$CTX" --max-num-seqs "$SEQS" --gpu-memory-utilization "$GPU_MEM" \
-    $PC_ARG --enable-chunked-prefill --max-num-batched-tokens 8192 \
+    $PC_ARG --enable-chunked-prefill --max-num-batched-tokens "${BATCHED_TOKENS:-8192}" \
     $CC \
     $AT_ARG \
     --kv-cache-dtype auto \
@@ -325,5 +353,5 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" \
     --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3 \
     ${PIN_ARG[@]+"${PIN_ARG[@]}"} ${SPEC[@]+"${SPEC[@]}"}
 
-echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, gpu_mem=$GPU_MEM, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, metrics=$METRICS_PORT)"
+echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
 echo ">> follow with: docker logs -f $NAME"

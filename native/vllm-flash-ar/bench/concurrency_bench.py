@@ -11,7 +11,7 @@ Usage:
   python3 bench/concurrency_bench.py --levels 8 16 --max-tokens 128 --runs 2
   python3 bench/concurrency_bench.py --json report.json       # also dump raw
 
-Env: BASE (default http://localhost:8000), MODEL (default qwen), API_KEY
+Env: BASE (default http://localhost:8888), MODEL (default qwen), API_KEY
 (optional bearer token, matches serve.sh's API_KEY).
 
 Workload: unique ~65-token prompts — no prefix-cache overlap between requests
@@ -32,7 +32,7 @@ import time
 import urllib.request
 from urllib.parse import urlparse
 
-BASE = os.environ.get("BASE", "http://localhost:8000")
+BASE = os.environ.get("BASE", "http://localhost:8888")
 MODEL = os.environ.get("MODEL", "qwen")
 API_KEY = os.environ.get("API_KEY", "")
 
