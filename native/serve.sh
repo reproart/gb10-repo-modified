@@ -63,6 +63,12 @@ export CPUSET=5-9,15-19
 # passwordless sudo, once: scripts/mem-prep.sh sudoers. 0 = memory as it is.
 export MEM_PREP="${MEM_PREP:-1}"
 
+# Tool calls (--tool-call-parser qwen3_coder: the Qwen profiles, Ornith): when
+# the model shows its tool-call syntax as an example in a ```xml block, stock
+# SGLang parses it as a real call and drops the rest of the answer.
+# 1 = such markers stay text (patches/gb10_tool_fences.py), 0 = stock parser.
+export TOOL_FENCES="${TOOL_FENCES:-1}"
+
 cmd=serve
 for arg in "$@"; do
   case "$arg" in

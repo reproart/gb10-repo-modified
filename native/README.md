@@ -952,11 +952,14 @@ patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                gb10_skinny.py (+ its kernel): few-row BF16 GEMM for routers ·
                gb10_fp8_hc.py (+ its kernel): FP8 hyper-connection mix ·
                gb10_nvfp4_scales.py: per-shard NVFP4 scales on Marlin ·
+               gb10_tool_fences.py: tool-call markers in code blocks stay text (qwen3_coder) ·
                sitecustomize.py (loads them) · test_*.py (CPU)
 scripts/       00-check-host · 01-install · serve-sglang · install-service · host-tuning (+ test-host-tuning)
+               mem-prep (+ test-mem-prep): memory before a start, no copies beside GPU work
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
 bench/         common.py · perf.py · longctx.py · profile_decode.py (GPU time per kernel group)
+               consistency.py (tool-call examples, greedy determinism, prefix-cache hits) · answers.py
 results/       RESULTS.md: all measurements (Docker build)
                BUILD-MANIFEST.md: the build behind them
                REPRODUCTION.md: an independent run
@@ -994,6 +997,36 @@ Without `--levels` the concurrency sweep follows the server's request cap:
 (flagged as queued, left out of the peak). Cap 12 gives 1 2 4 8 12 18.
 `longctx.py` takes `--ctx`, `--streams` and `--gen N` (forced generation, a KV
 capacity test). See each script's docstring.
+
+`consistency.py` checks what the speed numbers cannot show, after
+blazux/qwen3.8-Flash-DGX, which found each of these broken for Qwen3.8 on
+vLLM (`--only fence|repeat`, `--lengths 2000 32000`):
+
+1. **Tool-call syntax as text.** With tools offered, the model repeats a
+   ```` ```xml ```` block holding a tool call, and a line naming
+   `<function=NAME>` mid-sentence, then `DONE`: both must come back as text
+   with no tool call, streamed and not; a control must come back as a real
+   `get_weather` call. Stock SGLang's `qwen3_coder` parser (0.5.20-0.5.22, the
+   same file) takes the example for a call and drops the rest of the answer;
+   streamed, any `<function=NAME>` opens one.
+   `patches/gb10_tool_fences.py` keeps markers inside a fenced block as text
+   and a `<function=` header mid-line as text (CommonMark fences, after
+   blazux's patch 13 for vLLM), and is on for every SGLang profile
+   (`TOOL_FENCES=1` in `serve.sh`; on an SGLang whose detector differs it
+   logs a warning and stays off). `patches/test_gb10_tool_fences.py` runs the
+   real detector source (`GB10_SGLANG_SRC`, or the newest `~/spark/venv-sglang-*`)
+   stock and patched: 11 cases in five chunkings; the bug cases fail stock
+   (`'Here is the format:\n```xml\n'` plus a `get_weather(Berlin)` call),
+   every real call comes out the same as stock.
+2. **The same greedy request again**: cold, two cache hits, cold again after
+   a cache flush (SGLang `/flush_cache`, vLLM `/reset_prefix_cache`), at each
+   length; the reply text and the first token's top-5 logprobs compared.
+   Cold vs cold apart is non-deterministic kernels (vLLM's GB10 top-k in the
+   sparse attention dropped candidates); cold vs hit with another first token
+   is a wrong state restore (vLLM restored an all-zero Mamba state); a small
+   first-token gap with a late fork is numerics. Not run here yet: our
+   results note "temperature 0 still flips 2-3 HumanEval problems", put down
+   to batching and speculative decoding; this separates the causes.
 
 Every run records what it measured:
 
