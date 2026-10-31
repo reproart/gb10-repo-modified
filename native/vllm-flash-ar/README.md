@@ -27,6 +27,12 @@
 >   drops the rest of the answer; a quoted marker in reasoning no longer
 >   swallows the final answer ("Tool-call parser" below). Needs `./build.sh`;
 >   the launcher warns when the image predates them.
+> - **Cached tokens in every reply** (`--enable-prompt-tokens-details`, as
+>   blazux #43 on this base), and an opt-in **deterministic MoE token
+>   alignment** (`DET_MOE_ALIGN=1`, patch 15 below): `../bench/consistency.py`
+>   found three cold runs of one greedy prompt apart from the first token's
+>   logprobs (0.16-0.45 nats), with `MARLIN_ATOMIC_ADD` on or off. Off until a
+>   run shows what it fixes and costs.
 > - **Port 8888** and model ids `qwen3.8-flash-next` plus `qwen` (the old id,
 >   still answered); `PORT=8000` in `config.local.sh` keeps old clients.
 > - **`RESTART=no`** by default, like every server here; `unless-stopped`
@@ -266,6 +272,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `RESTART` | `no` | Container restart policy. `unless-stopped` (the recipe's earlier default; bare script too) survives reboots and crashes — only where this is the machine's one server, else two servers start at boot. The next `./serve.sh` re-creates the container with this value |
 | `BATCHED_TOKENS` | `8192` | Prefill chunk (`--max-num-batched-tokens`). Smaller keeps other streams decoding during a long prefill, at a prefill cost (blazux's table, NVFP4 base: a decoding client at 0.2 / 0.4–0.6 / 1.0 / 1.6 tok/s during a big prefill at 8192 / 2048 / 1024 / 512, long prefill −17–36% at 1024). `../bench/perf.py --only interference` measures it here |
 | `MARLIN_ATOMIC_ADD` | `1` | `VLLM_MARLIN_USE_ATOMIC_ADD`: Marlin's split-K reduction by atomic adds, for speed; the sums land in arrival order (the run-to-run jitter in patch 5's notes). `0` = ordered, not measured |
+| `DET_MOE_ALIGN` | `0` | `1` = deterministic MoE token alignment (patch 15): the same prompt sums in the same order every run. Off until measured here |
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
 | `MEM_PREP` / `WAIT_MIN` | `1` / `15` | `./serve.sh`: page cache dropped and memory compacted before the start (`../scripts/mem-prep.sh`); wait up to N minutes for the API (`0` = return at once) |
@@ -672,6 +679,31 @@ passing with 13. `python3 ../bench/consistency.py --only fence` checks the
 served model end to end. This project's SGLang profiles carry the same guard
 for SGLang's own parser (`../patches/gb10_tool_fences.py`).
 
+### 15. Deterministic MoE token alignment (`src/patch_det_moe_align.py`, `DET_MOE_ALIGN=1`)
+
+`moe_align_block_size` sorts a batch's (token, expert) routes into per-expert
+blocks for the grouped MoE GEMM; vLLM's CUDA kernel places an expert's routes
+with `atomicAdd`, in thread-arrival order. When an expert gets more routes than
+one block (prefill) that order decides which m-block a route lands in, and
+Marlin's split-K stripes depend on the m-block, so a prompt's sums run in
+another order from one run to the next. Measured here with
+`../bench/consistency.py` (2026-10-31, 4K and 32K prompts, greedy): three cold
+runs of one prompt, first-token top-5 logprobs 0.16-0.45 nats apart, replies
+forking after 8-117 characters, with `MARLIN_ATOMIC_ADD` 1 and 0 alike; the
+QSA top-k is deterministic already (patch 9). blazux's NVFP4 path, whose MoE
+does not run on Marlin, measured deterministic first tokens.
+
+With `VLLM_DET_MOE_ALIGN=1` batches of at least 9 tokens
+(`VLLM_DET_MOE_ALIGN_MIN_TOKENS`) are aligned by torch ops: the same blocks,
+padding and expert ids as the kernel, each expert's routes in ascending route
+order, no host sync. Decode-size batches keep the kernel (a block holds them
+whole; rows are independent). The idea and the implementation are
+prestonlogan's (Flint-vLLM-Single-DGX-Spark, `fast/patch_align.py`,
+Apache-2.0; ~3.7% prefill there); the patcher here locates the call by name
+in this image's `moe_align_block_size.py`. `src/test_det_moe_align_cpu.py`
+checks the layout against a reference of the kernel's on CPU (random batches,
+512 experts top-10) and the patcher on the PR #53896 file.
+
 ## Speculative decoding and TTFT
 
 MTP's draft layer is a stateful autoregressive transformer: vLLM's v1 engine
@@ -735,6 +767,8 @@ src/test_prefill_metrics_cpu.py  check for the prefill-metrics patch (inside the
 src/patch_step_profile.py     on-demand torch.profiler around engine steps (VLLM_STEP_PROFILE)
 scripts/serve-intel-ar.sh     the recipe's launcher: image probes, the docker run behind serve.sh
 src/patches/                  tool-call parser fixes 12-13 (from blazux) and their tests
+src/patch_det_moe_align.py    deterministic MoE token alignment (DET_MOE_ALIGN; after prestonlogan)
+src/test_det_moe_align_cpu.py its CPU check (torch, no GPU)
 scripts/smoke-test.sh         health + coherence + prefill/decode numbers
 src/patch_prefill_metrics.py  per-step prefill counters for Prometheus (ITER_DETAILS=1)
 bench/ppwatch.sh              live prefill tok/s from those counters
@@ -747,7 +781,8 @@ tools/                        CPU-only checkpoint preparation
 docs/HOW-IT-WORKS.md          upstream's mmap-PLE story (NVFP4-era numbers)
 ruff.toml                     lint config (ruff check .: syntax + pyflakes); shellcheck *.sh scripts/*.sh
                               CPU tests (torch, numpy, safetensors, prometheus_client): src/test_ple_mmap_cpu.py,
-                              src/test_custom_metrics_cpu.py, tools/test_tools_cpu.py, src/test_qsa_exact_topk_cpu.py
+                              src/test_custom_metrics_cpu.py, tools/test_tools_cpu.py, src/test_qsa_exact_topk_cpu.py,
+                              src/test_det_moe_align_cpu.py
 ```
 
 ## Credits

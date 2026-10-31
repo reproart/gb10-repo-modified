@@ -180,3 +180,13 @@ COPY src/patches/qwen-tool-marker-guard.patch /tmp/qwen-tool-marker-guard.patch
 RUN cd ${SP} && patch --batch --forward --fuzz=0 -p1 < /tmp/qwen-tool-marker-guard.patch \
  && rm /tmp/qwen-tool-marker-guard.patch \
  && grep -q "guard_literal_tool_markers" vllm/parser/engine/parser_engine_config.py && echo "tool marker guard patched OK"
+
+# Deterministic MoE token alignment (VLLM_DET_MOE_ALIGN=1, off unless set): the CUDA
+# moe_align_block_size places an expert's routes in atomicAdd arrival order, which moves a
+# route between Marlin MoE m-blocks and so the order of its sums from run to run (prefill).
+# Torch-only replacement for batches of 9+ tokens; after prestonlogan's patch_align.py
+# (Flint-vLLM-Single-DGX-Spark, Apache-2.0). src/patch_det_moe_align.py has the details;
+# src/test_det_moe_align_cpu.py checks it against the kernel's layout on CPU.
+COPY src/patch_det_moe_align.py /tmp/patch_det_moe_align.py
+RUN python3 /tmp/patch_det_moe_align.py ${SP}/vllm/model_executor/layers/fused_moe/moe_align_block_size.py \
+ && rm /tmp/patch_det_moe_align.py
