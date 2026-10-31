@@ -3,7 +3,7 @@
 
     python3 bench/consistency.py                       all of it
     python3 bench/consistency.py --only fence          one of: fence, repeat
-    python3 bench/consistency.py --lengths 2000 32000 --tokens 200
+    python3 bench/consistency.py --lengths 4000 32000 --tokens 200
 
 Works against any server here (SGLang, vLLM, TensorFold; GB10_BASE_URL as for perf.py).
 After blazux/qwen3.8-Flash-DGX, which found each of these broken for Qwen3.8 on vLLM.
@@ -15,8 +15,12 @@ After blazux/qwen3.8-Flash-DGX, which found each of these broken for Qwen3.8 on 
    (patches/gb10_tool_fences.py keeps it text). A control asks for the weather in Paris: that one
    must come back as a get_weather call, both ways.
 2. repeat: per prompt length, one unique prompt sent greedily, one at a time: cold, twice more (prefix-
-   cache hits), and, where the server lets its cache be flushed (SGLang /flush_cache, vLLM
-   /reset_prefix_cache), cold again. Compared: the reply text and the first token's top-5 logprobs.
+   cache hits), and cold again: after a cache flush where the server allows one (SGLang /flush_cache,
+   vLLM /reset_prefix_cache in dev mode), else with a cache_salt of its own (vLLM: the same tokens,
+   no reuse). Compared: the reply text and the first token's top-5 logprobs. Cached tokens come from
+   usage.prompt_tokens_details (vLLM: --enable-prompt-tokens-details). Hybrid models cache their
+   recurrent state only at block boundaries (vLLM on Flash-Next: every 1600 tokens, a hit reaching
+   round_down(P, 1600) - 1600), so a ~2K prompt gets no hit there: the default lengths are 4K and 32K.
      cold vs cold  the same request twice from scratch: a difference is non-deterministic kernels
                    (on vLLM a GB10 top-k in the sparse attention dropped candidates)
      hit vs hit    the same cached state twice: should match like cold vs cold
@@ -31,6 +35,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 import common
 from common import BASE_URL, CHAT_URL, ENGINE_ROOT, HEADERS, MODEL, SERVER_ROOT, unique_prompt
@@ -192,8 +197,21 @@ def report(label, a, b, kind):
                 "in other chunks), a late fork")
 
 
+def cold_again(body):
+    """The same request with nothing reused: (result, how), or (None, why not)."""
+    if flush_cache():
+        return post(body, False), "after a cache flush"
+    try:
+        r = post(dict(body, cache_salt=uuid.uuid4().hex), False)
+    except RuntimeError as e:
+        return None, f"no cache flush endpoint, cache_salt refused ({str(e)[:60]})"
+    if r["cached"]:
+        return None, f"no cache flush endpoint, and cache_salt was ignored ({r['cached']} tokens reused)"
+    return r, "with its own cache_salt"
+
+
 def repeat_section(lengths, tokens):
-    print("## 2. The same greedy request again: cold, cache hits, cold after a flush (one at a time)")
+    print("## 2. The same greedy request again: cold, repeats (cache hits), cold again (one at a time)")
     for n, approx in enumerate(lengths):
         prompt = unique_prompt(int(time.time()) * 10 + n, approx,
                                tail="Write a short poem that uses five words from the text above.")
@@ -208,28 +226,30 @@ def repeat_section(lengths, tokens):
             body = {k: v for k, v in body.items() if k not in ("logprobs", "top_logprobs")}
             runs = [post(body, False)]
         runs += [post(body, False) for _ in range(2)]
-        flushed = flush_cache()
-        if flushed:
-            runs.append(post(body, False))
-        cached = "/".join(str(r["cached"]) for r in runs)
-        print(f"   ~{approx} tokens: cached tokens per run {cached}"
-              + ("" if flushed else "  (no cache flush endpoint: no cold-vs-cold pair)"), flush=True)
+        cold, how = cold_again(body)
+        cached = "/".join(str(r["cached"]) for r in runs + ([cold] if cold else []))
+        print(f"   ~{approx} tokens: cached tokens per run {cached}; cold again {how}", flush=True)
         if runs[0]["top5"] is None:
             print("         (no logprobs from this server: texts only)")
-        if not any(r["cached"] for r in runs[1:3]):
-            print("         (no cached tokens reported on the repeats: prefix caching off, or not reported)")
-        if flushed:
-            report("cold vs cold", runs[0], runs[3], "cold")
-        report("hit vs hit  ", runs[1], runs[2], "cold")
-        report("cold vs hit ", runs[0], runs[1], "hit")
+        hit = bool(runs[1]["cached"] and runs[2]["cached"])
+        if not hit:
+            print("         (no cached tokens on the repeats: nothing reusable at this length, prefix caching "
+                  "off, or not reported; the repeats are compared as cold runs)")
+        if cold:
+            report("cold vs cold      ", runs[0], cold, "cold")
+        report("hit vs hit        " if hit else "repeat vs repeat  ", runs[1], runs[2], "cold")
+        if hit:
+            report("cold vs hit       ", runs[0], runs[1], "hit")
+        else:
+            report("first vs repeat   ", runs[0], runs[1], "cold")
     print()
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--only", choices=["fence", "repeat"])
-    ap.add_argument("--lengths", nargs="+", type=int, default=[2000, 32000],
-                    help="approx. prompt sizes for the repeat section (default: 2000 32000)")
+    ap.add_argument("--lengths", nargs="+", type=int, default=[4000, 32000],
+                    help="approx. prompt sizes for the repeat section (default: 4000 32000)")
     ap.add_argument("--tokens", type=int, default=200, help="reply length (default 200)")
     args = ap.parse_args()
     saved = common.save_output("consistency")

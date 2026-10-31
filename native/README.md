@@ -1021,7 +1021,7 @@ capacity test). See each script's docstring.
 
 `consistency.py` checks what the speed numbers cannot show, after
 blazux/qwen3.8-Flash-DGX, which found each of these broken for Qwen3.8 on
-vLLM (`--only fence|repeat`, `--lengths 2000 32000`):
+vLLM (`--only fence|repeat`, `--lengths 4000 32000`):
 
 1. **Tool-call syntax as text.** With tools offered, the model repeats a
    ```` ```xml ```` block holding a tool call, and a line naming
@@ -1039,9 +1039,12 @@ vLLM (`--only fence|repeat`, `--lengths 2000 32000`):
    stock and patched: 11 cases in five chunkings; the bug cases fail stock
    (`'Here is the format:\n```xml\n'` plus a `get_weather(Berlin)` call),
    every real call comes out the same as stock.
-2. **The same greedy request again**: cold, two cache hits, cold again after
-   a cache flush (SGLang `/flush_cache`, vLLM `/reset_prefix_cache`), at each
-   length; the reply text and the first token's top-5 logprobs compared.
+2. **The same greedy request again**: cold, two cache hits, cold again (after
+   a cache flush, SGLang `/flush_cache`; on vLLM, whose flush is a dev-mode
+   endpoint, with a `cache_salt` of its own: the same tokens, nothing reused),
+   at each length (4K and 32K: hybrid models reuse their recurrent state only
+   at block boundaries, on vLLM's Flash-Next every 1600 tokens, so ~2K gets no
+   hit); the reply text and the first token's top-5 logprobs compared.
    Cold vs cold apart is non-deterministic kernels (vLLM's GB10 top-k in the
    sparse attention dropped candidates); cold vs hit with another first token
    is a wrong state restore (vLLM restored an all-zero Mamba state); a small
