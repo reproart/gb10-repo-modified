@@ -21,6 +21,8 @@
 - **llama.cpp** (отдельная сборка в `llamacpp/`) — только GLM-5.3-Flash в
   GGUF, которую SGLang не обслуживает.
 - **vLLM в Docker** (`vllm-b12x/`) — Flash-Next FP4-Local от NVIDIA.
+- **vLLM в Docker** (`vllm-flash-ar/`) — Flash-Next в int4 AutoRound от Intel
+  (рецепт blazux → Saren-Arterius, ваша копия).
 - **TensorFold в Docker** (`tensorfold-dsv41/`) — DeepSeek-V4.1-Flash на двух
   Spark.
 - **Настроенный vLLM в Docker** (`vllm-dsv41/`) — та же DeepSeek на двух Spark,
@@ -44,6 +46,7 @@
 | `mimo-v2.6-flash` | MiMo-V2.6-Flash 309B MoE (MXFP4) + DFlash, **на двух Spark**, SGLang 0.5.21 | ~165 ГиБ на каждом | | не измерена |
 | `ling-3.0-flash-vl` | Ling-3.0-flash-VL 125B MoE (5.1B акт.), картинки и видео, SGLang 0.5.21 | ~70 ГБ (оценка) | ~33 по рецепту SGLang (FP4) | рецепт проверен на Spark, у нас не измерена |
 | `vllm-b12x/` | Qwen3.8-Flash-Next-FP4-Local (QAD от NVIDIA), vLLM в Docker | ~96 ГиБ | 61.0 (MTP 3) | измерена, качество не сравнивали |
+| `vllm-flash-ar/` | Qwen3.8-Flash-Next, int4 AutoRound (Intel) + int8 голова + FP8, vLLM в Docker | ~67 + ~49 ГиБ (таблица) | 65.8 (MTP 3), 259 суммарно на 8 | измерена в рецепте, долго в работе |
 | `tensorfold-dsv41/` | DeepSeek-V4.1-Flash-1017, EXL3 2.9 бит, контекст 1M, TensorFold в Docker, **на двух Spark** (TP=2) | 196 + 189 ГиБ на каждом | 92 код / 57 текст (по рецепту) | у нас не измерена |
 | `vllm-dsv41/` | та же DeepSeek, те же веса, настроенный vLLM (sudoingX + styles01) в Docker, **на двух Spark**, 262K, картинки | те же папки + дерево из жёстких ссылок | 94 код / 52 текст (по рецепту) | у нас не измерена |
 | `tensorfold-glm53/` | GLM-5.3-Flash 321B, EXL3 4 бит + DFlash2, контекст 1M, TensorFold в Docker, **на двух Spark** | ~205 ГБ на каждом | 114 коротко / 50 текст / 70 код (по замерам LimeChain) | у нас не измерена |
@@ -638,6 +641,63 @@ rsync -a /models/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-Tens
 
 ---
 
+### 4.14. Qwen3.8-Flash-Next в int4 AutoRound на vLLM (Docker)
+
+Рецепт, который вы долго использовали (blazux → Saren-Arterius → ваша копия,
+Apache-2.0), теперь в `vllm-flash-ar/` и запускается как остальные серверы
+проекта. Подробно — [`vllm-flash-ar/README.md`](vllm-flash-ar/README.md).
+
+- **Веса:** эксперты в int4 от Intel (AutoRound, ядра GPTQ-Marlin),
+  lm_head в int8, боковые слои в FP8, таблица n-грамм в FP8 читается с NVMe
+  через `mmap`. В памяти ~68 ГиБ.
+- **Что умеет сверх нашего SGLang-профиля** `qwen3.8-flash-next`:
+  исправленный кэш префиксов, закрепление длинного системного промпта
+  (`PIN_PROMPT`: его KV не вытесняется никаким трафиком), детерминированный
+  top-k в разреженном внимании, сайдкар Prometheus с метриками таблицы.
+- **Скорость** (замеры рецепта): 65.8 ток/с на одном потоке (как наш SGLang),
+  259 суммарно на 8 потоках (у SGLang 212–224), префил 2100–2300 ток/с (у
+  SGLang 1450–1660). HumanEval без размышления 96.3% (у SGLang 97.6%).
+
+```bash
+cd vllm-flash-ar
+./build.sh                 # образ: официальный vLLM для Flash-Next + патчи рецепта
+./download.sh              # готовый чекпойнт (~67 ГиБ) и таблица (~49 ГиБ), закреплённые ревизии
+./serve.sh                 # проверки, подготовка памяти, контейнер, ждёт, пока API ответит
+./status.sh / ./stop.sh
+MTP=2 SEQS=16 ./serve.sh   # любые параметры из config.sh
+GB10_METRICS_PORT=18400 python3 ../bench/perf.py
+python3 ../bench/consistency.py
+```
+
+**Что изменилось при переносе** (подробно — в README папки):
+
+- **Патчи парсера инструментов 12–13 от blazux** — для этого же базового
+  образа: пример вызова в блоке кода больше не превращается в вызов,
+  съедающий остаток ответа. Нужно пересобрать образ (`./build.sh`); на
+  старом образе запуск об этом предупреждает.
+- **Порт 8888** и имя модели `qwen3.8-flash-next`; старое имя `qwen` тоже
+  принимается. Старые клиенты на порту 8000 — `PORT=8000` в `config.local.sh`.
+- **`RESTART=no`** по умолчанию: контейнер не поднимается сам после
+  перезагрузки, как и остальные серверы проекта. Если это единственный
+  сервер на машине, `RESTART=unless-stopped` в `config.local.sh` вернёт
+  прежнее поведение.
+- **Новые настройки:** `BATCHED_TOKENS` (чанк префила, был жёстко 8192),
+  `MARLIN_ATOMIC_ADD` (был всегда включён), `CPUSET`, `EXTRA_ENV`.
+- **`prepare.sh`:** относительные пути теперь работают (раньше он менял
+  каталог до того, как их использовать); ревизии репозиториев Intel и Qwen
+  закреплены.
+- **Проверки проекта:** один сервер за раз (в обе стороны), подготовка
+  памяти перед стартом, `build.sh` / `download.sh` / `prepare.sh` не
+  работают рядом с занятым GPU.
+- **Замеры:** копии наших `perf.py` / `longctx.py` / `common.py` убраны, есть
+  `../bench/`; их `decode_bench.py`, `concurrency_bench.py`, `ppwatch.sh`
+  остались.
+
+Если настройки уже жили в старом `serve.sh` (пути, ключ, `PIN_PROMPT`),
+перенесите их в `config.local.sh` (`config.local.sh.example`).
+
+---
+
 ## 5. Как выжать максимум из машины
 
 **Память.**
@@ -765,7 +825,7 @@ llama.cpp, пока не сделать `--undo`.
 ./scripts/mem-prep.sh idle [worker]      # код 1 и что именно, пока на GPU что-то работает
 ```
 
-**Перед каждым стартом.** Все наши серверы (`./serve.sh`, `vllm-b12x/`,
+**Перед каждым стартом.** Все наши серверы (`./serve.sh`, `vllm-b12x/`, `vllm-flash-ar/`,
 `tensorfold-dsv41/`, `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`), если
 GPU свободен, сбрасывают страничный кэш и уплотняют свободную память, у пар
 — на обеих машинах. В выводе при старте появляется строка: сколько памяти
@@ -796,6 +856,7 @@ GPU свободен, сбрасывают страничный кэш и упл
 ни ping) при копировании 25 ГБ рядом с задачей на GPU. Поэтому загрузки,
 скачивание образов и копирование (`tensorfold-dsv41/download.sh`,
 `build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`,
+`vllm-flash-ar/build.sh`, `download.sh`, `prepare.sh`,
 `tensorfold-glm53/setup.sh`, `./serve.sh install`, `llamacpp/build.sh`)
 отказываются работать, пока на GPU любой из затронутых машин что-то
 запущено, и говорят что. `ALLOW_BUSY_GPU=1` — всё равно продолжить.
@@ -939,6 +1000,7 @@ vllm-b12x/            Flash-Next FP4-Local от NVIDIA на vLLM (Docker)
 tensorfold-dsv41/     DeepSeek-V4.1-Flash на двух Spark, TensorFold (Docker)
 vllm-dsv41/           та же DeepSeek на двух Spark, настроенный vLLM (Docker)
 tensorfold-glm53/     GLM-5.3-Flash на двух Spark, TensorFold по рецепту MiaAI-Lab (Docker)
+vllm-flash-ar/        Flash-Next в int4 AutoRound на vLLM (Docker), рецепт blazux / Saren-Arterius
 results/RESULTS.md    все замеры с датами и условиями
 README.md             подробности и обоснования (англ.)
 ```

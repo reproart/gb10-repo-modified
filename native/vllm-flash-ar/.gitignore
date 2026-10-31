@@ -16,3 +16,6 @@ venv/
 *.bak
 step_profile_*.json
 report*.json
+
+# This machine's settings (config.local.sh.example)
+config.local.sh

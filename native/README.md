@@ -297,7 +297,7 @@ through mmap, is where it could still matter; not measured.
 ./scripts/mem-prep.sh idle [worker]      # exit 1, saying what, while anything runs on a GPU
 ```
 
-Every server here (`./serve.sh`, `vllm-b12x/`, `tensorfold-dsv41/`,
+Every server here (`./serve.sh`, `vllm-b12x/`, `vllm-flash-ar/`, `tensorfold-dsv41/`,
 `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`) now runs `mem-prep.sh prep`
 before it starts, on both nodes for the pairs: with the GPU idle, it drops
 the page cache and compacts free memory, and prints a line with how much is
@@ -317,6 +317,7 @@ on it. It is a one-off before a start: `vm.compaction_proactiveness=0`
 
 The downloads, image pulls and copies (`tensorfold-dsv41/download.sh` and
 `build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`,
+`vllm-flash-ar/build.sh`, `download.sh` and `prepare.sh`,
 `tensorfold-glm53/setup.sh`, `./serve.sh install`, `llamacpp/build.sh`)
 refuse while anything runs on a GPU of a node they touch: their Spark
 stopped answering (no ssh, no ping) during a 25 GB copy beside a GPU job.
@@ -773,6 +774,26 @@ SGLang cannot load, in the card's community vLLM container
 (`eugr/spark-vllm-b12x`, pinned by digest in `image.lock`) with the card's
 DGX Spark flags as knobs, on :8888 so `bench/` works unchanged. For an A/B on
 answers against the RadixArk build. Unmeasured.
+
+## Flash-Next as Intel's AutoRound int4 on vLLM: `vllm-flash-ar/`
+
+[`vllm-flash-ar/`](vllm-flash-ar/README.md) is the int4 AutoRound recipe
+(Saren-Arterius's fork of blazux/qwen3.8-Flash-DGX, Apache-2.0, in the copy
+this project's owner ran for weeks): Intel's W4A16 experts on GPTQ-Marlin, an
+int8 lm_head, fp8 side layers, the fp8 n-gram table mmapped from NVMe, ~68 GiB
+resident, prefix caching fixed, a never-evict pin for a long system prompt, a
+deterministic QSA top-k, in Docker on the official Flash-Next vLLM image. Its
+numbers: 65.8 tok/s single-stream, 259 aggregate at 8 streams, 2,100-2,300
+tok/s prefill to 105K, against 65.8 / 212-224 / 1,450-1,660 for
+`models/qwen3.8-flash-next.sh` on SGLang; HumanEval without thinking 96.3%
+(the SGLang profile 97.6%). Moved here with: blazux's tool-call parser fixes
+12-13 for the same base image (a tool call shown as an example in a code
+block no longer becomes a call), port 8888 and the model id
+`qwen3.8-flash-next` (plus the old `qwen`), `RESTART=no`, new knobs (the
+prefill chunk, Marlin's atomic adds, CPU pinning, `EXTRA_ENV`), a
+`prepare.sh` that takes relative paths and pinned source revisions, and this
+project's guards; `build.sh`, `download.sh`, `serve.sh`, `stop.sh`,
+`status.sh`. Its README lists every change.
 
 ## DeepSeek-V4.1-Flash on two Sparks: `tensorfold-dsv41/`
 

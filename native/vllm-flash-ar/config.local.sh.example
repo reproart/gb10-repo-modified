@@ -1,0 +1,15 @@
+# shellcheck shell=bash disable=SC2034
+# This machine's values. cp config.local.sh.example config.local.sh (not
+# committed); config.sh reads it first. Keep the NAME="${NAME:-value}" form, so
+# a value set in the shell still wins.
+
+# Where the two folders are, if not the /models/... defaults:
+# MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN}"
+# TABLE_DIR="${TABLE_DIR:-/models/ple-table-fp8}"
+
+# The recipe's earlier port and boot behaviour, for clients and habits that rely on them:
+# PORT="${PORT:-8000}"
+# RESTART="${RESTART:-unless-stopped}"   # only if this is the machine's one server
+
+# API_KEY="${API_KEY:-$(cat "$HOME/.qwen-api-key")}"
+# PIN_PROMPT="${PIN_PROMPT:-You are HomeBot, the household assistant.}"

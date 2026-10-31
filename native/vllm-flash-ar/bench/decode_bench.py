@@ -8,13 +8,13 @@ Prints spec-decode acceptance (accepted tokens/step, per-position rate)
 derived from /metrics deltas around each workload.
 
 Usage: decode_bench.py <tag> [runs=3]
-Env: BASE (default http://localhost:8000), MODEL (qwen), PIN (the W2 prefix
+Env: BASE (default http://localhost:8888), MODEL (qwen), PIN (the W2 prefix
 marker — set it to your serve.sh PIN_PROMPT to measure YOUR pin), API_KEY
 (optional bearer token, matches serve.sh's API_KEY).
 """
 import json, os, re, statistics, subprocess, sys, time
 
-BASE = os.environ.get("BASE", "http://localhost:8000")
+BASE = os.environ.get("BASE", "http://localhost:8888")
 MODEL = os.environ.get("MODEL", "qwen")
 API_KEY = os.environ.get("API_KEY", "")
 AUTH = ["-H", f"Authorization: Bearer {API_KEY}"] if API_KEY else []

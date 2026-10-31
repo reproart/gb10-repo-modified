@@ -69,6 +69,13 @@ no_sglang() {
       "the GPU and the CPU share the same 128 GB" >&2
     exit 1
   fi
+  local c
+  for c in gb10-vllm-b12x qwen38-flash tfv41-r0 gb10-vllm-dsv41 glm53-flash-tf; do
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
+      echo "container $c (another model server) runs: stop it first" >&2
+      exit 1
+    fi
+  done
 }
 
 # This machine's memory before the weights load (../scripts/mem-prep.sh).

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Quick check that the server is up, coherent, and measure prefill + decode.
 #   scripts/smoke-test.sh [host:port]
-# Defaults match serve.sh (localhost:8000). BASE (full URL, e.g.
-# http://spark:8000) may be given instead of the host:port argument; MODEL
+# Defaults match serve.sh (localhost:8888). BASE (full URL, e.g.
+# http://spark:8888) may be given instead of the host:port argument; MODEL
 # defaults to whatever the server reports in /v1/models; API_KEY is the
 # optional bearer token, matching serve.sh's API_KEY:
 #   scripts/smoke-test.sh                       # serve.sh defaults
@@ -11,7 +11,7 @@ set -euo pipefail
 if [ -n "${1:-}" ]; then
   BASE="http://$1"
 else
-  BASE="${BASE:-http://localhost:8000}"
+  BASE="${BASE:-http://localhost:8888}"
 fi
 BASE="${BASE%/}"
 API_KEY="${API_KEY:-}"

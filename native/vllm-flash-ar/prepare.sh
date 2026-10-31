@@ -48,6 +48,10 @@
 #      MODEL_DIR; the bf16-draft dir stays usable as an option.
 #
 # Usage: prepare.sh <checkpoint-dir> <ple-table-dir>
+# SRC_REVISION pins Intel's repo (default: its latest commit, of 2026-08-31,
+# the one the published artifacts of 2026-09-09 could have been built from);
+# SRC_REVISION= takes its current main. tools/fetch-ple-table-fp8.sh pins
+# Qwen's FP8 repo the same way (FP8_REVISION).
 # Then point serve.sh's MODEL_DIR at <checkpoint-dir>-MTP_int4RTN and
 # TABLE_DIR at the table dir.
 #
@@ -61,21 +65,30 @@
 set -euo pipefail
 CKPT="${1:?usage: prepare.sh <checkpoint-dir> <ple-table-dir>}"
 TABLE="${2:?usage: prepare.sh <checkpoint-dir> <ple-table-dir>}"
+# Absolute before the cd below: a relative path would otherwise land next to this script.
+CKPT="$(realpath -m "$CKPT")"
+TABLE="$(realpath -m "$TABLE")"
 cd "$(dirname "$0")"
+# Hours of reading and writing ~170 GB: not beside a GPU job (in this project,
+# ../scripts/mem-prep.sh idle; a Spark has hung so). Run alone on a NAS, no check.
+if [ -x ../scripts/mem-prep.sh ]; then ../scripts/mem-prep.sh idle || exit 1; fi
 
 SRC_REPO=Intel/Qwen3.8-Flash-Next-W4A16-AutoRound
+SRC_REVISION="${SRC_REVISION-4c67bf686b7f7fd386bae6b07ab59e8ff1d5b897}"
+REV_ARGS=()
+[ -n "$SRC_REVISION" ] && REV_ARGS=(--revision "$SRC_REVISION")
 
 # 1. Download. Once finished, never again: a re-download would compare the
 # already-modified shards against the hub and silently restore the originals.
 if [ -e "$CKPT/.prepare-downloaded" ]; then
   echo ">> step 1: download already done ($CKPT/.prepare-downloaded), skipping"
 else
-  hf download "$SRC_REPO" model.safetensors.index.json --local-dir "$CKPT"
+  hf download "$SRC_REPO" model.safetensors.index.json ${REV_ARGS[@]+"${REV_ARGS[@]}"} --local-dir "$CKPT"
   if python3 -c 'import huggingface_hub' 2>/dev/null; then
-    python3 - "$SRC_REPO" "$CKPT" <<'EOF'
+    python3 - "$SRC_REPO" "$CKPT" "$SRC_REVISION" <<'EOF'
 import json, os, sys
 from huggingface_hub import snapshot_download
-repo, ckpt = sys.argv[1], sys.argv[2]
+repo, ckpt, rev = sys.argv[1], sys.argv[2], sys.argv[3] or None
 wm = json.load(open(os.path.join(ckpt, "model.safetensors.index.json")))["weight_map"]
 by_file = {}
 for tensor, fname in wm.items():
@@ -83,11 +96,11 @@ for tensor, fname in wm.items():
 table_only = sorted(f for f, ts in by_file.items()
                     if all(".ngram_embedding." in t for t in ts))
 print(">> skipping %d table-only shard(s): %s" % (len(table_only), ", ".join(table_only) or "-"))
-snapshot_download(repo, local_dir=ckpt, ignore_patterns=table_only)
+snapshot_download(repo, revision=rev, local_dir=ckpt, ignore_patterns=table_only)
 EOF
   else
     echo ">> huggingface_hub not importable from python3 — downloading the full repo"
-    hf download "$SRC_REPO" --local-dir "$CKPT"
+    hf download "$SRC_REPO" ${REV_ARGS[@]+"${REV_ARGS[@]}"} --local-dir "$CKPT"
   fi
 fi
 

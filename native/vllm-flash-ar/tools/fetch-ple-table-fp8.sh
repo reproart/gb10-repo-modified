@@ -6,13 +6,18 @@
 # quality change (the PLE rows feed a dequant that runs anyway).
 #
 #   tools/fetch-ple-table-fp8.sh /path/to/ple-table-fp8
+# FP8_REVISION pins Qwen's repo (default: its latest commit, of 2026-08-31);
+# FP8_REVISION= takes main.
 set -euo pipefail
 DST="${1:?usage: fetch-ple-table-fp8.sh <dst_dir>}"
 FILES=()
 for i in $(seq -w 5 37); do
   FILES+=("model-000${i}-of-00131.safetensors")
 done
-hf download Qwen/Qwen3.8-Flash-Next-FP8 "${FILES[@]}" --local-dir "$DST"
+FP8_REVISION="${FP8_REVISION-236dfdf285828023ca3bcd3f37366c58a3469b13}"
+REV_ARGS=()
+[ -n "$FP8_REVISION" ] && REV_ARGS=(--revision "$FP8_REVISION")
+hf download Qwen/Qwen3.8-Flash-Next-FP8 "${FILES[@]}" ${REV_ARGS[@]+"${REV_ARGS[@]}"} --local-dir "$DST"
 
 # Sanity-check the result: if upstream ever renames its shards, hf download
 # leaves an empty dir and the failure would only surface at server boot

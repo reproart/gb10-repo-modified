@@ -1,4 +1,62 @@
-# Qwen3.8-Flash-Next on a single DGX Spark (GB10) — int4 + int8 + fp8 hybrid
+# Qwen3.8-Flash-Next on a single DGX Spark (GB10) — int4 + int8 + fp8 hybrid, vLLM
+
+> **In this project** (`native/vllm-flash-ar/`, moved here from `_separate/` on
+> 2026-10-31): the recipe below, run like every other server here.
+>
+> ```bash
+> cd native/vllm-flash-ar
+> ./build.sh                 # the image: the official Flash-Next vLLM image + this recipe's patches (~20 GiB base once)
+> ./download.sh              # the prepared checkpoint (~67 GiB) + the fp8 n-gram table (~49 GiB), pinned revisions
+> ./serve.sh                 # one-server checks, memory prepared, the container, waits until the API answers
+> ./status.sh / ./stop.sh
+> GB10_METRICS_PORT=18400 python3 ../bench/perf.py   # + the engine sidecar's PLE gather numbers
+> python3 ../bench/consistency.py                    # tool-call examples, greedy determinism, prefix-cache hits
+> ```
+>
+> Settings: `config.sh` (every knob of the recipe, with what it does), this
+> machine's own values in `config.local.sh` (`config.local.sh.example`), the
+> shell over both: `MTP=2 SEQS=16 ./serve.sh`.
+>
+> **What changed against the copy** (the recipe's numbers below were measured
+> before these; none of them changes the model's math except where noted):
+>
+> - **Tool-call parser fixes**, blazux's patches 12 and 13 at `2ba2d77`, their
+>   last commit on this same base image, where they applied with `--fuzz=0`:
+>   a tool call the model shows as an example inside a fenced code block, or a
+>   `<function=` header mid-line, stays text instead of becoming a call that
+>   drops the rest of the answer; a quoted marker in reasoning no longer
+>   swallows the final answer ("Tool-call parser" below). Needs `./build.sh`;
+>   the launcher warns when the image predates them.
+> - **Port 8888** and model ids `qwen3.8-flash-next` plus `qwen` (the old id,
+>   still answered); `PORT=8000` in `config.local.sh` keeps old clients.
+> - **`RESTART=no`** by default, like every server here; `unless-stopped`
+>   (the recipe's default: back after a reboot) only where this is the
+>   machine's one server.
+> - **New knobs**: `BATCHED_TOKENS` (the prefill chunk, was fixed at 8192),
+>   `MARLIN_ATOMIC_ADD` (was fixed on), `CPUSET`, `EXTRA_ENV` (replaces a
+>   container variable of the same name: docker keeps the first of two).
+> - **`prepare.sh`**: relative paths now work (it changed directory before
+>   using them); Intel's and Qwen's repos are pinned by revision
+>   (`SRC_REVISION`, `FP8_REVISION`), as `./download.sh` pins the published
+>   artifacts.
+> - **This project's guards**: the one-server-at-a-time checks both ways,
+>   page cache dropped and memory compacted before a start
+>   (`../scripts/mem-prep.sh`, `MEM_PREP`), and `build.sh`, `download.sh` and
+>   `prepare.sh` refuse while anything runs on the GPU (a Spark has hung on a
+>   large copy beside a GPU job).
+> - **Benchmarks**: the recipe's `bench/perf.py`, `longctx.py` and `common.py`
+>   were an earlier copy of this project's; `../bench/` has the current ones
+>   (they read the sidecar with `GB10_METRICS_PORT=18400`).
+>   `bench/decode_bench.py`, `concurrency_bench.py` and `ppwatch.sh` stay here.
+> - The GitHub CI workflow is gone (it does not run from a subfolder);
+>   `ruff.toml` and the CPU tests stay ("What's in here").
+>
+> Not taken from blazux's later work on this base: the fp8 KV cache on the
+> QSA path (a 1M context on one box; it patches files of the model this
+> container image carries, which could not be checked here), the M%4 padding
+> for the fp8 GEMM (a no-op with prefix caching on) and the load-time patches
+> for NVIDIA's NVFP4 checkpoint. blazux's later bases (official vLLM 0.31 /
+> 0.32) need a port of every patch here.
 
 Run **Qwen3.8-Flash-Next** — a ~176B-parameter model (125B main + 51B n-gram, 6B
 active) — on **one NVIDIA DGX Spark / ASUS GX10** with **vLLM**: **~50–60 tok/s
@@ -23,7 +81,7 @@ patches — roughly **1.8× faster decode** than the NVFP4 recipe on the same bo
 > (all of the above and every patch below). On top of it: an engine-side
 > Prometheus sidecar (PLE gather cost, mamba guard, pin gauges), API-key auth,
 > `BIND_ADDR`, a container healthcheck and log rotation, a resumable
-> `prepare.sh`, chat-API benchmarks (`bench/perf.py`, `bench/longctx.py`) and CI.
+> `prepare.sh`, chat-API benchmarks (since moved to this project's `../bench/`) and CI.
 
 > **Upstream's NVFP4 recipe independently reproduced** on a DGX Spark by
 > [@jschmied](https://github.com/jschmied) — see
@@ -64,7 +122,7 @@ reproduce with
 
 ### Measured here with `bench/perf.py` (local NVMe table)
 
-DGX Spark / GX10, this repo's `serve.sh` (MTP=3, `SEQS=8`, `KV_BYTES=30g`,
+DGX Spark / GX10, the recipe's `serve.sh` of the time (MTP=3, `SEQS=8`, `KV_BYTES=30g`,
 `DRAFT_VOCAB=1`, table on local NVMe), second run after a restart (see
 *Warmup* below), code prompt with thinking off, 2026-09-23:
 
@@ -78,8 +136,8 @@ DGX Spark / GX10, this repo's `serve.sh` (MTP=3, `SEQS=8`, `KV_BYTES=30g`,
 
 Prefill prompts are unique from their first token: shared-prefix filler lets
 the prefix cache serve part of every longer prompt and inflated this same box
-to "2,860 tok/s at 120k". Run `python3 bench/perf.py` and
-`python3 bench/longctx.py` (N concurrent long prompts; flags queueing and KV
+to "2,860 tok/s at 120k". Run `python3 ../bench/perf.py` and
+`python3 ../bench/longctx.py` (N concurrent long prompts; flags queueing and KV
 preemption) after any change.
 
 Under concurrency, TTFT grows with MTP's prefill cost (see the next
@@ -103,40 +161,34 @@ an aggregate number.
 
 ## Quickstart
 
+The commands at the top of this page. By hand, without the scripts here:
+
 ```bash
-git clone https://github.com/reproart/qwen3.8-Flash-DGX-AutoRound-modified.git
-cd qwen3.8-Flash-DGX-AutoRound-modified
-
-docker build -t qwen38-flash-dgx .   # official image + this fork's patches
-
-# The prepared checkpoint + PLE table (one-time, ~116 GiB):
+docker build -t qwen38-flash-dgx .
 hf download Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN --local-dir /models/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN
 hf download Saren/Qwen3.8-Flash-Next-ple-table-fp8 --local-dir /models/ple-table-fp8
 # option: the same checkpoint with the MTP draft experts left in bf16 (+3.5 GiB, ~3% slower decode):
 #   hf download Saren/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid --local-dir /models/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid
 # (or build them yourself from Intel's release: ./prepare.sh — see below)
-
-# Point serve.sh at your checkpoint + table dirs, then:
-./serve.sh                           # boots on :8000 (~5 min with fastsafetensors)
-docker logs -f qwen38-flash          # wait for "Application startup complete"
-python3 bench/perf.py --only warmup  # optional: compile first-use kernels now (see Warmup)
+. ./config.sh && scripts/serve-intel-ar.sh   # boots on :8888 (~5 min with fastsafetensors)
+docker logs -f qwen38-flash                  # wait for "Application startup complete"
+python3 ../bench/perf.py --only warmup       # optional: compile first-use kernels now (see Warmup)
 ```
 
 Then hit the OpenAI-compatible API:
 
 ```bash
-curl http://localhost:8000/v1/chat/completions -H 'Content-Type: application/json' -d '{
-  "model": "qwen",
+curl http://localhost:8888/v1/chat/completions -H 'Content-Type: application/json' -d '{
+  "model": "qwen3.8-flash-next",
   "messages": [{"role":"user","content":"Write a haiku about a desktop supercomputer."}],
   "max_tokens": 512
 }'
 ```
 
-`serve.sh` is a thin example config over `scripts/serve-intel-ar.sh` — every
-knob is an env var. The defaults below are `serve.sh`'s (the recommended
-entry point); where the bare `scripts/serve-intel-ar.sh` falls back to
-something else, the note says so. Keep your machine's real settings as an
-edited copy or a local-only commit on top.
+`./serve.sh` runs `scripts/serve-intel-ar.sh` with `config.sh`'s values —
+every knob is an env var. The defaults below are `config.sh`'s; where the bare
+`scripts/serve-intel-ar.sh` falls back to something else, the note says so.
+Keep your machine's real settings in `config.local.sh`.
 
 ## Modify the weights yourself
 
@@ -175,12 +227,12 @@ PREFIX_CACHE=1 PIN_PROMPT="You are HomeBot, the household assistant." \
 scripts/serve-intel-ar.sh
 ```
 
-or edit the paths in `serve.sh` (the example config used above) and run it.
+or set them in `config.local.sh` and run `./serve.sh`.
 
-| Var | `serve.sh` default | Notes |
+| Var | `config.sh` default | Notes |
 |---|---|---|
 | `MODEL_DIR` / `TABLE_DIR` | `/models/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN` / `/models/ple-table-fp8` — edit to your paths | Prepared checkpoint / fp8 PLE table dirs (must exist; checked before the running container is touched) |
-| `PORT` | `8000` | API port (bare script: `18300`) |
+| `PORT` | `8888` | API port, as every server in this project (the recipe's earlier default: `8000`; bare script: `18300`) |
 | `CTX` | `262144` | Max context |
 | `YARN` | `0` | `1` = Qwen's YaRN rope scaling (factor 4) past the native 262144 — set `CTX` too (500k was upstream's validated ceiling). Also forces the MTP draft's `max_model_len`, which `--hf-overrides` alone doesn't reach |
 | `SEQS` | `8` | Max concurrent sequences (don't benchmark with 1–2, see below) |
@@ -206,19 +258,25 @@ or edit the paths in `serve.sh` (the example config used above) and run it.
 | `PREWARM` | `1` | Stream the table once at boot to warm the page cache |
 | `WORKERS` | `32` | Threads for the mmap gather |
 | `LOAD_FORMAT` | `fastsafetensors` | Noticeably faster cold boots |
-| `TOOL_PARSER` | `qwen3_xml` | Tool-call parser (bare script: `qwen3_coder`) |
-| `SERVED_NAME` | `qwen` | Model id on the API (bare script: `qwen3.8-flash-next`) |
+| `TOOL_PARSER` | `qwen3_xml` | Tool-call parser (bare script: `qwen3_coder`); both run vLLM's `qwen3` parser configuration, which patches 12–13 fix |
+| `SERVED_NAME` | `qwen3.8-flash-next qwen` | Model ids on the API, space-separated; replies carry the first. `qwen` was the recipe's id (bare script: `qwen3.8-flash-next`) |
 | `ITER_DETAILS` | `0` | `1` = per-step prefill metrics: `vllm:scheduled_ctx_tokens_total` updates every engine step (stock `prompt_tokens_total` only moves when a prefill finishes). Live view: `bench/ppwatch.sh` |
 | `FLASHINFER_AUTOTUNE` | `0` | `1` — enable flashinfer kernel autotuning (longer warmup, possibly faster kernels) |
 | `CUDA_LAUNCH_BLOCKING` | `0` | `1` — synchronous CUDA errors, for debugging Xid 31 (much slower; not for production) |
-| `RESTART` | `unless-stopped` | Container restart policy — survives reboots and crashes; `no` = manual start only. The next `./serve.sh` re-creates the container with this value |
+| `RESTART` | `no` | Container restart policy. `unless-stopped` (the recipe's earlier default; bare script too) survives reboots and crashes — only where this is the machine's one server, else two servers start at boot. The next `./serve.sh` re-creates the container with this value |
+| `BATCHED_TOKENS` | `8192` | Prefill chunk (`--max-num-batched-tokens`). Smaller keeps other streams decoding during a long prefill, at a prefill cost (blazux's table, NVFP4 base: a decoding client at 0.2 / 0.4–0.6 / 1.0 / 1.6 tok/s during a big prefill at 8192 / 2048 / 1024 / 512, long prefill −17–36% at 1024). `../bench/perf.py --only interference` measures it here |
+| `MARLIN_ATOMIC_ADD` | `1` | `VLLM_MARLIN_USE_ATOMIC_ADD`: Marlin's split-K reduction by atomic adds, for speed; the sums land in arrival order (the run-to-run jitter in patch 5's notes). `0` = ordered, not measured |
+| `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
+| `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
+| `MEM_PREP` / `WAIT_MIN` | `1` / `15` | `./serve.sh`: page cache dropped and memory compacted before the start (`../scripts/mem-prep.sh`); wait up to N minutes for the API (`0` = return at once) |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `10m` / `3` | Docker log rotation — `PLE mmap stats` logs a line every 30 s, so an unbounded log grows to GBs |
-| `NAME` / `IMAGE` | `qwen38-flash` / `qwen38-flash-dgx` | Container / image names (`IMAGE` is not overwritten by serve.sh — point it at a backup tag to roll back) |
+| `NAME` / `IMAGE` | `qwen38-flash` / `qwen38-flash-dgx` | Container / image names (`IMAGE` is not overwritten by `./build.sh` unless you build to it — point it at a backup tag to roll back) |
 | `EXTRA` | | Extra vLLM flags, passed verbatim |
 
 The launcher probes the image before touching the running container and warns
 when a knob needs a patch the image lacks (`DET_TOPK`, `EXACT_TOPK`,
-`ITER_DETAILS`, `DRAFT_VOCAB`/`DRAFT_HEAD`, `METRICS_PORT`) — rebuild with
+`ITER_DETAILS`, `DRAFT_VOCAB`/`DRAFT_HEAD`, `METRICS_PORT`) or lacks the
+tool-call parser fixes — rebuild with
 `docker build -t qwen38-flash-dgx .` rather than trusting a silently ignored
 env var.
 
@@ -230,7 +288,7 @@ restart on unhealthy needs an external watcher such as `willfarrell/autoheal`)
 and json-file log rotation. The bench and smoke-test scripts read `BASE` /
 `MODEL` / `PIN` / `API_KEY` from the environment (where applicable), so they
 work unchanged with a non-default port or with auth on. Their defaults match
-`serve.sh` (`http://localhost:8000`, model `qwen`); `scripts/smoke-test.sh`
+`config.sh` (`http://localhost:8888`, model `qwen`); `scripts/smoke-test.sh`
 also takes `host:port` as its argument and, without `MODEL`, uses whatever
 `/v1/models` reports.
 
@@ -246,7 +304,7 @@ sidecar on, the `PLE mmap stats` log lines default off (`PLE_STATS_SEC=0`).
 **Keep the default `KV_BYTES=30g` unless you run five or more long (100k+
 token) sessions at the same time.** Measured on a GX10 (local NVMe table,
 MTP=3, `SEQS=8`; `bench/longctx.py --ctx 120000 --streams 8 --gen 1000` and
-`bench/perf.py --only prefill`, warmed up, 2026-09-24):
+`bench/perf.py --only prefill` (now `../bench/`), warmed up, 2026-09-24):
 
 | | `30g` (default) | `35g` (estimate) | `40g` |
 |---|---|---|---|
@@ -282,7 +340,7 @@ Why it is a trade-off:
 - **Ignore the boot log's capacity.** "GPU KV cache size: 966,390 tokens" at
   30g assumes ~31 KB/token; on long contexts the measured cost is ~53 KB/token
   (the mamba/GDN state groups hold more than that estimate assumes), i.e.
-  ~0.55M tokens. `bench/longctx.py` prints the real figure for your settings.
+  ~0.55M tokens. `../bench/longctx.py` prints the real figure for your settings.
 
 So: **30g** for chat, coding assistants and up to ~4 concurrent long
 contexts (fastest prefill, no preemption); **35g** if you regularly have
@@ -584,6 +642,36 @@ server down. With it on, the `PLE mmap stats` log lines default off
 (`PLE_STATS_SEC=0`); on an image without the module the launcher keeps them at
 `30` instead of going silent.
 
+### 14. Tool-call parser (`src/patches/qwen-tool-preamble.patch`, `qwen-tool-marker-guard.patch`)
+
+From [blazux/qwen3.8-Flash-DGX](https://github.com/blazux/qwen3.8-Flash-DGX)
+(their patches 12 and 13, Apache-2.0), at `2ba2d77`, their last commit on
+this same base image (`fc120ece...`), where both applied with `--fuzz=0`; here
+they apply the same way to the parser sources of vLLM PR #53896 the image comes
+from. Both are on for vLLM's `qwen3` parser configuration, which
+`--tool-call-parser qwen3_xml` and `qwen3_coder` run.
+
+- **12** (Jordi Posthumus): a tool preamble is confirmed before the output
+  switches channels. Before it, quoting `<tool_call>` in reasoning or in the
+  answer could switch the parser into a tool call and drop what followed,
+  the final answer after `</think>` included.
+- **13** (@techfury90, blazux#29): when the model shows its tool-call syntax as
+  an example — documenting the format inside a ```` ```xml ```` block — the
+  parser confirmed a call and consumed the rest: with tools in the request,
+  a call the model never meant; without, `content: null`. Now a marker
+  inside a fenced code block (CommonMark fences: a run of three or more
+  backticks or tildes at a line start, closed only by a run of the same
+  character at least as long) stays text, and a wrapper-less `<function=`
+  header opens a call only at the start of a line. Not covered, by design:
+  example XML outside any fence still opens a call, and a fence the model
+  never closes keeps the guard on for the rest of the turn.
+
+blazux's tests for both are in `src/patches/*-tests.patch` (vLLM's test tree
+is not in the image): on their side 30 cases, 21 failing on 12 alone and all
+passing with 13. `python3 ../bench/consistency.py --only fence` checks the
+served model end to end. This project's SGLang profiles carry the same guard
+for SGLang's own parser (`../patches/gb10_tool_fences.py`).
+
 ## Speculative decoding and TTFT
 
 MTP's draft layer is a stateful autoregressive transformer: vLLM's v1 engine
@@ -591,7 +679,7 @@ only emits the first token after the drafter has run, and on every prefill
 chunk the drafter runs a full-chunk-width forward (always eager: above the
 cudagraph capture sizes) to sync its own KV/GDN state, plus k−1 sequential
 single-token passes. Earlier versions of this README called that a ~0.8 s TTFT
-floor. On this stack, warmed up (`bench/perf.py`, MTP=3), it is not a floor
+floor. On this stack, warmed up (`../bench/perf.py`, MTP=3), it is not a floor
 but part of the prefill rate:
 
 | prompt | 1 line | 2,194 | 8,481 | 33,612 | 105,290 tokens |
@@ -614,15 +702,17 @@ split-k/merge kernels at the first few concurrent streams, and the QSA indexer
 (`_qsa_pre_indexer_kernel`, `_expand_qsa_indices_kernel`) on the first ~2k-token
 prompt. Each is a stall of about a second for whoever hits it first — on a
 fresh container the first 4-stream wave saw TTFT 1.94 s instead of 0.39 s.
-`python3 bench/perf.py --only warmup` touches all of those shapes in ~20 s;
-`bench/perf.py` runs it before measuring (`--no-warmup` to measure a cold
+`python3 ../bench/perf.py --only warmup` touches all of those shapes in ~20 s;
+`../bench/perf.py` runs it before measuring (`--no-warmup` to measure a cold
 server).
 
 ## What's in here
 
 ```
 Dockerfile                    official vLLM Flash-Next image + the patches above
-serve.sh                      example launcher config (edit paths, run)
+config.sh                     every setting, with what it does (config.local.sh: this machine's)
+serve.sh / stop.sh / status.sh  start (checks, memory, wait) / stop / state, as every server here
+build.sh / download.sh        the image / the two weight folders at pinned revisions
 prepare.sh                    build the checkpoint + table from Intel's release
 src/vllm_ple_mmap.py          mmap PLE table (any dtype, relocatable dir, fast gather)
 src/vllm_custom_metrics.py    engine-side Prometheus sidecar: PLE/guard/pin (METRICS_PORT)
@@ -643,21 +733,21 @@ src/test_never_evict_pin.py   CPU unit test for the pin (no GPU needed)
 src/test_custom_metrics_cpu.py  CPU unit test for the metrics sidecar (no GPU, no vLLM)
 src/test_prefill_metrics_cpu.py  check for the prefill-metrics patch (inside the image)
 src/patch_step_profile.py     on-demand torch.profiler around engine steps (VLLM_STEP_PROFILE)
-scripts/serve-intel-ar.sh     the docker run behind serve.sh
+scripts/serve-intel-ar.sh     the recipe's launcher: image probes, the docker run behind serve.sh
+src/patches/                  tool-call parser fixes 12-13 (from blazux) and their tests
 scripts/smoke-test.sh         health + coherence + prefill/decode numbers
 src/patch_prefill_metrics.py  per-step prefill counters for Prometheus (ITER_DETAILS=1)
 bench/ppwatch.sh              live prefill tok/s from those counters
 bench/decode_bench.py         batch-1 decode / TTFT / spec-acceptance bench
 bench/concurrency_bench.py    N-stream throughput / TTFT / queue-time bench (completions API)
-bench/perf.py                 one-command overview over the chat API: warmup, TTFT, decode, concurrency, prefill
-bench/longctx.py              concurrent long-context test (queue / preemption / cache checks)
-bench/common.py               shared chat-API client for perf.py / longctx.py
+../bench/perf.py, longctx.py, consistency.py   this project's chat-API benchmarks (were copied here)
 tools/eval_quality.py         ppl + greedy-facts quality check against the API
 tools/test_tools_cpu.py       CPU test for the preparation tools (correctness, safe re-runs)
 tools/                        CPU-only checkpoint preparation
 docs/HOW-IT-WORKS.md          upstream's mmap-PLE story (NVFP4-era numbers)
-docs/OPTIMIZATIONS.md         stub (kept for old links; the recipe lives in this README)
-.github/workflows/ci.yml      CI: ruff, shellcheck, the CPU tests
+ruff.toml                     lint config (ruff check .: syntax + pyflakes); shellcheck *.sh scripts/*.sh
+                              CPU tests (torch, numpy, safetensors, prometheus_client): src/test_ple_mmap_cpu.py,
+                              src/test_custom_metrics_cpu.py, tools/test_tools_cpu.py, src/test_qsa_exact_topk_cpu.py
 ```
 
 ## Credits
@@ -691,6 +781,9 @@ docs/OPTIMIZATIONS.md         stub (kept for old links; the recipe lives in this
   the deterministic `persistent_topk` kernel itself by **[@jschmied](https://github.com/jschmied)**
   ([vllm#55122](https://github.com/vllm-project/vllm/pull/55122)); the bug diagnosed by
   **[@k3dani](https://github.com/k3dani)** ([blazux#3](https://github.com/blazux/qwen3.8-Flash-DGX/issues/3)).
+- Tool-call parser fixes (patches 12-13 of upstream, at `2ba2d77`): **Jordi Posthumus** (12) and
+  **[@techfury90](https://github.com/techfury90)** (13, [blazux#29](https://github.com/blazux/qwen3.8-Flash-DGX/pull/29)),
+  from **[blazux/qwen3.8-Flash-DGX](https://github.com/blazux/qwen3.8-Flash-DGX)**.
 - Independent reproduction of the upstream recipe, the native-offload fixes and
   the concurrency measurements: **[@jschmied](https://github.com/jschmied)**
   ([blazux#1](https://github.com/blazux/qwen3.8-Flash-DGX/issues/1),

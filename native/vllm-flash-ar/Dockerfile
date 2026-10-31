@@ -162,3 +162,21 @@ RUN python3 /tmp/patch_prefill_metrics.py && rm /tmp/patch_prefill_metrics.py
 COPY src/draft_vocab_65536.npy /opt/llm/draft_vocab_65536.npy
 COPY src/patch_mtp_draft_vocab.py /tmp/patch_mtp_draft_vocab.py
 RUN python3 /tmp/patch_mtp_draft_vocab.py ${MTP_PY} && rm /tmp/patch_mtp_draft_vocab.py
+
+# Tool-call parser fixes from blazux/qwen3.8-Flash-DGX (Apache-2.0), at 2ba2d77, the last
+# commit of theirs on this same base image (digest fc120ece...), where they applied with
+# --fuzz=0 and passed their parser tests (src/patches/*-tests.patch; vLLM's tests are not in
+# the image). Both are on for vLLM's qwen3 parser configuration, which --tool-call-parser
+# qwen3_xml and qwen3_coder run.
+# 12 (Jordi Posthumus): a tool preamble is confirmed before the output switches channels, so a quoted
+#    or malformed <tool_call> in reasoning or content no longer swallows the final answer.
+COPY src/patches/qwen-tool-preamble.patch /tmp/qwen-tool-preamble.patch
+RUN cd ${SP} && patch --batch --forward --fuzz=0 -p1 < /tmp/qwen-tool-preamble.patch \
+ && rm /tmp/qwen-tool-preamble.patch && echo "tool preamble patched OK"
+# 13 (@techfury90, blazux#29): a marker inside a fenced code block (CommonMark fences), or a
+#    wrapper-less <function= header mid-line, stays text and opens no call: the model showing
+#    its tool-call syntax as an example no longer turns into a call that drops the answer.
+COPY src/patches/qwen-tool-marker-guard.patch /tmp/qwen-tool-marker-guard.patch
+RUN cd ${SP} && patch --batch --forward --fuzz=0 -p1 < /tmp/qwen-tool-marker-guard.patch \
+ && rm /tmp/qwen-tool-marker-guard.patch \
+ && grep -q "guard_literal_tool_markers" vllm/parser/engine/parser_engine_config.py && echo "tool marker guard patched OK"
