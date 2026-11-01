@@ -102,6 +102,15 @@ export DET_MOE_ALIGN="${DET_MOE_ALIGN:-1}"
 # 9 = every step where an expert can fill more than one block of 8 (the patch's own
 # default; single-stream decode is still below it).
 export DET_MOE_ALIGN_MIN_TOKENS="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
+# MoE expert kernels (vLLM --moe-backend). Empty = vLLM's choice for these int4 GPTQ
+# experts: Marlin, what every number in the README ran. humming = Humming, vLLM's JIT
+# quantized-GEMM library (humming-kernels, pinned 0.1.12 by this image's vLLM): kernels
+# built for this GPU and these shapes during warmup (NVRTC, 16 threads), kept in
+# HUMMING_CACHE on the host so only the first boot compiles. It aligns tokens through
+# moe_align_block_size too, so DET_MOE_ALIGN covers it. Unmeasured on GB10 (vLLM's blog:
+# ~2x Marlin for MoE W4A16 at medium and large batches on H200).
+export MOE_BACKEND="${MOE_BACKEND:-}"
+export HUMMING_CACHE="${HUMMING_CACHE:-$HOME/.cache/gb10/humming}"
 # docker --cpuset-cpus; empty = all cores (as the recipe measured). 5-9,15-19 are
 # GB10's Cortex-X925 cores (blazux's concurrent profile pins to them).
 export CPUSET="${CPUSET:-}"
