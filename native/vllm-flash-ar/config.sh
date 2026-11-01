@@ -89,10 +89,11 @@ export MARLIN_ATOMIC_ADD="${MARLIN_ATOMIC_ADD:-1}"
 # expert in a fixed order, so the Marlin MoE sums run in the same order every time. On
 # this recipe three cold runs of one greedy prompt gave first-token logprobs 0.16-0.45
 # nats apart (../bench/consistency.py), with MARLIN_ATOMIC_ADD 1 or 0; with 1 here, cold,
-# cold again and cache hits matched exactly (gap 0.0000, 4K and 32K). Off until its
-# serving cost is measured (prestonlogan: ~3.7% prefill on Flint). ./build.sh checks it
-# against the image's CUDA kernel on the GPU.
-export DET_MOE_ALIGN="${DET_MOE_ALIGN:-0}"
+# cold again and cache hits matched exactly (gap 0.0000, 4K and 32K), at no measurable
+# cost with the auto floor below (decode 66.4 / 65.4 tok/s with 1 / 0; README patch 15).
+# On by default since 2026-11-01; 0 = vLLM's kernel. ./build.sh checks it against the
+# image's CUDA kernel on the GPU; an image built before it warns and runs the kernel.
+export DET_MOE_ALIGN="${DET_MOE_ALIGN:-1}"
 # The steps it applies to: from this many tokens up. auto = SEQS x (1 + MTP) + 1 (33 as
 # set here), one more than the largest decode-only step: prefill and steps that carry a
 # prefill chunk take it, decode keeps the kernel. Decode loses nothing by that: one

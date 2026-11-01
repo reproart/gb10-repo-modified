@@ -16,12 +16,12 @@ log "building $IMAGE"
 docker build -t "$IMAGE" "$@" "$VFA_ROOT"
 log "built $IMAGE ($(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)); ./serve.sh starts it (a running server keeps its old image until then)"
 # DET_MOE_ALIGN's layout against the image's own CUDA kernel, a few seconds on the
-# GPU (still idle: checked above). A failure only concerns DET_MOE_ALIGN=1.
+# GPU (still idle: checked above). A failure concerns DET_MOE_ALIGN=1, the default.
 if [ "${DET_ALIGN_CHECK:-1}" = 1 ]; then
   log "checking the deterministic MoE alignment against the kernel (src/test_det_moe_align_gpu.py; DET_ALIGN_CHECK=0 skips)"
   if docker run --rm --gpus all --entrypoint python3 -v "$VFA_ROOT/src:/w:ro" "$IMAGE" /w/test_det_moe_align_gpu.py; then
-    log "DET_MOE_ALIGN=1 is safe to try on this image"
+    log "DET_MOE_ALIGN=1 (the default) checks out on this image"
   else
-    log "WARNING: the check failed or could not run: do not start with DET_MOE_ALIGN=1 (the default 0 is unaffected)"
+    log "WARNING: the check failed or could not run: start this image with DET_MOE_ALIGN=0 (vLLM's kernel) until it passes"
   fi
 fi
