@@ -232,6 +232,11 @@ if spec is not None:
     print("iter", int(has(os.path.join(pkg, "v1/metrics/loggers.py"), "_q38_prefill_metrics")))
     print("fences", int(has(os.path.join(pkg, "parser/engine/parser_engine_config.py"), "guard_literal_tool_markers")))
     print("detalign", int(has(os.path.join(pkg, "model_executor/layers/fused_moe/moe_align_block_size.py"), "_deterministic_align")))
+try:
+    import importlib.metadata as md
+    print("humming", md.version("humming-kernels"))
+except Exception:
+    print("humming 0")
 ' 2>/dev/null) || probe=""
   case "$probe" in *"draft 1"*) DRAFT_OK=1 ;; esac
   case "$probe" in *"metrics 1"*) METRICS_OK=1 ;; esac
@@ -240,6 +245,7 @@ if spec is not None:
   case "$probe" in *"iter 1"*) ITER_OK=1 ;; esac
   case "$probe" in *"fences 1"*) FENCES_OK=1 ;; esac
   case "$probe" in *"detalign 1"*) DETALIGN_OK=1 ;; esac
+  HUMMING_VER=$(sed -n 's/^humming //p' <<< "$probe")
   if [ -z "$probe" ]; then
     IMAGE_OK=0
     echo "WARNING: could not probe '$IMAGE' (python3/entrypoint missing?) — skipping patch checks." >&2
@@ -312,6 +318,23 @@ case "$DRAFT_VOCAB" in
   *) echo "WARNING: DRAFT_VOCAB='$DRAFT_VOCAB' — the container only sees /model and /ple-table. Put the ids.npy in the checkpoint dir and pass /model/<name>.npy (or bake it into a custom image)." >&2 ;;
 esac
 
+# MoE expert kernels: --moe-backend (empty = vLLM's pick, Marlin for these experts).
+# Humming builds its kernels at warmup; its cache goes to the host (HUMMING_CACHE).
+MOE_ARGS=() HUMMING_MOUNT=()
+case "${MOE_BACKEND:-}" in
+  '') ;;
+  humming)
+    if [ "$IMAGE_OK" = 1 ] && [ "${HUMMING_VER:-0}" = 0 ]; then
+      echo "ERROR: MOE_BACKEND=humming, but image '$IMAGE' has no humming-kernels package." >&2
+      exit 1
+    fi
+    mkdir -p "${HUMMING_CACHE:?}"
+    MOE_ARGS=(--moe-backend humming)
+    HUMMING_MOUNT=(-v "$HUMMING_CACHE:/humming" -e HUMMING_CACHE_DIR=/humming/cache -e HUMMING_TMP_DIR=/humming/tmp)
+    ;;
+  *) MOE_ARGS=(--moe-backend "$MOE_BACKEND") ;;
+esac
+
 # The deterministic MoE alignment from this many tokens a step up (DET_MOE_ALIGN=1);
 # auto = one more than the largest decode-only step, SEQS x (1 + MTP) tokens.
 DET_MIN="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
@@ -354,7 +377,7 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
   --log-opt max-size="$LOG_MAX_SIZE" --log-opt max-file="$LOG_MAX_FILE" \
   --health-cmd "$HEALTH_CMD" --health-start-period=10m \
   --health-interval=60s --health-timeout=15s --health-retries=10 \
-  -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" \
+  -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" ${HUMMING_MOUNT[@]+"${HUMMING_MOUNT[@]}"} \
   "${ENV_ARGS[@]}" \
   "$IMAGE" \
   /model --served-model-name "${SERVED_NAMES[@]}" \
@@ -363,11 +386,12 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
     $PC_ARG --enable-prompt-tokens-details --enable-chunked-prefill --max-num-batched-tokens "${BATCHED_TOKENS:-8192}" \
     $CC \
     $AT_ARG \
+    ${MOE_ARGS[@]+"${MOE_ARGS[@]}"} \
     --kv-cache-dtype auto \
     ${OVR_ARGS[@]+"${OVR_ARGS[@]}"} \
     $EXTRA \
     --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3 \
     ${PIN_ARG[@]+"${PIN_ARG[@]}"} ${SPEC[@]+"${SPEC[@]}"}
 
-echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
+echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), moe=${MOE_BACKEND:-auto}$([ "${MOE_BACKEND:-}" = humming ] && echo " (humming-kernels ${HUMMING_VER:-?}, cache $HUMMING_CACHE)"), metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
 echo ">> follow with: docker logs -f $NAME"
