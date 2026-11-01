@@ -274,8 +274,6 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `RESTART` | `no` | Container restart policy. `unless-stopped` (the recipe's earlier default; bare script too) survives reboots and crashes — only where this is the machine's one server, else two servers start at boot. The next `./serve.sh` re-creates the container with this value |
 | `BATCHED_TOKENS` | `8192` | Prefill chunk (`--max-num-batched-tokens`). Smaller keeps other streams decoding during a long prefill, at a prefill cost (blazux's table, NVFP4 base: a decoding client at 0.2 / 0.4–0.6 / 1.0 / 1.6 tok/s during a big prefill at 8192 / 2048 / 1024 / 512, long prefill −17–36% at 1024). `../bench/perf.py --only interference` measures it here |
 | `MARLIN_ATOMIC_ADD` | `1` | `VLLM_MARLIN_USE_ATOMIC_ADD`: Marlin's split-K reduction by atomic adds, for speed, in the dense Marlin GEMMs; the MoE kernel never uses it (`marlin_moe.py`: `use_atomic_add=False`). `0` changed nothing in `consistency.py` here; see patch 15 |
-| `MOE_BACKEND` | empty | vLLM `--moe-backend` for the int4 experts; empty = vLLM's pick (Marlin, every number here). `humming` = Humming's JIT kernels (humming-kernels 0.1.12 in this image's vLLM pin), built at warmup for GB10's shapes. Measured: no gain here, and not deterministic run to run ("MoE kernels" below) |
-| `HUMMING_CACHE` | `~/.cache/gb10/humming` | host directory for Humming's compiled kernels (mounted at `/humming`), so only the first boot with `MOE_BACKEND=humming` compiles |
 | `DET_MOE_ALIGN` | `1` | deterministic MoE token alignment (patch 15): the same prompt gives the same logprobs every run, cold or from the cache (measured), no measurable decode cost. `0` = vLLM's kernel |
 | `DET_MOE_ALIGN_MIN_TOKENS` | `auto` | the steps it applies to, from this many tokens up; `auto` = `SEQS` × (1 + `MTP`) + 1 (33), one more than the largest decode-only step: prefill takes it, decode keeps the kernel. `9` = every step where an expert can fill more than one block |
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
@@ -760,9 +758,11 @@ between runs of one batch, and times both; `./build.sh` runs it after a build
 docker run --rm --gpus all --entrypoint python3 -v "$PWD/src:/w:ro" qwen38-flash-dgx /w/test_det_moe_align_gpu.py
 ```
 
-### MoE kernels: Marlin or Humming (`MOE_BACKEND`)
+### MoE kernels: Marlin or Humming
 
-`MOE_BACKEND=humming` runs the int4 experts (and the MTP draft's) on Humming,
+Tried on 2026-11-01 and dropped: `--moe-backend humming` (`EXTRA` passes it;
+the recipe had a `MOE_BACKEND` switch with a host cache for the JIT kernels for
+the test) runs the int4 experts (and the MTP draft's) on Humming,
 vLLM's JIT quantized-GEMM library (`humming-kernels` 0.1.12 in this image):
 the log says `Using 'HUMMING' WNA16 MoE backend.` and `Using HummingIndexedExperts`,
 the kernels built during the normal boot time (NVRTC), and no shape fell back
@@ -789,8 +789,7 @@ ways is summed into the output with `atomicAdd` on half2, in arrival order and
 in BF16 (`include/humming/epilogue/gmem_writer.cuh` in humming-kernels
 0.1.12). Marlin's MoE call reduces in order in FP32. Humming's
 `use_batch_invariant` kernels drop stream-K, but vLLM turns them on only with
-`VLLM_BATCH_INVARIANT=1`, its engine-wide batch-invariant mode. Marlin stays
-the default.
+`VLLM_BATCH_INVARIANT=1`, its engine-wide batch-invariant mode. Marlin it is.
 
 ## Speculative decoding and TTFT
 
