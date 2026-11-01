@@ -107,8 +107,9 @@ export DET_MOE_ALIGN_MIN_TOKENS="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
 # quantized-GEMM library (humming-kernels, pinned 0.1.12 by this image's vLLM): kernels
 # built for this GPU and these shapes during warmup (NVRTC, 16 threads), kept in
 # HUMMING_CACHE on the host so only the first boot compiles. It aligns tokens through
-# moe_align_block_size too, so DET_MOE_ALIGN covers it. Unmeasured on GB10 (vLLM's blog:
-# ~2x Marlin for MoE W4A16 at medium and large batches on H200).
+# moe_align_block_size too, but its own K-split sums with half2 atomics, so it is not
+# deterministic run to run whatever DET_MOE_ALIGN says. Measured on the GX10: no faster
+# than Marlin (README, "MoE kernels"). Kept for experiments.
 export MOE_BACKEND="${MOE_BACKEND:-}"
 export HUMMING_CACHE="${HUMMING_CACHE:-$HOME/.cache/gb10/humming}"
 # docker --cpuset-cpus; empty = all cores (as the recipe measured). 5-9,15-19 are
