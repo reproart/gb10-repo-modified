@@ -776,7 +776,7 @@ unchanged), on inclusionAI's own SGLang branches. Here, on the release:
 Unmeasured here.
 
 ```bash
-$HF download inclusionAI/Ling-3.0-flash-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-fp4
+scripts/mem-prep.sh idle && $HF download inclusionAI/Ling-3.0-flash-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-fp4
 ./serve.sh ling-3.0-flash install && ./serve.sh ling-3.0-flash
 ```
 
@@ -793,7 +793,7 @@ here (the SwiGLU clamp above). `WEIGHTS=int4`, `YARN=0` (native
 128K instead of the recipe's 256K YaRN x2). Unmeasured here.
 
 ```bash
-$HF download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-VL-fp4
+scripts/mem-prep.sh idle && $HF download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-VL-fp4
 ./serve.sh ling-3.0-flash-vl install && ./serve.sh ling-3.0-flash-vl
 ```
 

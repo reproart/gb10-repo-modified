@@ -5,7 +5,8 @@
 # layer as the draft (NEXTN). A thinking model with tool calls; text only (the
 # VL sibling, models/ling-3.0-flash-vl.sh, has no MTP layer).
 #
-#   hf download inclusionAI/Ling-3.0-flash-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-fp4
+#   scripts/mem-prep.sh idle &&   # no 65 GB download beside a running server (earlyoom kills the server first)
+#     hf download inclusionAI/Ling-3.0-flash-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-fp4
 #   ./serve.sh ling-3.0-flash install     # SGLang 0.5.21, the same venv as the VL and Qwen profiles
 #   ./serve.sh ling-3.0-flash
 #
