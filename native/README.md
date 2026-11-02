@@ -295,7 +295,18 @@ through mmap, is where it could still matter; not measured.
 ./scripts/mem-prep.sh sudoers [worker]   # once: lets the two writes below run without a password (here and on a worker)
 ./scripts/mem-prep.sh status [worker]    # free memory, the part of it in blocks of 2 MiB or more, uptime
 ./scripts/mem-prep.sh idle [worker]      # exit 1, saying what, while anything runs on a GPU
+./scripts/mem-watch.sh [seconds] [count] # a line a minute: available, page cache, dirty, anon, swap, GPU-held, top 5 by RSS
 ```
+
+`mem-watch.sh` is for the case earlyoom leaves open: it logs how little was
+left when it acted, not who took it. Run it beside a server (`nohup
+scripts/mem-watch.sh >/dev/null 2>&1 &`, log in `~/.cache/gb10/mem-watch.log`):
+the line where `avail` falls says which kind of memory grew (`anon`: some
+process's heap; `dirty`: a write; `cache`; `other`: what the GPU driver holds,
+a model server's CUDA allocations, in nobody's RSS) and the process list who.
+2026-11-02 on a GX10, a vLLM server idle for 88 minutes after a long-context
+run lost its engine to earlyoom with 1015 MiB available and 6 GiB of swap in
+use; nothing else was running that anyone knew of.
 
 Every server here (`./serve.sh`, `vllm-b12x/`, `vllm-flash-ar/`, `tensorfold-dsv41/`,
 `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`) now runs `mem-prep.sh prep`
@@ -1008,6 +1019,7 @@ patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                sitecustomize.py (loads them) · test_*.py (CPU)
 scripts/       00-check-host · 01-install · serve-sglang · install-service · host-tuning (+ test-host-tuning)
                mem-prep (+ test-mem-prep): memory before a start, no copies beside GPU work
+               mem-watch: a line a minute on what holds the memory (for earlyoom kills)
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
 bench/         common.py · perf.py · longctx.py · profile_decode.py (GPU time per kernel group)
