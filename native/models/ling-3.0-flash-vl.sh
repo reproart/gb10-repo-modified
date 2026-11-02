@@ -5,7 +5,8 @@
 # for images and video. A thinking model with tool calls; no MTP head, so no
 # speculative decoding.
 #
-#   hf download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-VL-fp4
+#   scripts/mem-prep.sh idle &&   # no 65 GB download beside a running server (earlyoom kills the server first)
+#     hf download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-VL-fp4
 #   ./serve.sh ling-3.0-flash-vl install     # SGLang 0.5.21
 #   ./serve.sh ling-3.0-flash-vl
 #

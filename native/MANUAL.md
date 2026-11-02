@@ -436,7 +436,7 @@ FP8-голова, MTP) на синтетике; на GSM8K — 38 → 54 ток/
 Это было на их собственных ветках SGLang; профиль работает на релизе 0.5.21:
 
 ```bash
-$HF download inclusionAI/Ling-3.0-flash-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-fp4
+scripts/mem-prep.sh idle && $HF download inclusionAI/Ling-3.0-flash-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-fp4
 ./serve.sh ling-3.0-flash install      # тот же venv, что у VL и Qwen
 ./serve.sh ling-3.0-flash
 ```
@@ -467,7 +467,7 @@ inclusionAI Ling-3.0-flash-VL: MoE ~125B / 5.1B активных (гибрид �
 ~1070 ток/с суммарно на 16 потоках; INT4 — ~23 ток/с. Нужен SGLang 0.5.21.
 
 ```bash
-$HF download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-VL-fp4
+scripts/mem-prep.sh idle && $HF download inclusionAI/Ling-3.0-flash-VL-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-VL-fp4
 ./serve.sh ling-3.0-flash-vl install
 ./serve.sh ling-3.0-flash-vl
 ```
