@@ -152,6 +152,13 @@ export PIN_PROMPT="${PIN_PROMPT:-}"
 export EXTRA="${EXTRA:-}"
 export EXTRA_ENV="${EXTRA_ENV:-}"
 
+# After this many seconds without a request the engine gives torch's cached GPU blocks
+# back to the system (torch.cuda.empty_cache(), src/vllm_custom_metrics.py; CUDA graph
+# pools stay). On GB10 they are host memory, held at the peak of the last large request:
+# 8 GiB on a GX10 after a multi-stream long-context run (2026-11-02), with ~2 GiB left
+# available and earlyoom at 1. 0 = keep them. The next large request allocates again.
+export IDLE_RELEASE_SEC="${IDLE_RELEASE_SEC:-60}"
+
 # Before a start, with the GPU idle: drop the page cache and compact free memory
 # (../scripts/mem-prep.sh; passwordless sudo for the two writes:
 # ../scripts/mem-prep.sh sudoers). The PLE table reads through the page cache,

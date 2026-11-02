@@ -26,6 +26,16 @@ Metrics (all created up front, so they are visible as 0 even before traffic):
                                      pools and freed blocks it keeps for reuse; on GB10
                                      host memory, not given back without empty_cache()
   vllm:torch_cuda_max_reserved_bytes the peak of the above since the engine started
+  vllm:torch_idle_released_bytes_total what the idle release below gave back
+
+Idle release (VLLM_IDLE_EMPTY_CACHE_SEC, default 0 = off): once the scheduler has
+had no request for that many seconds and the allocator holds at least
+VLLM_IDLE_EMPTY_CACHE_MIN_MB (512) of freed blocks, the refresher thread calls
+torch.cuda.empty_cache(): on GB10 those blocks are host memory, kept at the
+peak of the last large request. CUDA graph pools stay (empty_cache leaves them).
+It runs again only once later work has raised the allocator's hold by that much
+again, so blocks it cannot free do not make it repeat. Each release logs a line.
+It runs with VLLM_CUSTOM_METRICS_PORT=0 too (the thread then serves nothing).
 
 Data sources register themselves from the engine process: vllm_ple_mmap keeps
 lifetime counters (_STATS_LIFE, never reset — the log-window _STATS still
@@ -47,9 +57,13 @@ import logging
 import os
 import sys
 import threading
+import time
 
 _PORT = int(os.environ.get("VLLM_CUSTOM_METRICS_PORT", "18400") or 0)
 _INTERVAL = min(60.0, max(1.0, float(os.environ.get("VLLM_CUSTOM_METRICS_INTERVAL", "5") or 5)))
+_IDLE_SEC = max(0.0, float(os.environ.get("VLLM_IDLE_EMPTY_CACHE_SEC", "0") or 0))
+_IDLE_MIN = int(float(os.environ.get("VLLM_IDLE_EMPTY_CACHE_MIN_MB", "512") or 512) * 2**20)
+_idle = {"since": None, "floor": None}   # idle start (monotonic s); reserved after the last release
 
 _started = False
 _ensured = False
@@ -155,6 +169,9 @@ def _ensure_metrics() -> None:
                        "host memory, and it is not given back without empty_cache()."),
         "torch_peak": g("vllm:torch_cuda_max_reserved_bytes",
                         "Peak of vllm:torch_cuda_reserved_bytes since the engine started."),
+        "idle_released": c("vllm:torch_idle_released_bytes",
+                           "Bytes torch.cuda.empty_cache() gave back while the engine was "
+                           "idle (VLLM_IDLE_EMPTY_CACHE_SEC)."),
     })
     _ensured = True
 
@@ -209,12 +226,47 @@ def _refresh_once() -> None:
             _m["torch_alloc"].set(torch.cuda.memory_allocated())
             _m["torch_res"].set(torch.cuda.memory_reserved())
             _m["torch_peak"].set(torch.cuda.max_memory_reserved())
+            _maybe_release_idle(torch)
     except Exception as exc:
         _log_once(f"vllm_custom_metrics: torch allocator stats failed: {exc!r}")
 
 
+def _maybe_release_idle(torch) -> None:
+    """torch.cuda.empty_cache() once the engine has been idle _IDLE_SEC seconds
+    (see the module docstring). Called from the refresher thread."""
+    if _IDLE_SEC <= 0:
+        return
+    sched = _pin_source[0]
+    has = getattr(sched, "has_requests", None) or getattr(sched, "has_unfinished_requests", None)
+    if not callable(has):
+        return  # no scheduler to ask: never release blind
+    now = time.monotonic()
+    if has():
+        _idle["since"] = None
+        return
+    if _idle["since"] is None:
+        _idle["since"] = now
+        return
+    if now - _idle["since"] < _IDLE_SEC:
+        return
+    reserved = torch.cuda.memory_reserved()
+    allocated = torch.cuda.memory_allocated()
+    floor = _idle["floor"]
+    if reserved - allocated < _IDLE_MIN or (floor is not None and reserved < floor + _IDLE_MIN):
+        return
+    torch.cuda.empty_cache()
+    after = torch.cuda.memory_reserved()
+    _idle["floor"] = after
+    freed = max(0, reserved - after)
+    if freed:
+        _m["idle_released"].inc(freed)
+    gib = 2.0 ** 30
+    _emit(logging.INFO, "vllm_custom_metrics: engine idle %.0fs, torch.cuda.empty_cache() gave back "
+          "%.2f GiB (reserved %.2f -> %.2f GiB, allocated %.2f GiB)"
+          % (now - _idle["since"], freed / gib, reserved / gib, after / gib, allocated / gib))
+
+
 def _refresher() -> None:
-    import time
     while True:
         _refresh_once()
         time.sleep(_INTERVAL)
@@ -223,7 +275,7 @@ def _refresher() -> None:
 def start() -> None:
     """Idempotently start the refresher thread and the HTTP endpoint."""
     global _started
-    if _started or _PORT <= 0:
+    if _started or (_PORT <= 0 and _IDLE_SEC <= 0):
         return
     with _lock:
         if _started:
@@ -234,6 +286,12 @@ def start() -> None:
             from prometheus_client import start_wsgi_server
             threading.Thread(target=_refresher, name="vllm-custom-metrics",
                              daemon=True).start()
+            if _IDLE_SEC > 0:
+                _emit(logging.INFO, "vllm_custom_metrics: idle release on: torch.cuda.empty_cache() "
+                      "after %.0fs without requests (at least %d MiB of freed blocks)"
+                      % (_IDLE_SEC, _IDLE_MIN // 2**20))
+            if _PORT <= 0:
+                return
             start_wsgi_server(_PORT, addr="0.0.0.0", registry=_registry)
             _announce()
         except OSError as exc:

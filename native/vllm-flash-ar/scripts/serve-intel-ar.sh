@@ -204,7 +204,7 @@ done
 #   metrics — the vllm_custom_metrics module: the engine-side metrics sidecar.
 #             Without it PLE stats are neither served nor logged unless
 #             PLE_STATS_SEC brings the log lines back (handled below).
-IMAGE_OK=1 DRAFT_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0 FENCES_OK=0 DETALIGN_OK=0
+IMAGE_OK=1 DRAFT_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0 FENCES_OK=0 DETALIGN_OK=0 IDLE_OK=0
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   IMAGE_OK=0  # the main `docker run` fails loudly on its own; don't add noise
 else
@@ -225,6 +225,7 @@ ok = (spec is not None and u.find_spec("vllm_custom_metrics") is not None
       and has(os.path.join(pkg, "v1/core/sched/scheduler.py"), "set_pin_source")
       and has(os.path.join(os.path.dirname(pkg), "vllm_ple_mmap.py"), "_metrics_start"))
 print("metrics", int(ok))
+print("idlerelease", int(has(os.path.join(os.path.dirname(pkg), "vllm_custom_metrics.py"), "VLLM_IDLE_EMPTY_CACHE_SEC")))
 if spec is not None:
     qsa = os.path.join(pkg, "models/qwen3_8_flash_next/nvidia/ops/qsa.py")
     print("det", int(os.path.exists("/opt/llm/kernel-det/_C_det.so") and has(qsa, "QSADET")))
@@ -240,6 +241,7 @@ if spec is not None:
   case "$probe" in *"iter 1"*) ITER_OK=1 ;; esac
   case "$probe" in *"fences 1"*) FENCES_OK=1 ;; esac
   case "$probe" in *"detalign 1"*) DETALIGN_OK=1 ;; esac
+  case "$probe" in *"idlerelease 1"*) IDLE_OK=1 ;; esac
   if [ -z "$probe" ]; then
     IMAGE_OK=0
     echo "WARNING: could not probe '$IMAGE' (python3/entrypoint missing?) — skipping patch checks." >&2
@@ -263,6 +265,10 @@ if [ "$IMAGE_OK" = 1 ] && [ "$FENCES_OK" = 0 ]; then
   echo "WARNING: image '$IMAGE' predates the tool-call parser fixes (patches 12-13): a tool call the model" >&2
   echo "  shows as an example in a code block is parsed as a real call and the rest of the answer is lost." >&2
   echo "  Rebuild: docker build -t '$IMAGE' .  (../build.sh in this project)." >&2
+fi
+if [ "$IMAGE_OK" = 1 ] && [ "${IDLE_RELEASE_SEC:-0}" != 0 ] && [ "$IDLE_OK" = 0 ]; then
+  echo "WARNING: IDLE_RELEASE_SEC=$IDLE_RELEASE_SEC will be IGNORED: image '$IMAGE' predates the idle release" >&2
+  echo "  (src/vllm_custom_metrics.py). Rebuild: ./build.sh" >&2
 fi
 if [ "$IMAGE_OK" = 1 ] && [ "${DET_MOE_ALIGN:-0}" = 1 ] && [ "$DETALIGN_OK" = 0 ]; then
   echo "WARNING: DET_MOE_ALIGN=1 will be IGNORED: image '$IMAGE' predates the deterministic MoE alignment patch." >&2
@@ -332,7 +338,7 @@ ENVS=(
 for e in ${MTENV[@]+"${MTENV[@]}"}; do [ "$e" = -e ] || ENVS+=("$e"); done
 ENVS+=(
   "VLLM_MARLIN_USE_ATOMIC_ADD=${MARLIN_ATOMIC_ADD:-1}" "VLLM_DET_MOE_ALIGN=${DET_MOE_ALIGN:-0}"
-  "VLLM_DET_MOE_ALIGN_MIN_TOKENS=$DET_MIN"
+  "VLLM_DET_MOE_ALIGN_MIN_TOKENS=$DET_MIN" "VLLM_IDLE_EMPTY_CACHE_SEC=${IDLE_RELEASE_SEC:-0}"
   "VLLM_FP8_HYBRID=${FP8_HYBRID:-1}" VLLM_USE_DEEP_GEMM=0
   VLLM_USE_FLASHINFER_SAMPLER=1 "VLLM_ALLOW_LONG_MAX_MODEL_LEN=$ALLOW_LONG" "CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}"
 )
@@ -369,5 +375,5 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
     --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3 \
     ${PIN_ARG[@]+"${PIN_ARG[@]}"} ${SPEC[@]+"${SPEC[@]}"}
 
-echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
+echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), idle_release=${IDLE_RELEASE_SEC:-0}s, metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
 echo ">> follow with: docker logs -f $NAME"

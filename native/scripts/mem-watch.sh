@@ -21,6 +21,9 @@
 #          default http://127.0.0.1:18400/metrics; empty = off): torch's caching
 #          allocator in the engine, allocated (live tensors), reserved (what it
 #          holds, freed blocks kept for reuse included) and its peak
+#   gpu:     the driver's own count per CUDA process (nvidia-smi compute apps,
+#          name(pid):MiB; GB10_MEM_WATCH_GPU=0 = off): which process holds, and
+#          grows, the memory in "other"
 # then the five largest processes by RSS (name:MiB), and while swap is in use the
 # three with the most of it (swapped: name:MiB; scripts/host-tuning.sh keeps
 # SGLang out of swap, not a Docker container). A line whose avail fell
@@ -39,7 +42,7 @@ case "$INTERVAL$COUNT" in *[!0-9]*) echo "usage: $0 [INTERVAL_SECONDS] [COUNT]" 
 mkdir -p "$(dirname "$LOG")"
 
 line() {
-  local m top torch="" swapped=""
+  local m top torch="" swapped="" gpu=""
   m=$(awk '
     { v[$1] = $2 }
     END {
@@ -57,13 +60,17 @@ line() {
       /^vllm:torch_cuda_(allocated|reserved|max_reserved)_bytes / {
         n = $1; sub(/^vllm:torch_cuda_/, "", n); sub(/_bytes$/, "", n); printf " torch_%s=%d", n, $2 / 1048576 }')
   fi
+  if [ "${GB10_MEM_WATCH_GPU:-1}" = 1 ] && command -v nvidia-smi >/dev/null; then
+    gpu=$(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>/dev/null |
+          awk -F', *' 'NF >= 3 { n = $2; sub(/.*\//, "", n); gsub(/ /, "_", n); printf "%s%s(%s):%s", (NR > 1 ? " " : ""), n, $1, $3 }')
+  fi
   top=$(ps -eo rss=,comm= --sort=-rss 2>/dev/null | awk 'NR <= 5 { r = $1; $1 = ""; sub(/^ +/, ""); gsub(/ /, "_"); printf "%s%s:%d", (NR > 1 ? " " : ""), $0, r / 1024 }')
   case "$m" in *" swap=0 "*) ;; *)
     swapped=$(awk '/^Name:/ { $1 = ""; sub(/^ +/, ""); gsub(/ /, "_"); n = $0 }
                    /^VmSwap:/ && $2 >= 1024 { printf "%d %s\n", $2 / 1024, n }' /proc/[0-9]*/status 2>/dev/null |
               sort -nr | head -3 | awk '{ printf "%s%s:%s", (NR > 1 ? " " : ""), $2, $1 }')
   esac
-  printf '%s %s%s top: %s%s\n' "$(date -u +%FT%TZ)" "$m" "$torch" "$top" "${swapped:+ swapped: $swapped}"
+  printf '%s %s%s%s top: %s%s\n' "$(date -u +%FT%TZ)" "$m" "$torch" "${gpu:+ gpu: $gpu}" "$top" "${swapped:+ swapped: $swapped}"
 }
 
 n=0
