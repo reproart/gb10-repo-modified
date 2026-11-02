@@ -17,21 +17,27 @@
 #   other  MemTotal minus all of the above, slab, page tables and kernel stacks:
 #          on GB10 mostly what the GPU driver holds (CUDA allocations of a model
 #          server: they appear in no process's RSS)
+#   torch_*  when vllm-flash-ar's engine sidecar answers (GB10_MEM_WATCH_METRICS,
+#          default http://127.0.0.1:18400/metrics; empty = off): torch's caching
+#          allocator in the engine, allocated (live tensors), reserved (what it
+#          holds, freed blocks kept for reuse included) and its peak
 # then the five largest processes by RSS (name:MiB). A line whose avail fell
 # with anon or other rising names the kind of memory that grew; the process
-# list, who.
+# list, who. other rising with torch_reserved and not torch_allocated: the
+# allocator kept what a large request needed.
 set -uo pipefail
 
 INTERVAL=${1:-60}
 COUNT=${2:-0}
 LOG=${GB10_MEM_WATCH_LOG:-$HOME/.cache/gb10/mem-watch.log}
 MEMINFO=${GB10_MEMINFO:-/proc/meminfo}   # (overridable for a test)
+METRICS=${GB10_MEM_WATCH_METRICS-http://127.0.0.1:18400/metrics}
 case "$INTERVAL$COUNT" in *[!0-9]*) echo "usage: $0 [INTERVAL_SECONDS] [COUNT]" >&2; exit 2 ;; esac
 [ "$INTERVAL" -ge 1 ] || { echo "INTERVAL must be at least 1 second" >&2; exit 2; }
 mkdir -p "$(dirname "$LOG")"
 
 line() {
-  local m top
+  local m top torch=""
   m=$(awk '
     { v[$1] = $2 }
     END {
@@ -44,8 +50,13 @@ line() {
         (v["Dirty:"] + v["Writeback:"]) / mib, v["AnonPages:"] / mib,
         (v["SwapTotal:"] - v["SwapFree:"]) / mib, other / mib
     }' "$MEMINFO")
+  if [ -n "$METRICS" ] && command -v curl >/dev/null; then
+    torch=$(curl -s -m 1 "$METRICS" 2>/dev/null | awk '
+      /^vllm:torch_cuda_(allocated|reserved|max_reserved)_bytes / {
+        n = $1; sub(/^vllm:torch_cuda_/, "", n); sub(/_bytes$/, "", n); printf " torch_%s=%d", n, $2 / 1048576 }')
+  fi
   top=$(ps -eo rss=,comm= --sort=-rss 2>/dev/null | awk 'NR <= 5 { r = $1; $1 = ""; sub(/^ +/, ""); gsub(/ /, "_"); printf "%s%s:%d", (NR > 1 ? " " : ""), $0, r / 1024 }')
-  printf '%s %s top: %s\n' "$(date -u +%FT%TZ)" "$m" "$top"
+  printf '%s %s%s top: %s\n' "$(date -u +%FT%TZ)" "$m" "$torch" "$top"
 }
 
 n=0

@@ -658,8 +658,12 @@ serialized `SchedulerStats` IPC would mean patching vLLM internals blindly. So
 the engine process serves them itself with `prometheus_client` (the library
 vLLM already uses) on its own port: `vllm:ple_mmap_*` (ops, op/gather ms, rows,
 bytes, prefetch hit/miss — `rate(op_ms)/rate(ops)` is ms/op), the
-`vllm:mamba_state_copy_guard_total` tripwire and the `vllm:never_evict_*` pin
-gauges. It starts lazily from the first data push (i.e. in the process that
+`vllm:mamba_state_copy_guard_total` tripwire, the `vllm:never_evict_*` pin
+gauges, and torch's caching allocator in the engine
+(`vllm:torch_cuda_allocated_bytes`, `..._reserved_bytes`,
+`..._max_reserved_bytes`: on GB10 that is host memory, and what the allocator
+keeps after a large request is not given back; `../scripts/mem-watch.sh` puts
+these three in its line). It starts lazily from the first data push (i.e. in the process that
 actually has data) and every failure is swallowed — telemetry never takes the
 server down. With it on, the `PLE mmap stats` log lines default off
 (`PLE_STATS_SEC=0`); on an image without the module the launcher keeps them at
