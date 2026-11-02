@@ -1023,6 +1023,7 @@ blazux/qwen3.8-Flash-DGX, где всё это нашли сломанным у 
 | `CUDA error: out of memory` ещё до загрузки весов | то же | то же; если `nvidia-smi` не отвечает и после этого — перезагрузка |
 | `something already serves :8888` | уже запущена служба или другая модель | `sudo systemctl stop gb10-sglang` |
 | сервер молча умер, код `-15` | earlyoom | `MEM_FRACTION` ниже, `journalctl -u earlyoom` |
+| vLLM в Docker: `EngineCore: trigger received signal=SIGTERM`, через ~10 с `EngineDeadError` | earlyoom остановил движок: доступной памяти < 1 ГиБ (скачивание, копирование или сборка рядом с сервером) | `journalctl -u earlyoom`; большие операции — при остановленном сервере, перед ними `scripts/mem-prep.sh idle` |
 | `Ninja build failed`, `Killed` при первом старте | параллельная компиляция съела память | `JIT_JOBS=2` (по умолчанию); просто перезапустить — скомпилированное сохранится |
 | `fatal error: Python.h` | нет заголовков Python | `sudo apt install python3.12-dev` |
 | `DFLASH block size mismatch` | ожидаемо при драфте ≠ 8 | ничего, это предупреждение |
