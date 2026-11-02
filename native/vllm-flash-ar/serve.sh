@@ -32,7 +32,16 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "no image $IMAGE: ./buil
 if [ "$MEM_PREP" = 1 ]; then "$NATIVE_DIR/scripts/mem-prep.sh" prep || true; fi
 
 "$VFA_ROOT/scripts/serve-intel-ar.sh"
-[ "$WAIT_MIN" = 0 ] && exit 0
+
+# WATCHDOG=1: the watchdog in the background (one at a time: a second exits);
+# not when the watchdog itself restarts the server.
+start_watchdog() {
+  [ "$WATCHDOG" = 1 ] && [ -z "${WATCHDOG_CHILD:-}" ] || return 0
+  nohup "$VFA_ROOT/watchdog.sh" >/dev/null 2>&1 &
+  log "watchdog on (pid $!): restart when available < ${WATCHDOG_MIN_AVAIL_MB} MiB and idle ${WATCHDOG_IDLE_MIN} min;" \
+    "log ~/.cache/gb10/vllm-flash-ar-watchdog.log"
+}
+[ "$WAIT_MIN" = 0 ] && { start_watchdog; exit 0; }
 
 log "waiting for http://127.0.0.1:$PORT/v1/models (weights ~5 min; the first boot of a new image compiles kernels)"
 auth=()
@@ -40,6 +49,7 @@ auth=()
 for _ in $(seq 1 $((WAIT_MIN * 6))); do
   if curl -fsS -m 5 ${auth[@]+"${auth[@]}"} "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
     log "serving $(echo "$SERVED_NAME" | cut -d' ' -f1) on :$PORT; logs: docker logs -f $NAME"
+    start_watchdog
     exit 0
   fi
   if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" != true ]; then
