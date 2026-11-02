@@ -278,6 +278,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `DET_MOE_ALIGN_MIN_TOKENS` | `auto` | the steps it applies to, from this many tokens up; `auto` = `SEQS` × (1 + `MTP`) + 1 (33), one more than the largest decode-only step: prefill takes it, decode keeps the kernel. `9` = every step where an expert can fill more than one block |
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
+| `IDLE_RELEASE_SEC` | `60` | after this many seconds without a request the engine calls `torch.cuda.empty_cache()`: torch's freed GPU blocks (host memory on GB10, kept at the last large request's peak; 8 GiB after a long-context run here) go back to the system, CUDA graph pools stay; once per rise; a line in `docker logs`. `0` = keep them |
 | `MEM_PREP` / `WAIT_MIN` | `1` / `15` | `./serve.sh`: page cache dropped and memory compacted before the start (`../scripts/mem-prep.sh`); wait up to N minutes for the API (`0` = return at once) |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `10m` / `3` | Docker log rotation — `PLE mmap stats` logs a line every 30 s, so an unbounded log grows to GBs |
 | `NAME` / `IMAGE` | `qwen38-flash` / `qwen38-flash-dgx` | Container / image names (`IMAGE` is not overwritten by `./build.sh` unless you build to it — point it at a backup tag to roll back) |
@@ -371,8 +372,21 @@ sessions, accepting ~5% slower long prefill.
   `engine core exited unexpectedly` and an `EngineDeadError` traceback, the
   container exiting 0; `journalctl -u earlyoom` names it. On 2026-11-02 that
   happened with the server idle for 88 minutes after a long-context run (1015
-  MiB available, 6 GiB of swap in use) and the cause is not known yet:
-  `../scripts/mem-watch.sh` beside the server logs what grows. A large
+  MiB available, 6 GiB of swap in use). `../scripts/mem-watch.sh` beside the
+  next run (GX10, 30g, multi-stream long contexts) showed where the memory is:
+  of 121.6 GiB, ~108.5 GiB held by the GPU driver, 105.5 of it by torch's
+  allocator in the engine, which kept 8.2 GiB of freed blocks (reserved 105.5,
+  allocated 97.3 GiB); ~4 GiB of page cache (of the 48 GiB table), 3.5 GiB of
+  process heaps, ~2 GiB available under load. And idle, with no request, the
+  available memory fell ~7 MiB a minute (~0.45 GiB an hour), all of it outside
+  torch's allocator (its numbers did not move; the driver-held total grew);
+  stopping the server stopped it, and neither the health check (30 runs: no
+  change) nor the desktop (Xorg 18 MiB, gnome-shell 6 MiB) is it. Not found
+  yet; `mem-watch.sh` now lists the driver's per-process count (`gpu:`) to say
+  which process. Against both, `IDLE_RELEASE_SEC=60` (default) hands the
+  allocator's freed blocks back after a minute without requests (8 GiB there:
+  ~19 h of that leak instead of ~2), and `KV_BYTES=25g` gives 4.7 GiB more for
+  good. A large
   download, copy or build beside the server gets there for sure: `./build.sh`
   and `./download.sh` refuse beside a GPU job (`../scripts/mem-prep.sh idle`);
   a hand-run `hf download` does not, so put that check in front of it.
@@ -663,7 +677,12 @@ gauges, and torch's caching allocator in the engine
 (`vllm:torch_cuda_allocated_bytes`, `..._reserved_bytes`,
 `..._max_reserved_bytes`: on GB10 that is host memory, and what the allocator
 keeps after a large request is not given back; `../scripts/mem-watch.sh` puts
-these three in its line). It starts lazily from the first data push (i.e. in the process that
+these three in its line). Its refresher thread also does the idle release
+(`IDLE_RELEASE_SEC`, `vllm:torch_idle_released_bytes_total`): after that many
+seconds with the scheduler empty and at least 512 MiB of freed blocks held,
+`torch.cuda.empty_cache()`, again only once later work has raised the hold by
+512 MiB (so CUDA graph pools, which it cannot free, do not make it repeat). It
+starts lazily from the first data push (i.e. in the process that
 actually has data) and every failure is swallowed — telemetry never takes the
 server down. With it on, the `PLE mmap stats` log lines default off
 (`PLE_STATS_SEC=0`); on an image without the module the launcher keeps them at

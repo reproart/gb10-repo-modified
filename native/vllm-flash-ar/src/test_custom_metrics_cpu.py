@@ -143,4 +143,79 @@ finally:
 assert "sidecar on" in _cap.getvalue(), f"announce missed the vllm logger: {_cap.getvalue()!r}"
 print("announce: reaches the vllm logger tree OK")
 
+# Idle release: torch.cuda.empty_cache() after VLLM_IDLE_EMPTY_CACHE_SEC without
+# requests, once per rise of the allocator's hold; never while busy, never blind.
+GiB = 2**30
+alloc = {"reserved": 108 * GiB, "allocated": 100 * GiB, "graph_pool": 1 * GiB, "calls": 0}
+
+
+def _empty_cache():
+    alloc["calls"] += 1
+    alloc["reserved"] = alloc["allocated"] + alloc["graph_pool"]  # freed blocks go, graph pools stay
+
+
+_t = types.ModuleType("torch")
+_t.cuda = types.SimpleNamespace(
+    is_initialized=lambda: True, memory_allocated=lambda: alloc["allocated"],
+    memory_reserved=lambda: alloc["reserved"], max_memory_reserved=lambda: 108 * GiB,
+    empty_cache=_empty_cache)
+sys.modules["torch"] = _t
+clock = [1000.0]
+cm.time = types.SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda s: None)
+busy = [True]
+
+
+class _IdleSched(_Sched):
+    def has_requests(self):
+        return busy[0]
+
+
+cm.set_pin_source(_IdleSched())
+cm._IDLE_SEC, cm._IDLE_MIN = 60.0, 512 * 2**20
+logs = []
+cm._emit = lambda level, msg: logs.append(msg)
+
+
+def tick(seconds=5):
+    clock[0] += seconds
+    cm._refresh_once()
+
+
+tick(); tick()
+assert alloc["calls"] == 0, "released while busy"
+busy[0] = False
+tick()                      # idle starts here
+for _ in range(11):         # 55 s idle: not yet
+    tick()
+assert alloc["calls"] == 0, "released before VLLM_IDLE_EMPTY_CACHE_SEC"
+tick()                      # 60 s
+assert alloc["calls"] == 1 and alloc["reserved"] == 101 * GiB, alloc
+assert any("gave back 7.00 GiB" in m for m in logs), logs
+text = generate_latest(cm._registry).decode()
+assert f"vllm:torch_idle_released_bytes_total {float(7 * GiB)}" in text or "vllm:torch_idle_released_bytes_total 7.516192768e+09" in text, text
+for _ in range(20):         # still idle: the graph pool (1 GiB > 512 MiB) must not make it repeat
+    tick()
+assert alloc["calls"] == 1, "repeated on blocks empty_cache cannot free"
+busy[0] = True; tick()      # new work raises the hold by 3 GiB
+alloc["reserved"] += 3 * GiB
+busy[0] = False
+for _ in range(14):
+    tick()
+assert alloc["calls"] == 2 and alloc["reserved"] == 101 * GiB, alloc
+cm.set_pin_source(None)     # no scheduler to ask: no release
+alloc["reserved"] += 5 * GiB
+for _ in range(30):
+    tick()
+assert alloc["calls"] == 2, "released without a scheduler"
+cm._IDLE_SEC = 0.0
+cm.set_pin_source(_IdleSched())
+for _ in range(30):
+    tick()
+assert alloc["calls"] == 2, "released with the switch off"
+if _real_torch is not None:
+    sys.modules["torch"] = _real_torch
+else:
+    del sys.modules["torch"]
+print("idle release: after 60 s idle, once per rise, never busy / blind / off")
+
 print("ALL OK")
