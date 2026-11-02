@@ -13,6 +13,12 @@ if m=$(curl -fsS -m 10 ${auth[@]+"${auth[@]}"} "http://127.0.0.1:$PORT/v1/models
 else
   echo "API:       not answering on :$PORT"
 fi
+wpid=$(cat "$HOME/.cache/gb10/vllm-flash-ar-watchdog.pid" 2>/dev/null)
+if [ -n "$wpid" ] && grep -qs watchdog.sh "/proc/$wpid/cmdline"; then
+  echo "watchdog:  on (pid $wpid); $(grep -E 'restarting|restarted|failed' "$HOME/.cache/gb10/vllm-flash-ar-watchdog.log" 2>/dev/null | tail -1 || true)"
+else
+  echo "watchdog:  off (WATCHDOG=$WATCHDOG)"
+fi
 if [ "$METRICS_PORT" != 0 ] && s=$(curl -fsS -m 5 "http://127.0.0.1:$METRICS_PORT/metrics" 2>/dev/null); then
   echo "sidecar:   $(echo "$s" | grep -E '^vllm:mamba_state_copy_guard_total|^vllm:ple_mmap_ops_total' | tr '\n' ' ')"
 fi

@@ -279,6 +279,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
 | `IDLE_RELEASE_SEC` | `60` | after this many seconds without a request the engine calls `torch.cuda.empty_cache()`: torch's freed GPU blocks (host memory on GB10, kept at the last large request's peak; 8 GiB after a long-context run here) go back to the system, CUDA graph pools stay; once per rise; a line in `docker logs`. `0` = keep them |
+| `WATCHDOG` | `0` | `1` = `./serve.sh` starts `./watchdog.sh` in the background (`./stop.sh` stops it): it restarts the server when available memory is under `WATCHDOG_MIN_AVAIL_MB` (`2048`) **and** no request has run or waited for `WATCHDOG_IDLE_MIN` (`5`) minutes (vLLM's `/metrics`, read again just before the stop), at most once per `WATCHDOG_COOLDOWN_MIN` (`60`), checking every `WATCHDOG_INTERVAL` (`60`) s; never starts a stopped server, stops itself if a restart fails. Costs the prefix cache and ~5 min. Log: `~/.cache/gb10/vllm-flash-ar-watchdog.log` |
 | `MEM_PREP` / `WAIT_MIN` | `1` / `15` | `./serve.sh`: page cache dropped and memory compacted before the start (`../scripts/mem-prep.sh`); wait up to N minutes for the API (`0` = return at once) |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `10m` / `3` | Docker log rotation — `PLE mmap stats` logs a line every 30 s, so an unbounded log grows to GBs |
 | `NAME` / `IMAGE` | `qwen38-flash` / `qwen38-flash-dgx` | Container / image names (`IMAGE` is not overwritten by `./build.sh` unless you build to it — point it at a backup tag to roll back) |
@@ -385,8 +386,9 @@ sessions, accepting ~5% slower long prefill.
   yet; `mem-watch.sh` now lists the driver's per-process count (`gpu:`) to say
   which process. Against both, `IDLE_RELEASE_SEC=60` (default) hands the
   allocator's freed blocks back after a minute without requests (8 GiB there:
-  ~19 h of that leak instead of ~2), and `KV_BYTES=25g` gives 4.7 GiB more for
-  good. A large
+  ~19 h of that leak instead of ~2), `KV_BYTES=25g` gives 4.7 GiB more for
+  good, and `WATCHDOG=1` restarts the server itself, idle and before earlyoom's
+  line, instead of earlyoom stopping it whenever (off by default). A large
   download, copy or build beside the server gets there for sure: `./build.sh`
   and `./download.sh` refuse beside a GPU job (`../scripts/mem-prep.sh idle`);
   a hand-run `hf download` does not, so put that check in front of it.
@@ -894,6 +896,7 @@ src/patch_det_moe_align.py    deterministic MoE token alignment (DET_MOE_ALIGN; 
 src/test_det_moe_align_cpu.py its CPU check (torch, no GPU)
 src/test_det_moe_align_gpu.py its GPU check against the image's kernel (./build.sh runs it)
 scripts/smoke-test.sh         health + coherence + prefill/decode numbers
+watchdog.sh                   restart before earlyoom: low memory + idle (WATCHDOG; scripts/test-watchdog.sh, stubs)
 src/patch_prefill_metrics.py  per-step prefill counters for Prometheus (ITER_DETAILS=1)
 bench/ppwatch.sh              live prefill tok/s from those counters
 bench/decode_bench.py         batch-1 decode / TTFT / spec-acceptance bench

@@ -159,6 +159,19 @@ export EXTRA_ENV="${EXTRA_ENV:-}"
 # available and earlyoom at 1. 0 = keep them. The next large request allocates again.
 export IDLE_RELEASE_SEC="${IDLE_RELEASE_SEC:-60}"
 
+# The watchdog (./watchdog.sh): restart the server when available memory is under
+# WATCHDOG_MIN_AVAIL_MB AND no request has run or waited for WATCHDOG_IDLE_MIN
+# minutes, before earlyoom stops it at a worse moment. 1 = ./serve.sh starts it in
+# the background, ./stop.sh stops it; 0 (default) = off (./watchdog.sh still runs
+# by hand). A restart drops the prefix cache and takes ~5 min. At most one per
+# WATCHDOG_COOLDOWN_MIN. The threshold must sit above earlyoom's SIGTERM line
+# (1 GiB after ../scripts/host-tuning.sh; ~8 GB with DGX OS's own: then ~10240).
+export WATCHDOG="${WATCHDOG:-0}"
+export WATCHDOG_MIN_AVAIL_MB="${WATCHDOG_MIN_AVAIL_MB:-2048}"
+export WATCHDOG_IDLE_MIN="${WATCHDOG_IDLE_MIN:-5}"
+export WATCHDOG_INTERVAL="${WATCHDOG_INTERVAL:-60}"
+export WATCHDOG_COOLDOWN_MIN="${WATCHDOG_COOLDOWN_MIN:-60}"
+
 # Before a start, with the GPU idle: drop the page cache and compact free memory
 # (../scripts/mem-prep.sh; passwordless sudo for the two writes:
 # ../scripts/mem-prep.sh sudoers). The PLE table reads through the page cache,
