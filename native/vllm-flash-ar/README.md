@@ -363,6 +363,17 @@ sessions, accepting ~5% slower long prefill.
 - **One big model at a time** — and on a Spark the OS and GPU share the pool;
   prefer the deterministic `GPU_MEM=0.01` + `KV_BYTES` sizing over a large
   fraction (an OOM inside the unified pool can freeze the box).
+- **Nothing big beside the server.** With the server up the host keeps only a
+  few GiB available (3-7 in perf.py's headers here); a large download, copy or
+  build on top pushes it under earlyoom's SIGTERM line (1 GiB once
+  `../scripts/host-tuning.sh` is applied, ~8 GB by DGX OS default), and earlyoom
+  stops the engine first. In `docker logs`: `EngineCore: trigger received
+  signal=SIGTERM`, ~10 s later the API server's `engine core exited
+  unexpectedly` and an `EngineDeadError` traceback, the container exiting 0;
+  `journalctl -u earlyoom` names it (2026-11-02: 1015 MiB available, 6 GiB of
+  swap in use, `sending SIGTERM to ... "VLLM::EngineCor"`). `./build.sh` and
+  `./download.sh` refuse beside a GPU job (`../scripts/mem-prep.sh idle`); a
+  hand-run `hf download` does not, so put that check in front of it.
 - **1M context is out of reach on one box**: the QSA layers refuse an fp8 KV
   cache, and in bf16 a single 1M request needs ~30 GiB of KV. 500k with YaRN
   was upstream's validated ceiling.
