@@ -34,6 +34,17 @@ class _Sched:
     _pin_page_sizes = [160, 3200]
 
 
+# Fake torch with an initialized CUDA allocator (the real one needs a GPU).
+_fake_torch = types.ModuleType("torch")
+_fake_torch.cuda = types.SimpleNamespace(
+    is_initialized=lambda: True,
+    memory_allocated=lambda: 90_000_000,
+    memory_reserved=lambda: 104_000_000,
+    max_memory_reserved=lambda: 112_000_000,
+)
+_real_torch = sys.modules.get("torch")
+sys.modules["torch"] = _fake_torch
+
 cm.set_guard_hits(4)
 cm.set_pin_source(_Sched())
 cm._refresh_once()
@@ -53,6 +64,9 @@ expected = [
     ("vllm:never_evict_blocks_reserved", 5.0),
     ("vllm:never_evict_pin_queue_blocks", 2.0),
     ("vllm:never_evict_pin_bytes", 3 * 160 + 2 * 3200),
+    ("vllm:torch_cuda_allocated_bytes", "9e+07"),  # prometheus formatting
+    ("vllm:torch_cuda_reserved_bytes", "1.04e+08"),
+    ("vllm:torch_cuda_max_reserved_bytes", "1.12e+08"),
 ]
 for name, val in expected:
     assert f"{name} {val}" in text, f"{name} {val} not in exposition:\n{text}"
@@ -72,6 +86,19 @@ print("second refresh: delta accounting OK (100 -> 150)")
 del ple._STATS_LIFE
 cm._refresh_once()
 print("missing-source refresh: no exception")
+
+# CUDA not initialized (a frontend process that imported torch): the torch
+# gauges keep their last value, the allocator is not touched.
+_fake_torch.cuda.is_initialized = lambda: False
+_fake_torch.cuda.memory_reserved = lambda: (_ for _ in ()).throw(AssertionError("touched"))
+cm._refresh_once()
+text = generate_latest(cm._registry).decode()
+assert "vllm:torch_cuda_reserved_bytes 1.04e+08" in text, text
+if _real_torch is not None:
+    sys.modules["torch"] = _real_torch
+else:
+    del sys.modules["torch"]
+print("torch allocator gauges: set while CUDA is up, left alone before")
 
 # set_pin_source(None): pin gauges keep their last value, nothing raises.
 cm.set_pin_source(None)

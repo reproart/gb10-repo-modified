@@ -21,6 +21,11 @@ Metrics (all created up front, so they are visible as 0 even before traffic):
   vllm:mamba_state_copy_guard_total  counter; tripwire, expect a constant 0
   vllm:never_evict_blocks_reserved / vllm:never_evict_pin_queue_blocks
   vllm:never_evict_pin_bytes
+  vllm:torch_cuda_allocated_bytes    live tensors on the GPU (torch's caching allocator)
+  vllm:torch_cuda_reserved_bytes     what that allocator holds: live tensors, CUDA graph
+                                     pools and freed blocks it keeps for reuse; on GB10
+                                     host memory, not given back without empty_cache()
+  vllm:torch_cuda_max_reserved_bytes the peak of the above since the engine started
 
 Data sources register themselves from the engine process: vllm_ple_mmap keeps
 lifetime counters (_STATS_LIFE, never reset — the log-window _STATS still
@@ -141,6 +146,15 @@ def _ensure_metrics() -> None:
                            "(rest of the reserved set is on loan in caches)."),
         "pin_bytes": g("vllm:never_evict_pin_bytes",
                            "Bytes pinned by the never-evict pin."),
+        "torch_alloc": g("vllm:torch_cuda_allocated_bytes",
+                         "Bytes in live tensors on the GPU (torch caching allocator, "
+                         "engine process)."),
+        "torch_res": g("vllm:torch_cuda_reserved_bytes",
+                       "Bytes the torch caching allocator holds: live tensors, CUDA "
+                       "graph pools and freed blocks kept for reuse. On GB10 this is "
+                       "host memory, and it is not given back without empty_cache()."),
+        "torch_peak": g("vllm:torch_cuda_max_reserved_bytes",
+                        "Peak of vllm:torch_cuda_reserved_bytes since the engine started."),
     })
     _ensured = True
 
@@ -185,6 +199,18 @@ def _refresh_once() -> None:
     except Exception as exc:  # never let telemetry break anything
         _log_once(f"vllm_custom_metrics: refresh failed once and will keep "
                   f"retrying silently: {exc!r}")
+
+    # torch's caching allocator, read from the refresher thread: allocator
+    # statistics only (no CUDA call), and only once the engine has initialized
+    # CUDA (a process that merely imported torch is left alone).
+    try:
+        torch = sys.modules.get("torch")
+        if torch is not None and torch.cuda.is_initialized():
+            _m["torch_alloc"].set(torch.cuda.memory_allocated())
+            _m["torch_res"].set(torch.cuda.memory_reserved())
+            _m["torch_peak"].set(torch.cuda.max_memory_reserved())
+    except Exception as exc:
+        _log_once(f"vllm_custom_metrics: torch allocator stats failed: {exc!r}")
 
 
 def _refresher() -> None:
