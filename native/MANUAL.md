@@ -875,7 +875,16 @@ llama.cpp, пока не сделать `--undo`.
 ./scripts/mem-prep.sh sudoers 10.100.80.2   # то же здесь и на второй машине пары
 ./scripts/mem-prep.sh status [worker]    # свободная память, сколько её в блоках от 2 МиБ, аптайм
 ./scripts/mem-prep.sh idle [worker]      # код 1 и что именно, пока на GPU что-то работает
+./scripts/mem-watch.sh [секунды] [сколько]  # строка в минуту: доступно, кэш, грязные, кучи, своп, память GPU, 5 крупнейших процессов
 ```
+
+**Кто съел память.** earlyoom пишет, сколько памяти оставалось, когда он
+сработал, но не кто её забрал. `scripts/mem-watch.sh` раз в минуту пишет
+строку в `~/.cache/gb10/mem-watch.log` (в фоне: `nohup scripts/mem-watch.sh
+>/dev/null 2>&1 &`). По строке, где `avail` упал, видно, что выросло:
+`anon` — куча какого-то процесса, `dirty` — запись на диск, `cache` —
+страничный кэш, `other` — то, что держит драйвер GPU (выделения CUDA сервера
+не видны ни в чьём RSS). Список процессов в конце строки скажет, кто.
 
 **Перед каждым стартом.** Все наши серверы (`./serve.sh`, `vllm-b12x/`, `vllm-flash-ar/`,
 `tensorfold-dsv41/`, `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`), если
@@ -1023,7 +1032,7 @@ blazux/qwen3.8-Flash-DGX, где всё это нашли сломанным у 
 | `CUDA error: out of memory` ещё до загрузки весов | то же | то же; если `nvidia-smi` не отвечает и после этого — перезагрузка |
 | `something already serves :8888` | уже запущена служба или другая модель | `sudo systemctl stop gb10-sglang` |
 | сервер молча умер, код `-15` | earlyoom | `MEM_FRACTION` ниже, `journalctl -u earlyoom` |
-| vLLM в Docker: `EngineCore: trigger received signal=SIGTERM`, через ~10 с `EngineDeadError` | earlyoom остановил движок: доступной памяти < 1 ГиБ (скачивание, копирование или сборка рядом с сервером) | `journalctl -u earlyoom`; большие операции — при остановленном сервере, перед ними `scripts/mem-prep.sh idle` |
+| vLLM в Docker: `EngineCore: trigger received signal=SIGTERM`, через ~10 с `EngineDeadError` | earlyoom остановил движок: доступной памяти < 1 ГиБ | `journalctl -u earlyoom`; кто занял память — `scripts/mem-watch.sh` рядом с сервером; большие скачивания и сборки — при остановленном сервере, перед ними `scripts/mem-prep.sh idle` |
 | `Ninja build failed`, `Killed` при первом старте | параллельная компиляция съела память | `JIT_JOBS=2` (по умолчанию); просто перезапустить — скомпилированное сохранится |
 | `fatal error: Python.h` | нет заголовков Python | `sudo apt install python3.12-dev` |
 | `DFLASH block size mismatch` | ожидаемо при драфте ≠ 8 | ничего, это предупреждение |
@@ -1040,7 +1049,8 @@ blazux/qwen3.8-Flash-DGX, где всё это нашли сломанным у 
 serve.sh              запуск: настройки машины, профиль; ./serve.sh install / manifest
 models/<профиль>.sh   одна модель: веса, версия SGLang, флаги и ручки с комментариями
 scripts/              установка, проверка машины, служба, merge-lora.py, тюнер MoE,
-                      host-tuning.sh, mem-prep.sh (память перед стартом, проверка «GPU свободен»)
+                      host-tuning.sh, mem-prep.sh (память перед стартом, проверка «GPU свободен»),
+                      mem-watch.sh (строка в минуту: кто держит память)
 patches/              патчи SGLang, включаются профилями через переменные GB10_*:
   gb10_ple_mmap         таблица n-грамм Flash-Next читается на месте
   gb10_fp8_side         BF16-слои, головы и драфт DFlash → FP8 (Marlin)
