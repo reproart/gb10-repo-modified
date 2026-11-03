@@ -19,9 +19,9 @@ unchanged), they are half the bytes.
     accumulation, the row scale applied to the FP32 sum. Long K is split over
     programs and the partial sums added by a second kernel in a fixed order:
     no atomics, the same bits every run;
-  * longer inputs (prefill) take a torch path: the row scales go into the output
-    or, when the output is the larger (the up projection), into a BF16 copy of the
-    weight made for that call.
+  * longer inputs (prefill) take cuBLAS on a BF16 copy of the weight made for that
+    call by one Triton pass (FP8 rows times their scales, then the tail rows):
+    ~10 MB of traffic a call, against a GEMM that reads a [8192 x 10240] input.
 
 The GEMM is a torch custom op (gb10::fp8_row_linear), so torch.compile treats
 it as one opaque call and CUDA graphs capture its kernels. Lossy: the gate that
@@ -179,19 +179,58 @@ def triton_mm(x: torch.Tensor, wq: torch.Tensor, s: torch.Tensor, wt: torch.Tens
     return y
 
 
+def _get_dequant():
+    if "dequant" in _kernels:
+        return _kernels["dequant"]
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def _dequant(wq_ptr, s_ptr, wt_ptr, out_ptr, N8, K, BLOCK_K: tl.constexpr):
+        # one output row, BLOCK_K of its columns: FP8 row x its scale in FP32, or a tail row
+        row = tl.program_id(0)
+        rk = tl.program_id(1) * BLOCK_K + tl.arange(0, BLOCK_K)
+        ok = rk < K
+        if row < N8:
+            v = tl.load(wq_ptr + row * K + rk, mask=ok, other=0.0).to(tl.float32) * tl.load(s_ptr + row)
+        else:
+            v = tl.load(wt_ptr + (row - N8) * K + rk, mask=ok, other=0.0).to(tl.float32)
+        tl.store(out_ptr + row * K + rk, v.to(out_ptr.dtype.element_ty), mask=ok)
+
+    _kernels["dequant"] = (_dequant, triton)
+    return _kernels["dequant"]
+
+
+def dequant_weight(wq: torch.Tensor, s: torch.Tensor, wt: torch.Tensor, dtype: torch.dtype,
+                   force_triton: bool = False) -> torch.Tensor:
+    """The whole weight [N8 + tail rows, K] in `dtype`: each FP8 row times its scale in FP32,
+    rounded once, then the tail rows. On the GPU one Triton pass (reads ~1 byte, writes 2 a
+    weight); elsewhere, or if that kernel does not build, torch (the same values)."""
+    n8, k = wq.shape
+    if (wq.is_cuda or force_triton) and "dequant" not in _state["bad_tiles"]:
+        try:
+            kern, triton = _get_dequant()
+            out = torch.empty((n8 + wt.shape[0], k), dtype=dtype, device=wq.device)
+            bk = min(1024, triton.next_power_of_2(k))
+            kern[(out.shape[0], triton.cdiv(k, bk))](wq, s, wt if wt.shape[0] else wq, out, n8, k,
+                                                     BLOCK_K=bk, num_warps=4)
+            return out
+        except Exception as e:  # noqa: BLE001 - torch from now on
+            _state["bad_tiles"].add("dequant")
+            logger.warning("FP8 HC: the dequantize kernel failed (%s: %s); prefill converts with torch",
+                           type(e).__name__, e)
+    w = (wq.float() * s[:, None]).to(dtype)
+    return torch.cat([w, wt.to(dtype)]) if wt.shape[0] else w
+
+
 def torch_mm(x: torch.Tensor, wq: torch.Tensor, s: torch.Tensor, wt: torch.Tensor) -> torch.Tensor:
-    """The path for longer inputs (prefill). The row scales go where they move fewer bytes:
-    into the output while it is smaller than the weight (rows <= K: the down projection,
-    an [M x 320] output), else into a copy of the weight in x's dtype made for this call
-    (the up projection, K = 320: scaling its [8192 x 10240] output moved ~340 MB a call,
-    ~1.4 ms, against ~0.1 ms for the weight). Either way the scale is applied in FP32."""
+    """The path for longer inputs (prefill): the weight dequantized to x's dtype for this
+    call (dequant_weight), then one cuBLAS GEMM over the input, as without FP8. Earlier
+    versions scaled the output or ran the BF16 tail as a second GEMM, which read the
+    [8192 x 10240] input of the down projection twice (+0.9 ms a call at 8192 rows)."""
     import torch.nn.functional as F
 
-    if x.shape[0] > wq.shape[1]:
-        y = F.linear(x, (wq.float() * s[:, None]).to(x.dtype))
-    else:
-        y = (F.linear(x, wq.to(x.dtype)) * s).to(x.dtype)
-    return torch.cat([y, F.linear(x, wt)], dim=-1) if wt.shape[0] else y
+    return F.linear(x, dequant_weight(wq, s, wt, x.dtype))
 
 
 def _impl(x: torch.Tensor, wq: torch.Tensor, s: torch.Tensor, wt: torch.Tensor) -> torch.Tensor:

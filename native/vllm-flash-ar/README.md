@@ -100,7 +100,7 @@ patches — roughly **1.8× faster decode** than the NVFP4 recipe on the same bo
 | | **this fork (int4/int8/fp8)** |
 |---|---|
 | Prefill | **~2,100–2,200 tok/s** |
-| Decode, single stream |**~50–60 tok/s (MTP=3)** |
+| Decode, single stream |**~50–60 tok/s (MTP=3, thinking on); 74.5 tok/s on code with thinking off** (`perf.py`, 2026-11-03) |
 | Prefix caching | **on** (+ never-evict pin) |
 | Context | 262k native / 500k YaRN |
 | Weights resident | **~68 GiB** |
@@ -279,7 +279,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
 | `IDLE_RELEASE_SEC` | `60` | after this many seconds without a request the engine calls `torch.cuda.empty_cache()`: torch's freed GPU blocks (host memory on GB10, kept at the last large request's peak; 8 GiB after a long-context run here) go back to the system, CUDA graph pools stay; once per rise; a line in `docker logs`. `0` = keep them |
-| `HC_FP8` | `0` | `1` = the hyper-connection projections (`input_mix_weight_down` + block_inject, `input_mix_weight_up`; ~13.5 MB of BF16 a mix, ~98 mixes a decode step) in FP8 with a scale per row, on a Triton GEMM for decode inputs (patch 16). Half the bytes of ~7 ms of a ~50 ms step. Lossy (answers change a little, deterministically): check quality before keeping it |
+| `HC_FP8` | `1` | The hyper-connection projections (`input_mix_weight_down` + block_inject, `input_mix_weight_up`; ~13.5 MB of BF16 a mix, ~98 mixes a decode step) in FP8 with a scale per row, on a Triton GEMM for decode inputs (patch 16): decode 74.5 tok/s against 69.7, HumanEval 96.3% either way, prefill within run-to-run spread. On since 2026-11-03. Lossy (answers differ a little from BF16's, deterministically); `0` = BF16 as shipped |
 | `WATCHDOG` | `0` | `1` = `./serve.sh` starts `./watchdog.sh` in the background (`./stop.sh` stops it): it restarts the server when available memory is under `WATCHDOG_MIN_AVAIL_MB` (`2048`) **and** no request has run or waited for `WATCHDOG_IDLE_MIN` (`5`) minutes (vLLM's `/metrics`, read again just before the stop), at most once per `WATCHDOG_COOLDOWN_MIN` (`60`), checking every `WATCHDOG_INTERVAL` (`60`) s; never starts a stopped server, stops itself if a restart fails. Costs the prefix cache and ~5 min. Log: `~/.cache/gb10/vllm-flash-ar-watchdog.log` |
 | `PROFILE` / `PROFILE_DIR` | `0` / `/tmp/gb10-profile` | `1` = vLLM's torch profiler endpoints, traces to `PROFILE_DIR` (mounted at the same path): `python3 ../bench/profile_decode.py` then shows where a decode step's GPU time goes, per kernel group. Costs nothing until a profile is started. `PROFILE_SHAPES=1` adds op input shapes and runs eagerly (no CUDA graphs), so each top kernel names its weight and a second table gives the time per layer and the rate it reads its weight at (GB/s): for finding layers and how far each is from the memory's bandwidth. Kernel times hold; the gaps between them are eager-mode ones |
 | `MEM_PREP` / `WAIT_MIN` | `1` / `15` | `./serve.sh`: page cache dropped and memory compacted before the start (`../scripts/mem-prep.sh`); wait up to N minutes for the API (`0` = return at once) |
@@ -411,7 +411,8 @@ sessions, accepting ~5% slower long prefill.
 | MTP draft layer's own 512 experts | **int4** GPTQ-Marlin g128 RTN (the default `-MTP_int4RTN` checkpoint) | Intel leaves layer 48 in bf16 (~4.7 GiB, `-:.*layers\.48\..*`); `tools/quantize_mtp_experts_int4.py` (patch 10) makes it int4 on the Marlin path: −3.5 GiB, +2–4% decode, acceptance unchanged. The plain `-hybrid` repo keeps them bf16 |
 | lm_head (shared with MTP draft head) | **int8** GPTQ-Marlin (uint8b128) | `tools/quantize_lm_head_int8.py` + `"lm_head": true` |
 | GDN in/out projections, QSA q/k/v/o, shared expert | **fp8** blockwise e4m3 (128×128) | `tools/fp8_convert.py` + `src/vllm_fp8_hybrid.py` |
-| Embeddings, hyper-connections, norms, MoE gates, fc_hidden | bf16 | excluded via `dynamic` rules; `HC_FP8=1` puts the hyper-connection projections in FP8 with per-row scales at load (patch 16) |
+| Hyper-connection projections (input_mix down + block_inject / up) | **fp8** e4m3, one scale per row (block_inject rows bf16) | converted at load (`HC_FP8=1`, default; patch 16); bf16 in the checkpoint |
+| Embeddings, other hyper-connection weights, norms, MoE gates, fc_hidden | bf16 | excluded via `dynamic` rules |
 | PLE n-gram table (51B params, layer 1) | **fp8** rows, mmapped from disk | `tools/fetch-ple-table-fp8.sh` + the mmap patch |
 | KV cache | bf16 | QSA refuses fp8 KV |
 
@@ -888,14 +889,16 @@ in registers (exact), accumulates in FP32 and applies the row scale to the sum;
 the down projection's long K is split over programs and the partial sums added
 by a second kernel in a fixed order, so the result is the same bits every run
 and does not depend on the other rows in the batch. Longer inputs (prefill)
-take torch: each weight converted to BF16 once per call, the row scales
-multiplied into the output. The GEMM is a torch custom op
+take cuBLAS on a BF16 copy of the weight made for that call by one Triton pass
+(FP8 rows times their scales, then the tail rows; ~10 MB of traffic against a
+GEMM that reads up to an [8192 x 10240] input). The GEMM is a torch custom op
 (`gb10::fp8_row_linear`), opaque to torch.compile and captured by CUDA graphs.
 The recipe is that of `FP8_HC` on the SGLang profile of this model
 (`../patches/gb10_fp8_hc.py`): +3-3.5% decode there, HumanEval 97.6% / 99.4%
-(not worse than BF16). It is lossy, so it is off by default; the boot log says
-`FP8 HC on: N hyper-connection classes wrapped` and, at the first forward,
-`FP8 HC: N hyper-connection projections in FP8 ...`.
+(not worse than BF16). It is lossy; measured below and on by default since 2026-11-03 (`HC_FP8=0`
+turns it off). The boot log says `FP8 HC on: N hyper-connection classes
+wrapped` and, at the first forward, `FP8 HC: N hyper-connection projections in
+FP8 ...`.
 
 **First measurement** (2026-11-03, GX10, `perf.py`, against the int8 draft
 slice the same day; one boot each):
@@ -909,14 +912,28 @@ slice the same day; one boot each):
 traded for another: 113 failed without, 127 with). Boot log: 200 projections,
 1.25 → 0.64 GiB. Prefill in that run was 1727 / 1757 / 1495 / 1854 tok/s at
 2K / 8K / 32K / 101K, against 2000 / 2153 / 2134 / 1981 on 2026-10-31 (not the
-same boot; the 32K prompt ran with the host swapping). One cause found since:
-the prefill path multiplied the row scales into the up projection's output, an
-[8192 x 10240] tensor a chunk (~340 MB moved, ~1.4 ms, ~98 times a chunk); it
-now puts them into a BF16 copy of the weight when the output is the larger.
-An A/B of prefill with `HC_FP8=0` / `1` on one image is pending. The kernel
+same boot; the 32K prompt ran with the host swapping). The kernel
 bench's first version timed each weight from the GPU's caches (BF16 "at"
 570-900 GB/s, above what the memory delivers); it now cycles through ~300 MB
-of copies, as the model reads ~98 different mixes a step.
+of copies, as the model reads ~98 different mixes a step, and agrees with the
+server: a mix at 4 rows 62.0 us in BF16, 35.7 us in FP8 (down 182 GB/s, up
+209 GB/s), 2.6 ms a step.
+
+**Prefill A/B** (same image, one boot each, `perf.py --only prefill`; at that
+time the prefill path scaled the up projection's weight copy in three torch
+passes and ran the block_inject rows as a second GEMM):
+
+| | 2K | 8K | 32K | 101K |
+|---|---:|---:|---:|---:|
+| `HC_FP8=1` | 1826 | 1748 | 1503 (host swapping: 338K pages out) | 1923 |
+| `HC_FP8=0` | 1906 | 1689 (51K pages out, 1203 reclaim stalls) | 2086 | 1742 |
+
+The spread is the host's memory: each run's slow cell is the one where the
+host reclaimed or swapped (~5 GB free while serving), whichever the setting.
+The kernel bench put that prefill path's own cost at +0.45 ms a mix at 2048
+rows and +1.2 ms at 8192 (the block_inject GEMM read the [8192 x 10240] input
+a second time), ~3-4% of a chunk; the one-pass dequantize that replaced it
+reads ~3.4 MB and writes ~6.9 MB a call.
 
 Checks: `src/test_hc_fp8_cpu.py` (no GPU; with `pip install triton` it also
 runs the kernel in Triton's interpreter) and, in the image, the kernel against
