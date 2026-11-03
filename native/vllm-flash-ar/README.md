@@ -398,27 +398,36 @@ sessions, accepting ~5% slower long prefill.
   download, copy or build beside the server gets there for sure: `./build.sh`
   and `./download.sh` refuse beside a GPU job (`../scripts/mem-prep.sh idle`);
   a hand-run `hf download` does not, so put that check in front of it.
-- **Long prefill and the host's memory** (being measured, 2026-11-03). The
-  48 GiB PLE table lives in the page cache, and a unique prompt reads rows of
-  it that are not there yet, so prefill always takes memory from somewhere;
-  with ~5 GiB available while serving, the kernel finds it by reclaiming on
-  the allocating thread and by swapping the engine's memory out. In the
-  `HC_FP8` prefill A/B (patch 16) each run's slow prompt was the one where
-  that happened, whichever the setting: 32K at 1503 tok/s with 338K pages
-  swapped out against 2086 without, 8K at 1689 with 51K. A long prompt also
-  grows torch's allocator by its temporary buffers (after a minute idle the
-  idle release hands them back, so the next long prompt grows it again).
-  `../bench/perf.py --only prefill` now prints, per prompt, how low available
-  memory went and what had moved at that moment (driver = CUDA allocations,
-  page cache, anon), the swap written and the seconds tasks waited on memory
-  (PSI), and with `GB10_METRICS_PORT=18400` torch's growth. Levers to compare
-  with it: `NOSWAP=1` (page cache goes before the engine's memory),
-  the idle `malloc_trim(0)` (heap freed instead of swapped), `KV_BYTES=25g`
-  (4.7 GiB more for everything else), `vm.watermark_scale_factor` above
-  `host-tuning.sh`'s 50 (the kernel frees memory earlier, in the background),
-  `EXTRA="--long-prefill-token-threshold 4800"` (chunks of 4800 tokens, three
-  of the 1600-token state blocks, for prompts longer than that: smaller
-  temporary buffers, more steps).
+- **Long prefill and the host's memory** (measured 2026-11-03). The 48 GiB
+  PLE table lives in the page cache, and a unique prompt reads rows of it that
+  are not there yet; a long prompt also grows torch's allocator by its
+  temporary buffers. `../bench/perf.py --only prefill` prints, per prompt, how
+  low available memory went and what had moved at that moment (driver = CUDA
+  allocations, page cache, anon), the swap written, the seconds tasks waited on
+  memory (PSI), and with `GB10_METRICS_PORT=18400` torch's growth. On the GX10
+  (30g, `HC_FP8=1`, one boot each, run 5 minutes after the start):
+
+  | prompt | torch grew | available, low | `NOSWAP=0`: tok/s | `NOSWAP=1`: tok/s |
+  |---|---|---|---:|---:|
+  | 2K | +0.2 GiB | 3.9 / 3.6 GiB | 1891 | 2014 |
+  | 8K | +1.4 GiB | 2.5 / 2.9 GiB | 1782 | 1848 |
+  | 32K | +1.5 GiB | 1.3 / 1.4 GiB | 2054 | 1945 (2375 reclaim stalls) |
+  | 101K | +0.0 GiB | **1.0 / 0.9 GiB**, 1.0-1.2 s stalled | 1831 | failed |
+
+  Swap hardly moved in either run (≤ 271 pages), so `NOSWAP=1` changed
+  nothing that matters and stays off. What matters is the budget: about 4 GiB
+  available after the start, the allocator taking ~3 GiB of it on the first
+  8K-32K prompts (100.3 -> 103.4 GiB reserved; the idle release hands it back
+  after a minute, so the next long prompt takes it again), and the 101K prompt's
+  page-cache churn then running at ~1 GiB, earlyoom's SIGTERM line; the
+  `NOSWAP=1` run's 101K request failed there. With that little page cache the
+  PLE gather also slows: ~260 ms of disk reads per 8K chunk at 101K, against
+  ~184 ms measured at 30g on 2026-09-24. The perf line now flags a prompt that
+  takes available memory under 1.5 GiB. More room comes from `KV_BYTES`
+  (`28g` +1.9 GiB, `27g` +2.8 GiB, ~5-10% fewer long-context tokens resident)
+  or from smaller prefill chunks (`BATCHED_TOKENS`, or
+  `EXTRA="--long-prefill-token-threshold 4800"`: smaller buffers, more steps).
+  The idle `malloc_trim(0)` logged nothing in these runs (under 64 MiB freed).
 - **1M context is out of reach on one box**: the QSA layers refuse an fp8 KV
   cache, and in bf16 a single 1M request needs ~30 GiB of KV. 500k with YaRN
   was upstream's validated ceiling.

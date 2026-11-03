@@ -653,6 +653,9 @@ class MemWatch:
              f"page cache {d('cache')}, anon {d('anon')} GiB); swap {(self.end['swap'] - a['swap']) / g:+.2f} GiB")
         if self.psi:
             s += f"; stalled on memory {self.psi[1] / 1e6:.1f} s all tasks, {self.psi[0] / 1e6:.1f} s some"
+        if lo["avail"] < 1.5 * g:
+            s += (f"  !! available fell to {lo['avail'] / g:.1f} GiB: earlyoom stops the server below 1 GiB "
+                  "(scripts/host-tuning.sh; ~8 GB without it)")
         return s
 
 
