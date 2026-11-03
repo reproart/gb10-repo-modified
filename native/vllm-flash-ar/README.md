@@ -975,7 +975,11 @@ one does not build; the GEMM no longer specializes on the row count; the
 first-forward log line names the path each tile takes (`decode kernel for
 16/32/64-row tiles; prefill dequantize on Triton`, or TORCH PATH in capitals).
 The bench's section 5 checks the prewarm and probes a kernel's first launch
-inside a capture.
+inside a capture (it loads fine on the GX10). After the fix: decode 73.4 and
+73.3 tok/s (two runs, 3.53 tokens a step, 84%), the log naming the kernel for
+all three tiles. The same bench showed 16-64 rows 10-30% slower than before,
+because that commit had also stopped specializing on the strides, which keeps
+the loads of x from being vectorized; only the row count is unspecialized now.
 
 Checks: `src/test_hc_fp8_cpu.py` (no GPU; with `pip install triton` it also
 runs the kernel in Triton's interpreter) and, in the image, the kernel against

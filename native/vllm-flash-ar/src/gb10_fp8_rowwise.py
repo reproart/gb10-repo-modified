@@ -70,7 +70,11 @@ def _get_kernels():
     import triton
     import triton.language as tl
 
-    @triton.jit(do_not_specialize=["M", "stride_xm", "stride_ym"])
+    # not specialized on the row count (one variant per row tile, all built by prewarm); the
+    # strides stay specialized: knowing they divide by 16 lets the loads of x be vectorized
+    # (without it 16-64 rows ran 10-30% slower, 2026-11-03). They do in this model: x is
+    # [M, 10240] or a [M, 320] slice of the [M, 336] down output, y has 336 or 10240 columns.
+    @triton.jit(do_not_specialize=["M"])
     def _fp8_row_mm(x_ptr, wq_ptr, s_ptr, wt_ptr, y_ptr, p_ptr,
                     M, N, N8, K, K_SPLIT, stride_xm, stride_ym,
                     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
@@ -111,7 +115,7 @@ def _get_kernels():
         else:
             tl.store(p_ptr + (pid_k * BLOCK_M + rm[:, None]) * N + rn[None, :], acc, mask=out_ok)
 
-    @triton.jit(do_not_specialize=["M", "stride_ym"])
+    @triton.jit(do_not_specialize=["M"])
     def _reduce(p_ptr, y_ptr, M, N, stride_ym,
                 SPLIT: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK: tl.constexpr):
         # the K splits' partial sums, added in split order: the same bits every run
