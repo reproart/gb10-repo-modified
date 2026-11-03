@@ -109,13 +109,20 @@ fi
 # traffic may prefer 0 or a custom set via tools/build_draft_vocab.py);
 # 0 = full vocabulary; a path = your own ids.npy.
 DRAFT_VOCAB="${DRAFT_VOCAB:-1}"
-# DRAFT_HEAD: int8 (default) = share the target's head; int4 = a private
-# int4 g128 RTN Marlin copy of the full-vocabulary head built at first use
-# (~320 MB, half the bytes per draft step, no vocabulary restriction).
-# Measured a wash upstream (acceptance 1-8 points lower) — default int8.
+# DRAFT_HEAD: int8 (default) = the head as the target has it: shared
+# (DRAFT_VOCAB=0), or with DRAFT_VOCAB its own int8 rows for those ids on the
+# same Marlin kernel (160 MiB per draft step; images before 2026-11-03 made
+# that slice bf16, 320 MiB); bf16 = that bf16 slice, for comparison; int4 = a
+# private int4 g128 RTN Marlin copy of the full-vocabulary head built at first
+# use (~320 MB, no vocabulary restriction). int4 measured a wash (acceptance
+# 1-8 points lower) — default int8.
 DRAFT_HEAD="${DRAFT_HEAD:-int8}"
 MTENV=()
-[ "$DRAFT_HEAD" = int4 ] && MTENV+=(-e VLLM_MTP_DRAFT_HEAD=int4)
+case "$DRAFT_HEAD" in
+  int8) ;;
+  int4|bf16) MTENV+=(-e VLLM_MTP_DRAFT_HEAD="$DRAFT_HEAD") ;;
+  *) echo "WARNING: DRAFT_HEAD='$DRAFT_HEAD' is not int8, int4 or bf16: using int8" >&2; DRAFT_HEAD=int8 ;;
+esac
 case "$DRAFT_VOCAB" in
   0) ;;
   1) MTENV+=(-e VLLM_MTP_DRAFT_VOCAB=/opt/llm/draft_vocab_65536.npy) ;;
@@ -204,7 +211,7 @@ done
 #   metrics — the vllm_custom_metrics module: the engine-side metrics sidecar.
 #             Without it PLE stats are neither served nor logged unless
 #             PLE_STATS_SEC brings the log lines back (handled below).
-IMAGE_OK=1 DRAFT_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0 FENCES_OK=0 DETALIGN_OK=0 IDLE_OK=0
+IMAGE_OK=1 DRAFT_OK=0 DRAFT8_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0 FENCES_OK=0 DETALIGN_OK=0 IDLE_OK=0
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   IMAGE_OK=0  # the main `docker run` fails loudly on its own; don't add noise
 else
@@ -233,6 +240,7 @@ if spec is not None:
     print("iter", int(has(os.path.join(pkg, "v1/metrics/loggers.py"), "_q38_prefill_metrics")))
     print("fences", int(has(os.path.join(pkg, "parser/engine/parser_engine_config.py"), "guard_literal_tool_markers")))
     print("detalign", int(has(os.path.join(pkg, "model_executor/layers/fused_moe/moe_align_block_size.py"), "_deterministic_align")))
+    print("draft8", int(has(os.path.join(pkg, "models/qwen3_8_flash_next/nvidia/mtp.py"), "the target head\x27s own rows")))
 ' 2>/dev/null) || probe=""
   case "$probe" in *"draft 1"*) DRAFT_OK=1 ;; esac
   case "$probe" in *"metrics 1"*) METRICS_OK=1 ;; esac
@@ -242,6 +250,7 @@ if spec is not None:
   case "$probe" in *"fences 1"*) FENCES_OK=1 ;; esac
   case "$probe" in *"detalign 1"*) DETALIGN_OK=1 ;; esac
   case "$probe" in *"idlerelease 1"*) IDLE_OK=1 ;; esac
+  case "$probe" in *"draft8 1"*) DRAFT8_OK=1 ;; esac
   if [ -z "$probe" ]; then
     IMAGE_OK=0
     echo "WARNING: could not probe '$IMAGE' (python3/entrypoint missing?) — skipping patch checks." >&2
@@ -249,13 +258,18 @@ if spec is not None:
 fi
 
 if [ "$IMAGE_OK" = 1 ] && [ "$DRAFT_OK" = 0 ] \
-   && { [ "$DRAFT_VOCAB" != 0 ] || [ "$DRAFT_HEAD" = int4 ]; }; then
+   && { [ "$DRAFT_VOCAB" != 0 ] || [ "$DRAFT_HEAD" != int8 ]; }; then
   echo "WARNING: DRAFT_VOCAB=$DRAFT_VOCAB / DRAFT_HEAD=$DRAFT_HEAD will be IGNORED:" >&2
   echo "  image '$IMAGE' predates the Dockerfile draft-head section (no /opt/llm/draft_vocab_65536.npy)." >&2
   echo "  The server still runs correctly (full-vocabulary int8 draft head), just without the speedup." >&2
   echo "  To enable: docker build -t '$IMAGE' .  (layer cache keeps it quick; the ~20 GiB base is not re-downloaded)." >&2
 fi
 
+if [ "$IMAGE_OK" = 1 ] && [ "$DRAFT_OK" = 1 ] && [ "$DRAFT8_OK" = 0 ] && [ "$DRAFT_VOCAB" != 0 ] \
+   && [ "$DRAFT_HEAD" = int8 ]; then
+  echo "NOTE: image '$IMAGE' predates the int8 draft-vocabulary slice: the drafter's slice stays bf16" >&2
+  echo "  (320 MiB per draft step instead of 160). Rebuild: ./build.sh" >&2
+fi
 if [ "$IMAGE_OK" = 1 ] && [ "$DET_TOPK" = 1 ] && [ "$DET_OK" = 0 ] && [ "$EXACT_TOPK" = 0 ]; then
   echo "WARNING: DET_TOPK=1 will be IGNORED: image '$IMAGE' has no deterministic QSA top-k kernel" >&2
   echo "  (/opt/llm/kernel-det/_C_det.so + qsa.py wiring). The stock, non-deterministic kernel runs" >&2

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build-time patch (qwen38-flash-dgx): private MTP draft head — reduced vocabulary and/or int4.
+"""Build-time patch (qwen38-flash-dgx): private MTP draft head — reduced vocabulary, int8 or int4.
 
 vLLM shares the target model's lm_head with the MTP draft (llm_base_proposer._maybe_share_lm_head),
 so every draft step reads the whole head: 248,320 rows x 2560 int8 = 616 MiB per drafted token,
@@ -11,6 +11,11 @@ full-vocabulary drafting and only the acceptance rate can move:
                                   and the logits of every other id are -inf. Acceptance drops for
                                   text whose tokens fall outside the set (e.g. CJK with an
                                   English/code-weighted set). Idea: upstream blazux / MiaAI-Lab.
+                                  The slice keeps the head's own int8 GPTQ rows on the same
+                                  GPTQ-Marlin kernel (65,536 rows: 160 MiB per draft step; the
+                                  draft's logits on them are the target head's). Before
+                                  2026-11-03 it was dequantized to bf16 (320 MiB):
+  VLLM_MTP_DRAFT_HEAD=bf16        that bf16 slice, for comparison (needs DRAFT_VOCAB).
   VLLM_MTP_DRAFT_HEAD=int4        the draft uses a private int4 g128 RTN GPTQ-Marlin copy of the
                                   head (320 MB, built at first use, ~half the bytes of int8) over
                                   the FULL vocabulary, so every language keeps its acceptance.
@@ -20,7 +25,9 @@ Fork note (Saren-Arterius/qwen3.8-Flash-DGX-AutoRound): this fork's lm_head is i
 GPTQ-Marlin, so there is no dense .weight to slice; rows are dequantized from the checkpoint's
 lm_head.qweight/qzeros/scales (GPTQ v1, g128; VLLM_MTP_DRAFT_VOCAB_CKPT, default /model) in
 16k-row chunks, then either kept as a bf16 slice or re-quantized to int4 with vLLM's own
-marlin_quantize (chunked packing is bit-identical to whole-tensor packing).
+marlin_quantize (chunked packing is bit-identical to whole-tensor packing). The int8 slice
+takes the selected columns of qweight/scales as they are and repacks them for Marlin the way
+vLLM loads the target's head (gptq_marlin_repack, marlin_permute_scales).
 
 usage: patch_mtp_draft_vocab.py <path to vllm/models/qwen3_8_flash_next/nvidia/mtp.py>
 Inert unless VLLM_MTP_DRAFT_VOCAB or VLLM_MTP_DRAFT_HEAD is set at runtime.
@@ -31,7 +38,7 @@ TARGET = sys.argv[1]
 MARK = "qwen38-flash-dgx: private MTP draft head"
 HOOK = '''
 
-# --- qwen38-flash-dgx: private MTP draft head (VLLM_MTP_DRAFT_VOCAB=<ids.npy>, VLLM_MTP_DRAFT_HEAD=int4)
+# --- qwen38-flash-dgx: private MTP draft head (VLLM_MTP_DRAFT_VOCAB=<ids.npy>, VLLM_MTP_DRAFT_HEAD=int4|bf16)
 import os as _dv_os
 from vllm.logger import init_logger as _dv_init_logger
 
@@ -68,15 +75,25 @@ def _dv_build(self, hidden_states):
         out_f, in_f = w.shape
         rows = lambda sel: w.index_select(0, torch.as_tensor(sel, device=w.device)).to(torch.bfloat16)
         full_bytes = w.numel() * w.element_size()
+        cols = None
     else:
-        rows, out_f, in_f, full_bytes = _dv_gptq_rows()
+        rows, out_f, in_f, full_bytes, cols = _dv_gptq_rows()
 
     ids_path = _dv_os.environ.get("VLLM_MTP_DRAFT_VOCAB")
-    int4 = _dv_os.environ.get("VLLM_MTP_DRAFT_HEAD", "").lower() == "int4"
+    int4 = _dv_head_env == "int4"
+    # a slice of an int8 GPTQ head stays int8 unless bf16 is asked for
+    int8 = bool(ids_path) and _dv_head_env in ("", "int8") and cols is not None
+    why = ""
+    if int8:
+        bits, zp, group = cols(None)
+        if bits != 8 or zp != 128 or group not in (32, 64, 128) or in_f % 128:
+            int8, why = False, " (head not symmetric int8 g32-128: %d-bit, zero point %d, group %d)" % (bits, zp, group)
+    elif ids_path and _dv_head_env in ("", "int8"):
+        why = " (the shared head has a dense weight: its own precision)"
     if ids_path:
         ids = _np.load(ids_path).astype(_np.int64)
         ids = ids[(ids >= 0) & (ids < vocab)]
-        if int4 and len(ids) % 64:  # Marlin needs N % 64 == 0; duplicates write identical values
+        if (int4 or int8) and len(ids) % 64:  # Marlin needs N % 64 == 0; duplicates write identical values
             ids = _np.concatenate([ids, _np.repeat(ids[-1], 64 - len(ids) % 64)])
         sel = ids
     else:
@@ -104,13 +121,30 @@ def _dv_build(self, hidden_states):
             return _mapply(h.to(sc.dtype), qw, sc, e, e, e, ws, _st.uint4b8, n, k, True)
         bytes_ = qw.numel() * 4 + sc.numel() * sc.element_size()
         kind = "int4 g128 RTN GPTQ-Marlin"
+    elif int8:
+        from vllm import _custom_ops as _ops
+        from vllm.scalar_type import scalar_types as _st
+        from vllm.model_executor.layers.quantization.utils.marlin_utils import (
+            marlin_make_workspace_new as _mws, marlin_permute_scales as _mps,
+            apply_gptq_marlin_linear as _mapply)
+        qc, sc = cols(sel)                        # the head's own int8 rows: [in/4, n] int32, [in/group, n]
+        e = torch.empty(0, dtype=torch.int, device=dev)
+        qw = _ops.gptq_marlin_repack(qc.to(dev).contiguous(), e, in_f, n, 8)
+        sc = _mps(sc.to(device=dev, dtype=hidden_states.dtype).contiguous(), in_f, n, group)
+        del qc
+        ws = _mws(dev)
+
+        def apply(h, qw=qw, sc=sc, ws=ws, e=e, n=n, k=in_f):
+            return _mapply(h.to(sc.dtype), qw, sc, e, e, e, ws, _st.uint8b128, n, k, True)
+        bytes_ = qw.numel() * 4 + sc.numel() * sc.element_size()
+        kind = "int8 GPTQ-Marlin (the target head's own rows)"
     else:
         wk = torch.cat([rows(sel[i:i + _DV_CHUNK]).to(dev) for i in range(0, n, _DV_CHUNK)]).contiguous()
 
         def apply(h, wk=wk):
             return torch.nn.functional.linear(h.to(wk.dtype), wk)
         bytes_ = wk.numel() * wk.element_size()
-        kind = "bf16"
+        kind = "bf16" + why
 
     # self-check on the first real hidden states: private head vs the shared target head
     try:
@@ -138,7 +172,9 @@ def _dv_build(self, hidden_states):
 
 def _dv_gptq_rows():
     """Row dequantizer for the checkpoint's GPTQ lm_head (int8/int4 v1 layout: qweight [in/pack, out]
-    packed along in, qzeros stores zp-1, scales [in/group, out]). rows(sel) -> bf16 [len(sel), in]."""
+    packed along in, qzeros stores zp-1, scales [in/group, out]). rows(sel) -> bf16 [len(sel), in];
+    cols(sel) -> those rows as stored (qweight int32 [in/pack, len(sel)], scales [in/group, len(sel)]),
+    cols(None) -> (bits, zero point, group)."""
     import json as _json
     import numpy as _np
     from safetensors import safe_open as _safe_open
@@ -168,15 +204,22 @@ def _dv_gptq_rows():
         nib = _np.stack([(q >> (i * bits)) & mask for i in range(pack)], axis=1).reshape(in_f, len(sel))
         wf = (nib.astype(_np.float32) - zp).reshape(groups, group, len(sel)) * scn[:, None, sel]
         return torch.from_numpy(_np.ascontiguousarray(wf.reshape(in_f, len(sel)).T)).to(torch.bfloat16)
-    return rows, out_f, in_f, qw.numel() * 4 + sc.numel() * sc.element_size()
+
+    def cols(sel):
+        if sel is None:
+            return bits, zp, group
+        return (torch.from_numpy(_np.ascontiguousarray(qwn[:, sel]).view(_np.int32)),
+                sc[:, torch.as_tensor(sel, dtype=torch.long)])
+    return rows, out_f, in_f, qw.numel() * 4 + sc.numel() * sc.element_size(), cols
 
 
 _dv_head_env = _dv_os.environ.get("VLLM_MTP_DRAFT_HEAD", "").lower()
-if _dv_head_env and _dv_head_env != "int4":
-    # Only int4 has a private-head meaning; anything else (e.g. "int8") would
-    # otherwise build a full-vocabulary bf16 copy of the head (~1.2 GiB,
-    # slower than sharing the int8 one).
-    _dv_logger.warning("VLLM_MTP_DRAFT_HEAD=%r ignored (only 'int4' is supported)", _dv_head_env)
+if _dv_head_env not in ("", "int4", "int8", "bf16"):
+    _dv_logger.warning("VLLM_MTP_DRAFT_HEAD=%r ignored (int8, int4 or bf16)", _dv_head_env)
+    _dv_head_env = ""
+if _dv_head_env == "bf16" and not _dv_os.environ.get("VLLM_MTP_DRAFT_VOCAB"):
+    # a full-vocabulary bf16 copy of the head (~1.2 GiB) would be slower than sharing the int8 one
+    _dv_logger.warning("VLLM_MTP_DRAFT_HEAD=bf16 ignored: it only applies to a VLLM_MTP_DRAFT_VOCAB slice")
     _dv_head_env = ""
 if _dv_os.environ.get("VLLM_MTP_DRAFT_VOCAB") or _dv_head_env == "int4":
     Qwen3_8FlashNextMTP.compute_logits = _dv_compute_logits  # type: ignore[method-assign]

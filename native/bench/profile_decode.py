@@ -38,7 +38,12 @@ Which layer a kernel belongs to: with shapes recorded (vllm-flash-ar:
 PROFILE=1 PROFILE_SHAPES=1 ./serve.sh, which also runs vLLM eagerly, since a
 kernel replayed from a CUDA graph has no launching op in the trace), each top
 kernel lists the op that launched it and its input shapes, e.g.
-"aten::mm [[1,2560],[2560,65536]]": the weight's size tells the layer.
+"aten::mm [[1,2560],[2560,65536]]": the weight's size tells the layer. A
+second table then sums the time per op and shapes (one row per layer kind),
+with the weight a GEMM reads and the rate it reads it at: a decode GEMM
+near the memory's bandwidth (~240 GB/s on a GB10) can only get faster by
+reading fewer bytes, one far below it by a better kernel. --trace re-reads a
+trace already written, e.g. after updating this script.
 
 The trace is written by the server process, so this script must run on the
 same machine (the default output dir is /tmp/gb10-profile). Profiling slows
@@ -95,6 +100,30 @@ def group_of(name: str) -> str:
     return "other"
 
 
+# GEMM ops whose weight is one input: its index in "Input Dims". A decode-size
+# GEMM reads the whole weight once and does little else, so bytes / time is how
+# close it runs to the memory's bandwidth (GB10: 273 GB/s on paper, ~240 in
+# practice). MoE expert GEMMs are left out: they read only the routed experts.
+WEIGHT_ARG = {"aten::mm": 1, "aten::addmm": 2, "aten::bmm": 1,
+              "_C::cutlass_scaled_mm": 2, "_C::marlin_gemm": 2, "_C::gptq_marlin_gemm": 2}
+DTYPE_BYTES = [("float8", 1), ("bfloat16", 2), ("half", 2), ("double", 8), ("float", 4),
+               ("long", 8), ("short", 2), ("char", 1), ("byte", 1), ("bool", 1), ("int", 4)]
+
+
+def weight_bytes(op: str, dims: list, types: list) -> int | None:
+    i = WEIGHT_ARG.get(op)
+    if i is None or i >= len(dims) or not dims[i]:
+        return None
+    t = (types[i] if i < len(types) else "").lower()
+    size = next((b for k, b in DTYPE_BYTES if k in t), None)
+    if size is None:
+        return None
+    n = 1
+    for d in dims[i]:
+        n *= int(d)
+    return n * size
+
+
 def load_trace(path: str) -> dict:
     opener = gzip.open if path.endswith(".gz") else open
     with opener(path, "rt") as f:
@@ -142,16 +171,25 @@ def summarize(trace: dict, top: int = 20) -> str:
     by_name = defaultdict(lambda: [0.0, 0])
     intervals = []
     # the op that launched a kernel, with its input shapes (record_shapes): same "External id"
-    ops = {}
+    ops, wbytes = {}, {}
     for e in events:
         a = e.get("args") or {}
         if e.get("ph") == "X" and e.get("cat") == "cpu_op" and "Input Dims" in a and "External id" in a:
-            ops[a["External id"]] = f"{e.get('name', '?')} " + json.dumps(a["Input Dims"], separators=(",", ":"))
+            op = f"{e.get('name', '?')} " + json.dumps(a["Input Dims"], separators=(",", ":"))
+            ops[a["External id"]] = op
+            if op not in wbytes:
+                wbytes[op] = weight_bytes(e.get("name", "?"), a["Input Dims"], a.get("Input type") or [])
     shapes = defaultdict(lambda: defaultdict(int))
+    # per launching op + shapes: the time of all the kernels it launched, and how
+    # many times it ran (an op launching a GEMM and its split-K reduce runs once)
+    layer_time, layer_runs = defaultdict(float), defaultdict(set)
     for e in kernels:
-        op = ops.get((e.get("args") or {}).get("External id"))
+        xid = (e.get("args") or {}).get("External id")
+        op = ops.get(xid)
         if op:
             shapes[e.get("name", "?")][op] += 1
+            layer_time[op] += float(e.get("dur", 0.0))
+            layer_runs[op].add(xid)
         dur = float(e.get("dur", 0.0))
         ts = float(e.get("ts", 0.0))
         name = e.get("name", "?")
@@ -191,6 +229,17 @@ def summarize(trace: dict, top: int = 20) -> str:
             out.append(f"{'':>36}<- {c:>5} x {op[:110]}")
     if not ops:
         out += ["", "(no op shapes in this trace: PROFILE_SHAPES=1 records them, in eager mode)"]
+        return "\n".join(out)
+    out += ["", f"top {top} layers (op + input shapes; kernel time of everything the op launched;",
+            "weight = the GEMM's weight operand, GB/s = weight / avg: near ~240 the layer is",
+            "bandwidth-bound, far below it launch- or tile-bound):",
+            f"{'ms':>9}{'calls':>7}{'avg us':>9}{'weight MB':>11}{'GB/s':>7}  op"]
+    for op, d in sorted(layer_time.items(), key=lambda kv: -kv[1])[:top]:
+        n = len(layer_runs[op])
+        b = wbytes.get(op)
+        bw = f"{b / (d / n * 1e3):>7.0f}" if b and d else f"{'':>7}"
+        mb = f"{b / 1e6:>11.1f}" if b else f"{'':>11}"
+        out.append(f"{d / 1e3:>9.1f}{n:>7}{d / n:>9.1f}{mb}{bw}  {op[:100]}")
     return "\n".join(out)
 
 

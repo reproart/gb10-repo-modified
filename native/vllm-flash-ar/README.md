@@ -251,7 +251,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `DET_TOPK` | `1` | Deterministic QSA top-k **kernel** (patch 9; @jschmied, vllm#55122): identical output at T=0 at full prefill speed. `0` = stock kernel (non-deterministic, may drop attention candidates) |
 | `EXACT_TOPK` | `0` | `1` = exact `torch.topk` fallback (patch 9; deterministic, −20–40% on long prefill). Wins over `DET_TOPK` when set |
 | `DRAFT_VOCAB` | `1` | The MTP drafter scores only the 65,536 most frequent tokens (patch 10; from upstream blazux): +3–5% decode on English/code, draft acceptance unchanged there (thinking on or off). The shipped id set is English/code-weighted — **CJK-heavy output loses acceptance and decode speed with it**, so set `0` (full vocabulary) or build your own set with `tools/build_draft_vocab.py` over your traffic |
-| `DRAFT_HEAD` | `int8` | `int4` gives the drafter a private int4 g128 RTN GPTQ-Marlin copy of the full-vocabulary head (built at first use, ~313 MiB vs 616 MiB read per draft step). Measured a wash: tg unchanged within noise, draft acceptance 1–8 points lower (see the MTP options section), so the shared int8 head stays the default |
+| `DRAFT_HEAD` | `int8` | The drafter's head as the target has it: int8 GPTQ-Marlin, shared (`DRAFT_VOCAB=0`) or, with `DRAFT_VOCAB`, its own rows for those ids (160 MiB per draft step; images built before 2026-11-03 made that slice bf16, 320 MiB). `bf16` = that bf16 slice, for comparison. `int4` = a private int4 g128 RTN GPTQ-Marlin copy of the full-vocabulary head (built at first use, ~313 MiB vs 616 MiB read per draft step): measured a wash, tg unchanged within noise, draft acceptance 1–8 points lower (see the MTP options section) |
 | `PIN_PROMPT` / `PIN_MAX_FRACTION` | unset / `0.25` | Never-evict pin (patch 6); needs `PREFIX_CACHE=1` (the launcher warns otherwise). Use a distinctive substring of a few dozen characters — a word or two matches unrelated prompts |
 | `API_KEY` | unset | Non-empty → Bearer auth on the API (vLLM `--api-key`; generate with `openssl rand -hex 32`). `/health` stays open; the key is visible in `docker inspect` |
 | `BIND_ADDR` | unset | Host address for the published ports. Unset = all interfaces; `127.0.0.1` = this machine only (e.g. behind a reverse proxy). The metrics sidecar has no auth even with `API_KEY` |
@@ -280,7 +280,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
 | `IDLE_RELEASE_SEC` | `60` | after this many seconds without a request the engine calls `torch.cuda.empty_cache()`: torch's freed GPU blocks (host memory on GB10, kept at the last large request's peak; 8 GiB after a long-context run here) go back to the system, CUDA graph pools stay; once per rise; a line in `docker logs`. `0` = keep them |
 | `WATCHDOG` | `0` | `1` = `./serve.sh` starts `./watchdog.sh` in the background (`./stop.sh` stops it): it restarts the server when available memory is under `WATCHDOG_MIN_AVAIL_MB` (`2048`) **and** no request has run or waited for `WATCHDOG_IDLE_MIN` (`5`) minutes (vLLM's `/metrics`, read again just before the stop), at most once per `WATCHDOG_COOLDOWN_MIN` (`60`), checking every `WATCHDOG_INTERVAL` (`60`) s; never starts a stopped server, stops itself if a restart fails. Costs the prefix cache and ~5 min. Log: `~/.cache/gb10/vllm-flash-ar-watchdog.log` |
-| `PROFILE` / `PROFILE_DIR` | `0` / `/tmp/gb10-profile` | `1` = vLLM's torch profiler endpoints, traces to `PROFILE_DIR` (mounted at the same path): `python3 ../bench/profile_decode.py` then shows where a decode step's GPU time goes, per kernel group. Costs nothing until a profile is started. `PROFILE_SHAPES=1` adds op input shapes and runs eagerly (no CUDA graphs), so each top kernel names its weight: for finding layers, not timing |
+| `PROFILE` / `PROFILE_DIR` | `0` / `/tmp/gb10-profile` | `1` = vLLM's torch profiler endpoints, traces to `PROFILE_DIR` (mounted at the same path): `python3 ../bench/profile_decode.py` then shows where a decode step's GPU time goes, per kernel group. Costs nothing until a profile is started. `PROFILE_SHAPES=1` adds op input shapes and runs eagerly (no CUDA graphs), so each top kernel names its weight and a second table gives the time per layer and the rate it reads its weight at (GB/s): for finding layers and how far each is from the memory's bandwidth. Kernel times hold; the gaps between them are eager-mode ones |
 | `MEM_PREP` / `WAIT_MIN` | `1` / `15` | `./serve.sh`: page cache dropped and memory compacted before the start (`../scripts/mem-prep.sh`); wait up to N minutes for the API (`0` = return at once) |
 | `LOG_MAX_SIZE` / `LOG_MAX_FILE` | `10m` / `3` | Docker log rotation — `PLE mmap stats` logs a line every 30 s, so an unbounded log grows to GBs |
 | `NAME` / `IMAGE` | `qwen38-flash` / `qwen38-flash-dgx` | Container / image names (`IMAGE` is not overwritten by `./build.sh` unless you build to it — point it at a backup tag to roll back) |
@@ -626,8 +626,14 @@ Throughput table).
   flag the draft scores a private 65,536-row slice (`src/draft_vocab_65536.npy`:
   corpus frequency + BPE order + all special tokens; `tools/build_draft_vocab.py`
   rebuilds it) and every other id is −inf. This fork's head is int8 GPTQ-Marlin,
-  so the slice is dequantized from the checkpoint's GPTQ tensors at first use
-  (616 → 320 MiB read per draft step).
+  so the slice takes those rows from the checkpoint's GPTQ tensors at first use
+  and keeps them int8 on the same Marlin kernel (616 → 160 MiB read per draft
+  step; the draft's logits on the slice are the target head's). Until
+  2026-11-03 the slice was dequantized to bf16 (320 MiB): a decode profile
+  (`bench/profile_decode.py`, 2026-11-03) showed that bf16 GEMV at ~1.2 ms per
+  draft pass, three passes a step, on a ~45 ms step. `DRAFT_HEAD=bf16` brings
+  it back for comparison; `src/test_draft_head_cpu.py` checks the slice's
+  layout (no GPU).
 - **`DRAFT_HEAD=int4`** (same patch) — the other way to halve the head read
   without touching the vocabulary: a private int4 g128 RTN copy of the full head,
   quantized with vLLM's own `marlin_quantize` at first use (~23 s) from the
@@ -884,7 +890,8 @@ src/patch_hit_debug.py        prefix-cache tracing (VLLM_HIT_DEBUG)
 src/patch_qsa_exact_topk.py   exact, deterministic QSA top-k (VLLM_QSA_EXACT_TOPK=1; from blazux)
 (Dockerfile, _C_det.so)       @jschmied's deterministic persistent_topk kernel, built at docker build
 src/test_qsa_exact_topk_cpu.py  CPU unit test for the exact top-k (no GPU needed)
-src/patch_mtp_draft_vocab.py  private MTP draft head: reduced vocabulary (from blazux) / int4 (VLLM_MTP_DRAFT_VOCAB, VLLM_MTP_DRAFT_HEAD)
+src/patch_mtp_draft_vocab.py  private MTP draft head: reduced vocabulary (from blazux), int8 slice / int4 (VLLM_MTP_DRAFT_VOCAB, VLLM_MTP_DRAFT_HEAD)
+src/test_draft_head_cpu.py    CPU test of the draft head's int8 slice (no GPU, no vLLM)
 src/draft_vocab_65536.npy     the default 65,536-token draft id set (from blazux)
 tools/build_draft_vocab.py    rebuild the draft id set (from blazux)
 tools/quantize_mtp_experts_int4.py  int4 RTN the MTP draft experts -> -MTP_int4RTN checkpoint
