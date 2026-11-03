@@ -957,6 +957,21 @@ rows and +1.2 ms at 8192 (the block_inject GEMM read the [8192 x 10240] input
 a second time), ~3-4% of a chunk; the one-pass dequantize that replaced it
 reads ~3.4 MB and writes ~6.9 MB a call.
 
+**A slow boot** (2026-11-03, evening, `HC_FP8=1` by default, image with the
+one-pass dequantize): decode 64.2 tok/s, below BF16's 69.7 (3.54 tokens a step,
+the same acceptance), every concurrency level ~10% down, prefill 1798 / 1892 /
+1834 / 1915 tok/s. The decode code had not changed since the 74.5 run; what
+the numbers fit is decode on the torch fallback (dequantize + cuBLAS) instead
+of the Triton kernel. That fallback was taken for good, with one warning line,
+when a kernel failed, and a Triton kernel launched for the first time inside a
+CUDA graph capture can fail to load there; the new dequantize kernel changed
+which kernel loaded first during capture. Since then every kernel variant (16-,
+32- and 64-row tiles, the dequantize) is built when the weights are converted,
+before any capture; the kernel no longer specializes on the row count; and the
+first-forward log line says which path each tile takes (`decode kernel for
+16/32/64-row tiles; prefill dequantize on Triton`, or TORCH PATH in capitals).
+The bench's section 5 checks both and probes a first launch inside a capture.
+
 Checks: `src/test_hc_fp8_cpu.py` (no GPU; with `pip install triton` it also
 runs the kernel in Triton's interpreter) and, in the image, the kernel against
 cuBLAS on the real shapes, with correctness, run-to-run bits, prefill sizes and

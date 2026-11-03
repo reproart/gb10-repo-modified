@@ -19,7 +19,11 @@ For the two hyper-connection projections of Qwen3.8-Flash-Next (down + block_inj
    1 stream (4 rows, ~98 mixes);
 3. prefill sizes (2048 / 8192 rows), eager: cuBLAS on BF16 against the prefill path
    (the weight dequantized to BF16 by one Triton pass, then cuBLAS);
-4. a sweep of the kernel's tile / split settings at 4 rows, against the default.
+4. a sweep of the kernel's tile / split settings at 4 rows, against the default;
+5. what the server relies on at load: prewarm() builds every row tile and the dequantize
+   (the status line must name no torch path), and whether a kernel variant launched for
+   the first time inside a CUDA graph capture loads there (if not, prewarm is what keeps
+   decode on the kernel).
 Exit code: the number of FAIL lines. FP8ROW_DRY=1: a dry run of this script on the CPU
 (Triton's interpreter, FP16 since it cannot dot BF16; times mean nothing).
 """
@@ -196,6 +200,30 @@ for name, n, n8, k in SHAPES:
     results.sort(key=lambda r: r[1])
     best = ", ".join(f"{c[:3]} {t:.1f}" for c, t in results[:5])
     print(f"  {name}: default {default[:3]} {d:.1f} us; best {best}")
+
+print("\n5. load-time prewarm, and a first launch inside a CUDA graph capture")
+for name, n, n8, k in SHAPES:
+    w, q, s, tail = make(n, n8, k)
+    fr.prewarm(q, s, tail, DT)
+ok = not fr._state["bad_tiles"]
+fails += not ok
+print(f"  {'PASS' if ok else 'FAIL'} after prewarm: {fr.status()}")
+if not DRY:
+    name, n, n8, k = SHAPES[0]
+    w, q, s, tail = make(n, n8, k)
+    x = torch.randn(4, k, device=dev).to(DT)
+    cfg = (16, 128, 5, 2048)  # a variant nothing above built
+    err = None
+    try:
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            fr.triton_mm(x, q, s, tail, cfg)
+        g.replay()
+        torch.cuda.synchronize()
+    except Exception as e:  # noqa: BLE001 - the point of the probe
+        err = f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
+    print(f"  INFO first launch of a new variant inside a capture: {'loads fine' if err is None else 'FAILS (' + err + ')'}"
+          " (prewarm keeps the server off this path either way)")
 
 print("\nALL OK" if not fails else f"\n{fails} FAILED")
 sys.exit(fails)

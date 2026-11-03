@@ -68,7 +68,7 @@ def _get_kernels():
     import triton
     import triton.language as tl
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["M", "stride_xm", "stride_ym"])
     def _fp8_row_mm(x_ptr, wq_ptr, s_ptr, wt_ptr, y_ptr, p_ptr,
                     M, N, N8, K, K_SPLIT, stride_xm, stride_ym,
                     BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
@@ -109,7 +109,7 @@ def _get_kernels():
         else:
             tl.store(p_ptr + (pid_k * BLOCK_M + rm[:, None]) * N + rn[None, :], acc, mask=out_ok)
 
-    @triton.jit
+    @triton.jit(do_not_specialize=["M", "stride_ym"])
     def _reduce(p_ptr, y_ptr, M, N, stride_ym,
                 SPLIT: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK: tl.constexpr):
         # the K splits' partial sums, added in split order: the same bits every run
@@ -233,6 +233,44 @@ def torch_mm(x: torch.Tensor, wq: torch.Tensor, s: torch.Tensor, wt: torch.Tenso
     return F.linear(x, dequant_weight(wq, s, wt, x.dtype))
 
 
+_prewarmed = set()
+
+
+def prewarm(wq: torch.Tensor, s: torch.Tensor, wt: torch.Tensor, dtype: torch.dtype) -> None:
+    """Compile and load every kernel variant this weight shape can take (16-, 32- and 64-row
+    tiles, the prefill dequantize) now, at load time. A Triton kernel first launched inside a
+    CUDA graph capture can fail to load there; the fallback then took the torch path for that
+    tile size for good (decode ~10% slower than BF16, 2026-11-03). Once per weight shape."""
+    key = (tuple(wq.shape), wt.shape[0], dtype)
+    if key in _prewarmed or not wq.is_cuda:
+        return
+    _prewarmed.add(key)
+    k = wq.shape[1]
+    for m in (1, 20, 40):  # one input per row tile
+        tile = row_tile(m)
+        if tile in _state["bad_tiles"]:
+            continue
+        try:
+            triton_mm(torch.zeros((m, k), dtype=dtype, device=wq.device), wq, s, wt)
+        except Exception as e:  # noqa: BLE001 - this tile takes the torch path; said loudly
+            _state["bad_tiles"].add(tile)
+            logger.warning("FP8 HC: the Triton kernel for %d-row tiles does not build here (%s: %s); "
+                           "inputs of that size take the torch path, slower than BF16", tile, type(e).__name__, e)
+    dequant_weight(wq, s, wt, dtype)
+    torch.cuda.synchronize(wq.device)
+
+
+def status() -> str:
+    """Which kernels are in use, for the log."""
+    tiles = [t for t in (16, 32, 64) if t not in _state["bad_tiles"]]
+    bad = [str(t) for t in (16, 32, 64) if t in _state["bad_tiles"]]
+    s = "decode kernel for " + ("/".join(map(str, tiles)) + "-row tiles" if tiles else "no row tile")
+    if bad:
+        s += " (TORCH PATH, slower than BF16, for " + "/".join(bad) + "-row tiles)"
+    s += "; prefill dequantize " + ("in torch" if "dequant" in _state["bad_tiles"] else "on Triton")
+    return s
+
+
 def _impl(x: torch.Tensor, wq: torch.Tensor, s: torch.Tensor, wt: torch.Tensor) -> torch.Tensor:
     k = x.shape[-1]
     n = wq.shape[0] + wt.shape[0]
@@ -246,15 +284,18 @@ def _impl(x: torch.Tensor, wq: torch.Tensor, s: torch.Tensor, wt: torch.Tensor) 
             y = triton_mm(x2, wq, s, wt)
         except Exception as e:  # noqa: BLE001 - a tile that does not build here: torch path for its sizes
             _state["bad_tiles"].add(tile)
-            logger.warning("FP8 HC: the Triton kernel for %d-row tiles failed (%s: %s); inputs of that "
-                           "size take the torch path", tile, type(e).__name__, e)
+            capturing = x2.is_cuda and torch.cuda.is_current_stream_capturing()
+            logger.warning("FP8 HC: the Triton kernel for %d-row tiles failed%s (%s: %s); inputs of that "
+                           "size take the torch path from now on, slower than BF16", tile,
+                           " during CUDA graph capture" if capturing else "", type(e).__name__, e)
     if y is None:
         y = torch_mm(x2, wq, s, wt)
     if not STATS["logged"]:
         STATS["logged"] = True
         logger.info("FP8 HC: %d hyper-connection projections in FP8 with per-row scales, "
-                    "%.2f -> %.2f GiB; inputs up to %d rows on a Triton kernel, longer ones on torch",
-                    STATS["layers"], STATS["bytes_before"] / 2**30, STATS["bytes_after"] / 2**30, MAX_ROWS)
+                    "%.2f -> %.2f GiB; inputs up to %d rows: %s",
+                    STATS["layers"], STATS["bytes_before"] / 2**30, STATS["bytes_after"] / 2**30, MAX_ROWS,
+                    status())
     return y.reshape(*x.shape[:-1], n)
 
 
@@ -300,6 +341,7 @@ def _linear_method_cls(base):
             layer.register_buffer("gb10_scale", s, persistent=False)
             layer.register_buffer("gb10_tail", tail, persistent=False)
             layer._gb10_fp8 = True
+            prewarm(q, s, tail, w.dtype)
 
         def apply(self, layer, x, bias=None):
             if not getattr(layer, "_gb10_fp8", False):
