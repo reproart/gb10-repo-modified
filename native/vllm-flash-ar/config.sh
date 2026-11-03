@@ -142,6 +142,11 @@ export METRICS_PORT="${METRICS_PORT:-18400}"
 # time goes, per kernel group). Costs nothing until a profile is started.
 export PROFILE="${PROFILE:-0}"
 export PROFILE_DIR="${PROFILE_DIR:-/tmp/gb10-profile}"
+# PROFILE_SHAPES=1 (with PROFILE=1): record each op's input shapes and run vLLM
+# eagerly (--enforce-eager: no CUDA graphs, whose replayed kernels have no
+# launching op in the trace), so profile_decode.py names the weight behind each
+# top kernel. For finding layers, not for timing: eager decode is slower.
+export PROFILE_SHAPES="${PROFILE_SHAPES:-0}"
 
 # Prefix-cache diagnosis logging (VLLM_HIT_DEBUG=1 in the container):
 # per-group hit breakdown, mamba boundary publication, evictions, chunk stops.
