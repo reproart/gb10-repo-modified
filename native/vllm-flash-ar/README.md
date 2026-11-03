@@ -388,7 +388,10 @@ sessions, accepting ~5% slower long prefill.
   allocator's freed blocks back after a minute without requests (8 GiB there:
   ~19 h of that leak instead of ~2), `KV_BYTES=25g` gives 4.7 GiB more for
   good, and `WATCHDOG=1` restarts the server itself, idle and before earlyoom's
-  line, instead of earlyoom stopping it whenever (off by default). A large
+  line, instead of earlyoom stopping it whenever (off by default). With both
+  on, about a day of real use on that GX10 (2026-11-02/03, 30g) needed no
+  restart: each burst's idle release gave back 2.3-3.6 GiB, the allocator's
+  hold returning to 98.74 GiB every time (97.32 GiB allocated). A large
   download, copy or build beside the server gets there for sure: `./build.sh`
   and `./download.sh` refuse beside a GPU job (`../scripts/mem-prep.sh idle`);
   a hand-run `hf download` does not, so put that check in front of it.
