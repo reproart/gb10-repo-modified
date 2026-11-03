@@ -326,7 +326,10 @@ PROF_ARGS=() PROF_MOUNT=()
 if [ "${PROFILE:-0}" = 1 ]; then
   mkdir -p "${PROFILE_DIR:=/tmp/gb10-profile}"
   PROF_MOUNT=(-v "$PROFILE_DIR:$PROFILE_DIR")
-  PROF_ARGS=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$PROFILE_DIR\",\"torch_profiler_with_stack\":false,\"torch_profiler_dump_cuda_time_total\":false,\"ignore_frontend\":true}")
+  shapes=false
+  [ "${PROFILE_SHAPES:-0}" = 1 ] && shapes=true
+  PROF_ARGS=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$PROFILE_DIR\",\"torch_profiler_with_stack\":false,\"torch_profiler_dump_cuda_time_total\":false,\"torch_profiler_record_shapes\":$shapes,\"ignore_frontend\":true}")
+  [ "$shapes" = true ] && PROF_ARGS+=(--enforce-eager)
 fi
 
 # The deterministic MoE alignment from this many tokens a step up (DET_MOE_ALIGN=1);
@@ -387,5 +390,5 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
     --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3 \
     ${PIN_ARG[@]+"${PIN_ARG[@]}"} ${SPEC[@]+"${SPEC[@]}"}
 
-echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), idle_release=${IDLE_RELEASE_SEC:-0}s$([ "${PROFILE:-0}" = 1 ] && echo ", profiler to $PROFILE_DIR"), metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
+echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), idle_release=${IDLE_RELEASE_SEC:-0}s$([ "${PROFILE:-0}" = 1 ] && echo ", profiler to $PROFILE_DIR$([ "${PROFILE_SHAPES:-0}" = 1 ] && echo ' (shapes, eager)')"), metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
 echo ">> follow with: docker logs -f $NAME"

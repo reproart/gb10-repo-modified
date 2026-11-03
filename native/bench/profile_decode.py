@@ -34,6 +34,12 @@ to /tmp/gb10-profile on the host); this script brackets the answer with
 /start_profile and /stop_profile, so `--tokens` sets the length (with MTP,
 ~4 tokens a step: 160 tokens ~ 40 steps).
 
+Which layer a kernel belongs to: with shapes recorded (vllm-flash-ar:
+PROFILE=1 PROFILE_SHAPES=1 ./serve.sh, which also runs vLLM eagerly, since a
+kernel replayed from a CUDA graph has no launching op in the trace), each top
+kernel lists the op that launched it and its input shapes, e.g.
+"aten::mm [[1,2560],[2560,65536]]": the weight's size tells the layer.
+
 The trace is written by the server process, so this script must run on the
 same machine (the default output dir is /tmp/gb10-profile). Profiling slows
 the steps it records; compare shares, not tok/s.
@@ -135,7 +141,17 @@ def summarize(trace: dict, top: int = 20) -> str:
     by_group = defaultdict(float)
     by_name = defaultdict(lambda: [0.0, 0])
     intervals = []
+    # the op that launched a kernel, with its input shapes (record_shapes): same "External id"
+    ops = {}
+    for e in events:
+        a = e.get("args") or {}
+        if e.get("ph") == "X" and e.get("cat") == "cpu_op" and "Input Dims" in a and "External id" in a:
+            ops[a["External id"]] = f"{e.get('name', '?')} " + json.dumps(a["Input Dims"], separators=(",", ":"))
+    shapes = defaultdict(lambda: defaultdict(int))
     for e in kernels:
+        op = ops.get((e.get("args") or {}).get("External id"))
+        if op:
+            shapes[e.get("name", "?")][op] += 1
         dur = float(e.get("dur", 0.0))
         ts = float(e.get("ts", 0.0))
         name = e.get("name", "?")
@@ -171,6 +187,10 @@ def summarize(trace: dict, top: int = 20) -> str:
     for name, (d, n) in sorted(by_name.items(), key=lambda kv: -wall_name.get(kv[0], 0.0))[:top]:
         out.append(f"{d / 1e3:>9.1f}{wall_name.get(name, 0.0) / 1e3:>9.1f}{n:>7}{d / n:>9.1f}"
                    f"  [{group_of(name)}] {name[:100]}")
+        for op, c in sorted(shapes.get(name, {}).items(), key=lambda kv: -kv[1])[:3]:
+            out.append(f"{'':>36}<- {c:>5} x {op[:110]}")
+    if not ops:
+        out += ["", "(no op shapes in this trace: PROFILE_SHAPES=1 records them, in eager mode)"]
     return "\n".join(out)
 
 
