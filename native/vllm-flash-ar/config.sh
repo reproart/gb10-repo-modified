@@ -136,6 +136,13 @@ export ITER_DETAILS="${ITER_DETAILS:-0}"
 # process cannot see them. 0 = off. ../bench reads it with GB10_METRICS_PORT.
 export METRICS_PORT="${METRICS_PORT:-18400}"
 
+# PROFILE=1: vLLM's torch profiler endpoints (/start_profile, /stop_profile; they
+# exist only when configured at launch), traces to PROFILE_DIR, mounted at the same
+# path in the container, for ../bench/profile_decode.py (where a decode step's GPU
+# time goes, per kernel group). Costs nothing until a profile is started.
+export PROFILE="${PROFILE:-0}"
+export PROFILE_DIR="${PROFILE_DIR:-/tmp/gb10-profile}"
+
 # Prefix-cache diagnosis logging (VLLM_HIT_DEBUG=1 in the container):
 # per-group hit breakdown, mamba boundary publication, evictions, chunk stops.
 export HIT_DEBUG="${HIT_DEBUG:-0}"
