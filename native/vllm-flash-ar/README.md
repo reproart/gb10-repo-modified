@@ -279,6 +279,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
 | `IDLE_RELEASE_SEC` | `60` | after this many seconds without a request the engine calls `torch.cuda.empty_cache()`: torch's freed GPU blocks (host memory on GB10, kept at the last large request's peak; 8 GiB after a long-context run here) go back to the system, CUDA graph pools stay; once per rise; a line in `docker logs`. `0` = keep them |
+| `HC_FP8` | `0` | `1` = the hyper-connection projections (`input_mix_weight_down` + block_inject, `input_mix_weight_up`; ~13.5 MB of BF16 a mix, ~98 mixes a decode step) in FP8 with a scale per row, on a Triton GEMM for decode inputs (patch 16). Half the bytes of ~7 ms of a ~50 ms step. Lossy (answers change a little, deterministically): check quality before keeping it |
 | `WATCHDOG` | `0` | `1` = `./serve.sh` starts `./watchdog.sh` in the background (`./stop.sh` stops it): it restarts the server when available memory is under `WATCHDOG_MIN_AVAIL_MB` (`2048`) **and** no request has run or waited for `WATCHDOG_IDLE_MIN` (`5`) minutes (vLLM's `/metrics`, read again just before the stop), at most once per `WATCHDOG_COOLDOWN_MIN` (`60`), checking every `WATCHDOG_INTERVAL` (`60`) s; never starts a stopped server, stops itself if a restart fails. Costs the prefix cache and ~5 min. Log: `~/.cache/gb10/vllm-flash-ar-watchdog.log` |
 | `PROFILE` / `PROFILE_DIR` | `0` / `/tmp/gb10-profile` | `1` = vLLM's torch profiler endpoints, traces to `PROFILE_DIR` (mounted at the same path): `python3 ../bench/profile_decode.py` then shows where a decode step's GPU time goes, per kernel group. Costs nothing until a profile is started. `PROFILE_SHAPES=1` adds op input shapes and runs eagerly (no CUDA graphs), so each top kernel names its weight and a second table gives the time per layer and the rate it reads its weight at (GB/s): for finding layers and how far each is from the memory's bandwidth. Kernel times hold; the gaps between them are eager-mode ones |
 | `MEM_PREP` / `WAIT_MIN` | `1` / `15` | `./serve.sh`: page cache dropped and memory compacted before the start (`../scripts/mem-prep.sh`); wait up to N minutes for the API (`0` = return at once) |
@@ -410,7 +411,7 @@ sessions, accepting ~5% slower long prefill.
 | MTP draft layer's own 512 experts | **int4** GPTQ-Marlin g128 RTN (the default `-MTP_int4RTN` checkpoint) | Intel leaves layer 48 in bf16 (~4.7 GiB, `-:.*layers\.48\..*`); `tools/quantize_mtp_experts_int4.py` (patch 10) makes it int4 on the Marlin path: −3.5 GiB, +2–4% decode, acceptance unchanged. The plain `-hybrid` repo keeps them bf16 |
 | lm_head (shared with MTP draft head) | **int8** GPTQ-Marlin (uint8b128) | `tools/quantize_lm_head_int8.py` + `"lm_head": true` |
 | GDN in/out projections, QSA q/k/v/o, shared expert | **fp8** blockwise e4m3 (128×128) | `tools/fp8_convert.py` + `src/vllm_fp8_hybrid.py` |
-| Embeddings, hyper-connections, norms, MoE gates, fc_hidden | bf16 | excluded via `dynamic` rules |
+| Embeddings, hyper-connections, norms, MoE gates, fc_hidden | bf16 | excluded via `dynamic` rules; `HC_FP8=1` puts the hyper-connection projections in FP8 with per-row scales at load (patch 16) |
 | PLE n-gram table (51B params, layer 1) | **fp8** rows, mmapped from disk | `tools/fetch-ple-table-fp8.sh` + the mmap patch |
 | KV cache | bf16 | QSA refuses fp8 KV |
 
@@ -425,7 +426,8 @@ one confirmation per step: `ple_layer.py patched OK`, `fla shmem gate patched`,
 `patch_hit_debug.py applied OK`, `patch_mamba_align_split.py applied OK`,
 `qsa.py: top-k variants (1|fill) added OK`, `qsadet INSTALLED`, `qsadet wired OK`,
 `patch_step_profile.py applied OK`, `loggers.py: per-step prefill metrics added
-OK` and `draft-head hook INSTALLED`. A missing line means that step did not run.
+OK`, `draft-head hook INSTALLED` and `FP8 HC hook INSTALLED`. A missing line means
+that step did not run.
 
 ### 1. PLE mmap upgrades (`src/vllm_ple_mmap.py`, extends upstream's patch)
 
@@ -849,6 +851,61 @@ in BF16 (`include/humming/epilogue/gmem_writer.cuh` in humming-kernels
 `use_batch_invariant` kernels drop stream-K, but vLLM turns them on only with
 `VLLM_BATCH_INVARIANT=1`, its engine-wide batch-invariant mode. Marlin it is.
 
+### 16. FP8 hyper-connection projections (`src/gb10_fp8_rowwise.py`, `HC_FP8=1`)
+
+**Where a decode step goes** (2026-11-03, GX10, `PROFILE=1 PROFILE_SHAPES=1`,
+`bench/profile_decode.py`, one 160-token code answer, 45 MTP steps of 4 rows,
+the bf16 draft slice of the time; per step, kernel time, eager mode; GB/s =
+the weight a GEMM reads over its time, ~240 is what a GB10 delivers):
+
+| Layer | ms / step | GB/s | |
+|---|---:|---:|---|
+| MoE experts, gate_up + down (int4 Marlin) | 14.3 | — | reads only the routed experts |
+| GDN `in_proj` [2560 → 16384] (FP8 CUTLASS blockwise) | 6.4 | 236 | at the bandwidth |
+| draft head slice [2560 → 65536], 3 a step (bf16 then) | 5.6 | 185 | int8 since (patch 10): −2.5 ms measured |
+| GDN / QSA `out_proj` [6144 → 2560] (FP8) | 4.5 | 169 | |
+| hyper-connection down + block_inject [10240 → 336] (BF16) | 3.9 | 172 | 98 a step |
+| hyper-connection up [320 → 10240] (BF16) | 3.1 | 209 | 100 a step |
+| lm_head [2560 → 248320] (int8 Marlin) | 2.6 | 242 | at the bandwidth |
+| QSA qkv [2560 → 13312] (FP8) | 1.8 | 233 | |
+| shared expert gate_up / down (FP8) | 1.3 / 0.6 | 118 / 137 | |
+| FP8 activation quantization | ~0.8 | — | 8 us a call |
+| GDN decode kernel | 1.3 | — | |
+| MTP layer's dense projections at 1 row (BF16) | ~1 | 186 | qkv [2560 → 13312] alone 0.75 |
+| router [2560 → 512], GDN `in_proj_ba` [2560 → 96] (BF16) | 0.8 / 0.6 | 169 / 28 | |
+
+The MoE, the large FP8 projections and the lm_head read at the memory's
+bandwidth: only fewer bytes make them faster. The largest BF16 item after the
+draft head is the hyper-connection mix: two GEMMs per mix, 7 ms a step together,
+on weights the checkpoint keeps in BF16.
+
+**The patch.** With `HC_FP8=1` those two projections of every mix (target and
+MTP layer) keep their weights in FP8 E4M3 with one float32 scale per row (amax /
+448) after loading: ~1.2 GiB → ~0.6 GiB. The 16 rows the down projection carries
+for block_inject (and padding) stay BF16. Inputs of up to 64 rows (decode and
+MTP verify, 4 a sequence) run a Triton GEMM that converts the FP8 rows to BF16
+in registers (exact), accumulates in FP32 and applies the row scale to the sum;
+the down projection's long K is split over programs and the partial sums added
+by a second kernel in a fixed order, so the result is the same bits every run
+and does not depend on the other rows in the batch. Longer inputs (prefill)
+take torch: each weight converted to BF16 once per call, the row scales
+multiplied into the output. The GEMM is a torch custom op
+(`gb10::fp8_row_linear`), opaque to torch.compile and captured by CUDA graphs.
+The recipe is that of `FP8_HC` on the SGLang profile of this model
+(`../patches/gb10_fp8_hc.py`): +3-3.5% decode there, HumanEval 97.6% / 99.4%
+(not worse than BF16). It is lossy, so it is off by default; the boot log says
+`FP8 HC on: N hyper-connection classes wrapped` and, at the first forward,
+`FP8 HC: N hyper-connection projections in FP8 ...`.
+
+Checks: `src/test_hc_fp8_cpu.py` (no GPU; with `pip install triton` it also
+runs the kernel in Triton's interpreter) and, in the image, the kernel against
+cuBLAS on the real shapes, with correctness, run-to-run bits and a sweep of its
+tile settings:
+
+```bash
+docker run --rm --gpus all --entrypoint python3 -v "$PWD/src:/w:ro" qwen38-flash-dgx /w/bench_fp8_rowwise_gpu.py
+```
+
 ## Speculative decoding and TTFT
 
 MTP's draft layer is a stateful autoregressive transformer: vLLM's v1 engine
@@ -902,6 +959,10 @@ src/patch_qsa_exact_topk.py   exact, deterministic QSA top-k (VLLM_QSA_EXACT_TOP
 src/test_qsa_exact_topk_cpu.py  CPU unit test for the exact top-k (no GPU needed)
 src/patch_mtp_draft_vocab.py  private MTP draft head: reduced vocabulary (from blazux), int8 slice / int4 (VLLM_MTP_DRAFT_VOCAB, VLLM_MTP_DRAFT_HEAD)
 src/test_draft_head_cpu.py    CPU test of the draft head's int8 slice (no GPU, no vLLM)
+src/gb10_fp8_rowwise.py       FP8 per-row weights + Triton GEMM for the hyper-connection projections (HC_FP8=1)
+src/patch_hc_fp8.py           its hook in hyperconnection.py
+src/test_hc_fp8_cpu.py        CPU test of both (kernel in Triton's interpreter when triton is installed)
+src/bench_fp8_rowwise_gpu.py  GPU check and timing of the kernel against cuBLAS, in the image
 src/draft_vocab_65536.npy     the default 65,536-token draft id set (from blazux)
 tools/build_draft_vocab.py    rebuild the draft id set (from blazux)
 tools/quantize_mtp_experts_int4.py  int4 RTN the MTP draft experts -> -MTP_int4RTN checkpoint

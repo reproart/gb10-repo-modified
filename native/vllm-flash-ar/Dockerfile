@@ -190,3 +190,12 @@ RUN cd ${SP} && patch --batch --forward --fuzz=0 -p1 < /tmp/qwen-tool-marker-gua
 COPY src/patch_det_moe_align.py /tmp/patch_det_moe_align.py
 RUN python3 /tmp/patch_det_moe_align.py ${SP}/vllm/model_executor/layers/fused_moe/moe_align_block_size.py \
  && rm /tmp/patch_det_moe_align.py
+
+# FP8 hyper-connection projections (no-op unless VLLM_HC_FP8=1 at runtime): the
+# input_mix_weight_down(+block_inject) / input_mix_weight_up layers keep FP8 weights with
+# per-row scales and run gb10_fp8_rowwise's Triton GEMM on decode-sized inputs.
+# src/test_hc_fp8_cpu.py (CPU) and src/bench_fp8_rowwise_gpu.py (GPU) check it.
+COPY src/gb10_fp8_rowwise.py ${SP}/gb10_fp8_rowwise.py
+COPY src/patch_hc_fp8.py /tmp/patch_hc_fp8.py
+RUN python3 /tmp/patch_hc_fp8.py ${SP}/vllm/models/qwen3_8_flash_next/nvidia/hyperconnection.py \
+ && python3 -c "import gb10_fp8_rowwise" && rm /tmp/patch_hc_fp8.py
