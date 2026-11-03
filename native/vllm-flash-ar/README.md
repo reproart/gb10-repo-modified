@@ -897,10 +897,31 @@ The recipe is that of `FP8_HC` on the SGLang profile of this model
 `FP8 HC on: N hyper-connection classes wrapped` and, at the first forward,
 `FP8 HC: N hyper-connection projections in FP8 ...`.
 
+**First measurement** (2026-11-03, GX10, `perf.py`, against the int8 draft
+slice the same day; one boot each):
+
+| | decode, 1 stream (median of 5) | aggregate at 1 / 2 / 4 / 8 streams | HumanEval (no thinking, greedy) |
+|---|---|---|---|
+| `HC_FP8=0` | 69.7 tok/s (MTP 3.50 tok/step, 84%) | 65.6 / 102.5 / 171.7 / 252.5 | 96.3% (158/164) |
+| `HC_FP8=1` | **74.5 tok/s** (3.56, 85%) | 68.5 / 109.9 / 170.3 / 259.6 | 96.3% (158/164) |
+
++7% decode, ~2.4 ms off a ~50 ms step; HumanEval the same score (one problem
+traded for another: 113 failed without, 127 with). Boot log: 200 projections,
+1.25 → 0.64 GiB. Prefill in that run was 1727 / 1757 / 1495 / 1854 tok/s at
+2K / 8K / 32K / 101K, against 2000 / 2153 / 2134 / 1981 on 2026-10-31 (not the
+same boot; the 32K prompt ran with the host swapping). One cause found since:
+the prefill path multiplied the row scales into the up projection's output, an
+[8192 x 10240] tensor a chunk (~340 MB moved, ~1.4 ms, ~98 times a chunk); it
+now puts them into a BF16 copy of the weight when the output is the larger.
+An A/B of prefill with `HC_FP8=0` / `1` on one image is pending. The kernel
+bench's first version timed each weight from the GPU's caches (BF16 "at"
+570-900 GB/s, above what the memory delivers); it now cycles through ~300 MB
+of copies, as the model reads ~98 different mixes a step.
+
 Checks: `src/test_hc_fp8_cpu.py` (no GPU; with `pip install triton` it also
 runs the kernel in Triton's interpreter) and, in the image, the kernel against
-cuBLAS on the real shapes, with correctness, run-to-run bits and a sweep of its
-tile settings:
+cuBLAS on the real shapes, with correctness, run-to-run bits, prefill sizes and
+a sweep of its tile settings:
 
 ```bash
 docker run --rm --gpus all --entrypoint python3 -v "$PWD/src:/w:ro" qwen38-flash-dgx /w/bench_fp8_rowwise_gpu.py

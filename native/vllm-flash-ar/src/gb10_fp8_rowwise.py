@@ -19,8 +19,9 @@ unchanged), they are half the bytes.
     accumulation, the row scale applied to the FP32 sum. Long K is split over
     programs and the partial sums added by a second kernel in a fixed order:
     no atomics, the same bits every run;
-  * longer inputs (prefill) take a torch path: each weight converted to BF16
-    once per call (exact), the row scales multiplied into the BF16 output.
+  * longer inputs (prefill) take a torch path: the row scales go into the output
+    or, when the output is the larger (the up projection), into a BF16 copy of the
+    weight made for that call.
 
 The GEMM is a torch custom op (gb10::fp8_row_linear), so torch.compile treats
 it as one opaque call and CUDA graphs capture its kernels. Lossy: the gate that
@@ -179,12 +180,17 @@ def triton_mm(x: torch.Tensor, wq: torch.Tensor, s: torch.Tensor, wt: torch.Tens
 
 
 def torch_mm(x: torch.Tensor, wq: torch.Tensor, s: torch.Tensor, wt: torch.Tensor) -> torch.Tensor:
-    """The prefill path: each weight converted to x's dtype once (exact for E4M3 into
-    BF16), the row scales multiplied into the output; no FP32 copy of anything."""
+    """The path for longer inputs (prefill). The row scales go where they move fewer bytes:
+    into the output while it is smaller than the weight (rows <= K: the down projection,
+    an [M x 320] output), else into a copy of the weight in x's dtype made for this call
+    (the up projection, K = 320: scaling its [8192 x 10240] output moved ~340 MB a call,
+    ~1.4 ms, against ~0.1 ms for the weight). Either way the scale is applied in FP32."""
     import torch.nn.functional as F
 
-    y = F.linear(x, wq.to(x.dtype))
-    y.mul_(s.to(y.dtype))
+    if x.shape[0] > wq.shape[1]:
+        y = F.linear(x, (wq.float() * s[:, None]).to(x.dtype))
+    else:
+        y = (F.linear(x, wq.to(x.dtype)) * s).to(x.dtype)
     return torch.cat([y, F.linear(x, wt)], dim=-1) if wt.shape[0] else y
 
 
