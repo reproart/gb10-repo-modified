@@ -17,7 +17,8 @@ For the two hyper-connection projections of Qwen3.8-Flash-Next (down + block_inj
    time the cache, not the memory): cuBLAS on BF16 (what runs without HC_FP8) against the
    FP8 kernel, the rate each reads its weight at, and the saving per decode step at
    1 stream (4 rows, ~98 mixes);
-3. prefill sizes (2048 / 8192 rows), eager: cuBLAS on BF16 against the torch path;
+3. prefill sizes (2048 / 8192 rows), eager: cuBLAS on BF16 against the prefill path
+   (the weight dequantized to BF16 by one Triton pass, then cuBLAS);
 4. a sweep of the kernel's tile / split settings at 4 rows, against the default.
 Exit code: the number of FAIL lines. FP8ROW_DRY=1: a dry run of this script on the CPU
 (Triton's interpreter, FP16 since it cannot dot BF16; times mean nothing).
@@ -122,6 +123,10 @@ for name, n, n8, k in SHAPES:
         print(f"  {'PASS' if ok else 'FAIL'} {name}, {m:3d} rows ({path}): rel {rel(y, ref):.4f} to the FP8 "
               f"weight, {rel(y, x.float() @ w.float().T):.4f} to the BF16 one; same bits 3 runs: {same}"
               + (f"; alone = in the batch: {alone}" if 1 < m <= 16 else ""))
+    dq = fr.dequant_weight(q, s, tail, DT)
+    dq_ok = DRY or ("dequant" not in fr._state["bad_tiles"] and torch.equal(dq, fr.dequant_weight(q.cpu(), s.cpu(), tail.cpu(), DT).to(dev)))
+    fails += not dq_ok
+    print(f"  {'PASS' if dq_ok else 'FAIL'} {name}, the prefill path's dequantize kernel = torch's conversion, bit for bit")
 
 print("\n2. decode sizes: time per call, CUDA graph, a different weight copy each call (from memory)")
 saving = {}
@@ -145,7 +150,7 @@ tf = sum(v[1] for v in saving.values())
 print(f"  a mix at 4 rows (1 stream with MTP): BF16 {tb:.1f} us, FP8 {tf:.1f} us; x{MIXES} mixes: "
       f"{(tb - tf) * MIXES / 1000:+.2f} ms a decode step saved (positive = faster)")
 
-print("\n3. prefill sizes: time per call, eager (cuBLAS on BF16 vs the torch path)")
+print("\n3. prefill sizes: time per call, eager (cuBLAS on BF16 vs dequantize + cuBLAS)")
 for name, n, n8, k in SHAPES:
     cs = copies[name][:4]
     for m in ((96,) if DRY else (2048, 8192)):
@@ -157,8 +162,9 @@ for name, n, n8, k in SHAPES:
             return cs[i[0]]
         t_b = eager_us(lambda: F.linear(x, nxt()[0]))
         t_f = eager_us(lambda: fr.torch_mm(x, *nxt()[1:]))
-        print(f"  {name:<23}{m:5d} rows: BF16 {t_b:7.1f} us, FP8 torch path {t_f:7.1f} us, "
-              f"{t_f - t_b:+.1f} us a call ({'scale on a BF16 copy of the weight' if m > k else 'scale on the output'})")
+        t_d = eager_us(lambda: fr.dequant_weight(*nxt()[1:], DT))
+        print(f"  {name:<23}{m:5d} rows: BF16 {t_b:7.1f} us, FP8 (dequantize + cuBLAS) {t_f:7.1f} us, "
+              f"{t_f - t_b:+.1f} us a call (the dequantize alone {t_d:.1f} us)")
         del x
 
 print("\n4. kernel settings at 4 rows, from memory as in 2: (BLOCK_N, BLOCK_K, SPLIT) -> us")

@@ -105,11 +105,11 @@ export DET_MOE_ALIGN_MIN_TOKENS="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
 # 1: the hyper-connection projections (input_mix_weight_down + block_inject [336 x 10240],
 # input_mix_weight_up [10240 x 320], ~98 of each a decode step, BF16 in the checkpoint) in
 # FP8 with a scale per row, on a Triton GEMM for decode inputs (src/gb10_fp8_rowwise.py):
-# half the bytes of ~7 ms of a ~50 ms step (decode profile, 2026-11-03). The recipe of
-# FP8_HC on SGLang (+3-3.5% decode there, HumanEval unchanged). Lossy: answers change a
-# little (deterministically); check quality before keeping it. 0 = BF16 as shipped.
-# Measure the kernel first: src/bench_fp8_rowwise_gpu.py (README patch 16).
-export HC_FP8="${HC_FP8:-0}"
+# half the bytes of ~7 ms of a ~50 ms step (decode profile, 2026-11-03). Measured on the
+# GX10: decode 74.5 tok/s against 69.7, HumanEval 96.3% either way, consistency.py all
+# PASS, prefill within the run-to-run spread. On by default since 2026-11-03. Lossy: answers
+# differ a little from BF16's (deterministically). 0 = BF16 as shipped (README patch 16).
+export HC_FP8="${HC_FP8:-1}"
 # docker --cpuset-cpus; empty = all cores (as the recipe measured). 5-9,15-19 are
 # GB10's Cortex-X925 cores (blazux's concurrent profile pins to them).
 export CPUSET="${CPUSET:-}"
