@@ -117,6 +117,16 @@ if have_triton:
             ((dq.float() - ref_dq.float()).abs() <= ref_dq.float().abs() * 2 ** -7).all())
         check(f"dequantize kernel ({str(dt)[6:]}): = the torch conversion, tail rows bit for bit",
               "dequant" not in fr._state["bad_tiles"] and dq.dtype == dt and close and torch.equal(dq[320:], tail.to(dt)))
+    # the dequantize kernel built first (prefill runs first at boot) must not hide the GEMM's
+    fr._kernels.clear()
+    fr.dequant_weight(q8, s8, tail, torch.float16, force_triton=True)
+    try:
+        yk = fr.triton_mm(torch.randn(4, 1024, generator=g).half(), q8, s8, tail.half(), (16, 256, 4, 256))
+        order_ok = yk.shape == (4, 336)
+    except KeyError as e:
+        order_ok = False
+        print("   ", repr(e))
+    check("  the GEMM kernel builds after the dequantize kernel (one kernel dict, keyed by name)", order_ok)
     xs = torch.randn(8, 1024, generator=g).half()
     one = fr.triton_mm(xs[:1], q8, s8, tail.half(), (16, 256, 4, 256))
     many = fr.triton_mm(xs, q8, s8, tail.half(), (16, 256, 4, 256))

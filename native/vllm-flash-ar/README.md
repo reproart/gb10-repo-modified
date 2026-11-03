@@ -962,15 +962,20 @@ one-pass dequantize): decode 64.2 tok/s, below BF16's 69.7 (3.54 tokens a step,
 the same acceptance), every concurrency level ~10% down, prefill 1798 / 1892 /
 1834 / 1915 tok/s. The decode code had not changed since the 74.5 run; what
 the numbers fit is decode on the torch fallback (dequantize + cuBLAS) instead
-of the Triton kernel. That fallback was taken for good, with one warning line,
-when a kernel failed, and a Triton kernel launched for the first time inside a
-CUDA graph capture can fail to load there; the new dequantize kernel changed
-which kernel loaded first during capture. Since then every kernel variant (16-,
-32- and 64-row tiles, the dequantize) is built when the weights are converted,
-before any capture; the kernel no longer specializes on the row count; and the
-first-forward log line says which path each tile takes (`decode kernel for
+of the Triton kernel, and the log said so: `the Triton kernel for 16-row tiles
+failed (KeyError: 'mm')`, then 64 and 32. A bug of the one-pass dequantize: its
+kernel went into the dict that cached the GEMM's, which was looked up by "the
+dict is not empty"; prefill runs first at boot, so the dict held only the
+dequantize and every decode tile failed over to torch, for good, with one
+warning line each. Fixed (looked up by name; `src/test_hc_fp8_cpu.py` builds
+the dequantize first and fails on the old code with that KeyError). Also since:
+every kernel variant (16-, 32- and 64-row tiles, the dequantize) is built when
+the weights are converted, before any CUDA graph capture, and says so loudly if
+one does not build; the GEMM no longer specializes on the row count; the
+first-forward log line names the path each tile takes (`decode kernel for
 16/32/64-row tiles; prefill dequantize on Triton`, or TORCH PATH in capitals).
-The bench's section 5 checks both and probes a first launch inside a capture.
+The bench's section 5 checks the prewarm and probes a kernel's first launch
+inside a capture.
 
 Checks: `src/test_hc_fp8_cpu.py` (no GPU; with `pip install triton` it also
 runs the kernel in Triton's interpreter) and, in the image, the kernel against
