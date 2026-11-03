@@ -29,8 +29,8 @@ lands in the "ple gather" row.
 SGLang (/get_server_info answers): /start_profile records `--steps`
 scheduler steps into --output-dir. vLLM: the profiler endpoints exist only
 when the server was started with a profiler config, which also fixes the
-trace directory (vllm-b12x: PROFILE=1 ./serve.sh, traces to
-/tmp/gb10-profile on the host); this script brackets the answer with
+trace directory (vllm-b12x and vllm-flash-ar: PROFILE=1 ./serve.sh, traces
+to /tmp/gb10-profile on the host); this script brackets the answer with
 /start_profile and /stop_profile, so `--tokens` sets the length (with MTP,
 ~4 tokens a step: 160 tokens ~ 40 steps).
 
@@ -60,7 +60,10 @@ GROUPS = [
     ("QSA / attention", r"qsa|indexer|persistent_topk|flash|attn|attention|xqa|paged|merge_state"),
     ("MoE routing", r"moe_fused_gate|topk|router|route_radix|gating"),
     ("MoE experts", r"marlin_moe|moe|expert|groupproblemshape|fused_experts"),
-    ("dense GEMM, FP8/FP4 Marlin", r"marlin"),
+    # Marlin dense: FP8 / FP4 side layers on SGLang, the int8 lm_head on vllm-flash-ar
+    ("dense GEMM, Marlin", r"marlin"),
+    # vLLM's blockwise FP8 (vllm-flash-ar's side layers: 128x128 block scales)
+    ("dense GEMM, FP8 block-scaled", r"w8a8|block_?scaled_mm|blockwise|block_fp8|fp8_block"),
     # vLLM b12x's CuTe DSL dense GEMM and its weight-only split-K reduce: the
     # block-scaled linear layers (on FP4-Local the MXFP8 attention / GDN /
     # shared-expert projections and the MXFP8 lm_head). Its names carry

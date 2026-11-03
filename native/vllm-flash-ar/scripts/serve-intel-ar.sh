@@ -318,6 +318,17 @@ case "$DRAFT_VOCAB" in
   *) echo "WARNING: DRAFT_VOCAB='$DRAFT_VOCAB' — the container only sees /model and /ple-table. Put the ids.npy in the checkpoint dir and pass /model/<name>.npy (or bake it into a custom image)." >&2 ;;
 esac
 
+# PROFILE=1: the torch profiler endpoints for ../bench/profile_decode.py. No Python
+# stacks and no CUDA-time table at stop: on vllm-b12x's build that table kept the
+# engine blocked for minutes; the Chrome trace needs neither. ignore_frontend: the
+# API server's trace is CPU only.
+PROF_ARGS=() PROF_MOUNT=()
+if [ "${PROFILE:-0}" = 1 ]; then
+  mkdir -p "${PROFILE_DIR:=/tmp/gb10-profile}"
+  PROF_MOUNT=(-v "$PROFILE_DIR:$PROFILE_DIR")
+  PROF_ARGS=(--profiler-config "{\"profiler\":\"torch\",\"torch_profiler_dir\":\"$PROFILE_DIR\",\"torch_profiler_with_stack\":false,\"torch_profiler_dump_cuda_time_total\":false,\"ignore_frontend\":true}")
+fi
+
 # The deterministic MoE alignment from this many tokens a step up (DET_MOE_ALIGN=1);
 # auto = one more than the largest decode-only step, SEQS x (1 + MTP) tokens.
 DET_MIN="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
@@ -360,7 +371,7 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
   --log-opt max-size="$LOG_MAX_SIZE" --log-opt max-file="$LOG_MAX_FILE" \
   --health-cmd "$HEALTH_CMD" --health-start-period=10m \
   --health-interval=60s --health-timeout=15s --health-retries=10 \
-  -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" \
+  -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" ${PROF_MOUNT[@]+"${PROF_MOUNT[@]}"} \
   "${ENV_ARGS[@]}" \
   "$IMAGE" \
   /model --served-model-name "${SERVED_NAMES[@]}" \
@@ -369,11 +380,12 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
     $PC_ARG --enable-prompt-tokens-details --enable-chunked-prefill --max-num-batched-tokens "${BATCHED_TOKENS:-8192}" \
     $CC \
     $AT_ARG \
+    ${PROF_ARGS[@]+"${PROF_ARGS[@]}"} \
     --kv-cache-dtype auto \
     ${OVR_ARGS[@]+"${OVR_ARGS[@]}"} \
     $EXTRA \
     --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3 \
     ${PIN_ARG[@]+"${PIN_ARG[@]}"} ${SPEC[@]+"${SPEC[@]}"}
 
-echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), idle_release=${IDLE_RELEASE_SEC:-0}s, metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
+echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), idle_release=${IDLE_RELEASE_SEC:-0}s$([ "${PROFILE:-0}" = 1 ] && echo ", profiler to $PROFILE_DIR"), metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
 echo ">> follow with: docker logs -f $NAME"
