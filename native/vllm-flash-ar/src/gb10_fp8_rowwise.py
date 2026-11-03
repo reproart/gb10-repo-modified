@@ -63,7 +63,9 @@ _kernels = {}
 
 
 def _get_kernels():
-    if _kernels:
+    # keyed by name: the dequantize kernel lives in the same dict, and a dict that only
+    # held it sent every decode call to the torch path (KeyError 'mm', 2026-11-03)
+    if "mm" in _kernels:
         return _kernels["mm"], _kernels["reduce"]
     import triton
     import triton.language as tl
@@ -239,8 +241,8 @@ _prewarmed = set()
 def prewarm(wq: torch.Tensor, s: torch.Tensor, wt: torch.Tensor, dtype: torch.dtype) -> None:
     """Compile and load every kernel variant this weight shape can take (16-, 32- and 64-row
     tiles, the prefill dequantize) now, at load time. A Triton kernel first launched inside a
-    CUDA graph capture can fail to load there; the fallback then took the torch path for that
-    tile size for good (decode ~10% slower than BF16, 2026-11-03). Once per weight shape."""
+    CUDA graph capture may fail to load there, and a failing tile takes the torch path for
+    good, slower than BF16; a failure here, at load, is said loudly. Once per weight shape."""
     key = (tuple(wq.shape), wt.shape[0], dtype)
     if key in _prewarmed or not wq.is_cuda:
         return
