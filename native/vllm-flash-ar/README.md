@@ -633,7 +633,17 @@ Throughput table).
   (`bench/profile_decode.py`, 2026-11-03) showed that bf16 GEMV at ~1.2 ms per
   draft pass, three passes a step, on a ~45 ms step. `DRAFT_HEAD=bf16` brings
   it back for comparison; `src/test_draft_head_cpu.py` checks the slice's
-  layout (no GPU).
+  layout (no GPU). Measured 2026-11-03 (GX10, `bench/perf.py`, code prompt,
+  thinking off, `DET_MOE_ALIGN=1`), against the bf16 slice on 2026-11-01:
+
+  | | single-stream decode (median of 5) | aggregate at 1 / 2 / 4 / 8 streams |
+  |---|---|---|
+  | bf16 slice | 66.4 tok/s (MTP 3.50 tok/step, 84%) | 60.5 / 93.8 / 177.4 / 241.9 |
+  | int8 slice | **69.7 tok/s** (3.50, 84%) | 65.6 / 102.5 / 171.7 / 252.5 |
+
+  +5% decode, ~2.5 ms off a ~52 ms step (three draft passes of ~0.6 ms
+  saved each, as the profile predicted); acceptance unchanged, as it should
+  be with the same logits. The 4-stream cell is within the sweep's spread.
 - **`DRAFT_HEAD=int4`** (same patch) — the other way to halve the head read
   without touching the vocabulary: a private int4 g128 RTN copy of the full head,
   quantized with vLLM's own `marlin_quantize` at first use (~23 s) from the
