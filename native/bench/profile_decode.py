@@ -105,7 +105,8 @@ def group_of(name: str) -> str:
 # close it runs to the memory's bandwidth (GB10: 273 GB/s on paper, ~240 in
 # practice). MoE expert GEMMs are left out: they read only the routed experts.
 WEIGHT_ARG = {"aten::mm": 1, "aten::addmm": 2, "aten::bmm": 1,
-              "_C::cutlass_scaled_mm": 2, "_C::marlin_gemm": 2, "_C::gptq_marlin_gemm": 2}
+              "_C::cutlass_scaled_mm": 2, "_C::marlin_gemm": 2, "_C::gptq_marlin_gemm": 2,
+              "gb10::fp8_row_linear": 1}  # (vllm-flash-ar HC_FP8: its FP8 rows; the BF16 tail not counted)
 DTYPE_BYTES = [("float8", 1), ("bfloat16", 2), ("half", 2), ("double", 8), ("float", 4),
                ("long", 8), ("short", 2), ("char", 1), ("byte", 1), ("bool", 1), ("int", 4)]
 

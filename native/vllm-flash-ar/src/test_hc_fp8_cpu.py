@@ -74,6 +74,12 @@ check(f"torch path: FP8 rows scaled + BF16 tail = x @ W.T (rel {rel(y, ref):.4f}
       y.shape == (70, 336) and y.dtype == torch.bfloat16 and rel(y, ref) < 1e-2)
 check("  the tail columns are the BF16 layer's own",
       torch.equal(y[:, 320:], F.linear(x, tail)))
+wu = (torch.randn(256, 48, generator=g) * 0.02).to(torch.bfloat16)  # rows > K: scale on the weight
+qu, su = fr.quantize_per_row(wu)
+xu = torch.randn(70, 48, generator=g).to(torch.bfloat16)
+yu = fr.torch_mm(xu, qu, su, wu[:0])
+check(f"  more rows than K (up projection in prefill): scale on a weight copy (rel {rel(yu, xu.float() @ fr.dequantize(qu, su).T):.4f})",
+      yu.shape == (70, 256) and rel(yu, xu.float() @ fr.dequantize(qu, su).T) < 1e-2)
 
 # 3. the kernel, interpreted
 try:
