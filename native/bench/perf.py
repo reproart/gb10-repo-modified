@@ -44,6 +44,13 @@ What the columns mean (and the traps they avoid):
   * vm (prefill rows, local server only, GB10_VMSTAT): the kernel's direct
     compaction and reclaim stalls and swap-outs during the row, from
     /proc/vmstat; what scripts/host-tuning.sh is meant to remove.
+  * mem (prefill rows, local server only): how low available memory went
+    during the prompt and what had changed at that moment against its start
+    (driver = CUDA allocations, which on GB10 come out of the same RAM; page
+    cache, where the mmapped PLE table lives; anon), what went to swap, and
+    how long tasks waited on memory (/proc/pressure/memory). With the
+    vllm-flash-ar sidecar (GB10_METRICS_PORT) also how much torch's caching
+    allocator grew: the long prompt's temporary buffers.
   * decode during a long prefill: what the streams already running see while
     another request's long prompt is prefilled (an agent sending a big
     context while others generate): their tok/s before / during / after it,
@@ -65,9 +72,9 @@ import time
 import uuid
 
 import common
-from common import (CODE_PROMPT, GpuWatch, PeakWatch, cache_hit_significant, calibrate, chat,
+from common import (CODE_PROMPT, GpuWatch, MemWatch, PeakWatch, cache_hit_significant, calibrate, chat,
                     decode_rate, delta, metrics, ple_summary, restarted, sidecar, spec_summary,
-                    unique_prompt, vm_summary, vmstat)
+                    torch_summary, unique_prompt, vm_summary, vmstat)
 
 
 def _med(xs):
@@ -205,7 +212,7 @@ def prefill(targets):
         m0, s0 = metrics(), s_prev
         prompt = unique_prompt(uuid.uuid4().hex, target)
         v0 = vmstat()
-        with GpuWatch() as gpu:
+        with GpuWatch() as gpu, MemWatch() as mem:
             r = chat(prompt, 8, stream=True)
         vm = vm_summary(v0, vmstat())
         hits = r["cached_tokens"]
@@ -221,6 +228,9 @@ def prefill(targets):
               f"{'   ' + ple if ple else ''}{'   ' + str(gpu) if str(gpu) else ''}")
         if vm:
             print(f"   {'':>7} {vm}")
+        if str(mem):
+            ts = torch_summary(s0, s_prev)
+            print(f"   {'':>7} {mem}{'; ' + ts if ts else ''}")
         if cache_hit_significant(hits, r["prompt_tokens"]):
             print("   !! prefix-cache hit on a unique prompt — the rate above excludes it")
     print()

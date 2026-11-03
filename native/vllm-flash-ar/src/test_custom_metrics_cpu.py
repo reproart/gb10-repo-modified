@@ -174,6 +174,16 @@ cm.set_pin_source(_IdleSched())
 cm._IDLE_SEC, cm._IDLE_MIN = 60.0, 512 * 2**20
 logs = []
 cm._emit = lambda level, msg: logs.append(msg)
+rss = [6 * GiB]
+trims = []
+
+
+def _fake_trim(pad):
+    trims.append(pad)
+    rss[0] -= GiB if len(trims) == 1 else 0   # the first trim frees 1 GiB, later ones nothing
+
+
+cm._trim["fn"], cm._rss, cm._TRIM = _fake_trim, (lambda: rss[0]), True
 
 
 def tick(seconds=5):
@@ -191,17 +201,21 @@ assert alloc["calls"] == 0, "released before VLLM_IDLE_EMPTY_CACHE_SEC"
 tick()                      # 60 s
 assert alloc["calls"] == 1 and alloc["reserved"] == 101 * GiB, alloc
 assert any("gave back 7.00 GiB" in m for m in logs), logs
+assert trims == [0] and any("malloc_trim(0) gave back 1.00 GiB of heap (resident 6.00 -> 5.00 GiB)" in m
+                            for m in logs), (trims, logs)
 text = generate_latest(cm._registry).decode()
 assert f"vllm:torch_idle_released_bytes_total {float(7 * GiB)}" in text or "vllm:torch_idle_released_bytes_total 7.516192768e+09" in text, text
 for _ in range(20):         # still idle: the graph pool (1 GiB > 512 MiB) must not make it repeat
     tick()
 assert alloc["calls"] == 1, "repeated on blocks empty_cache cannot free"
+assert len(trims) == 1, "malloc_trim more than once in one idle period"
 busy[0] = True; tick()      # new work raises the hold by 3 GiB
 alloc["reserved"] += 3 * GiB
 busy[0] = False
 for _ in range(14):
     tick()
 assert alloc["calls"] == 2 and alloc["reserved"] == 101 * GiB, alloc
+assert len(trims) == 2 and sum("malloc_trim" in m for m in logs) == 1, "trim again after work, logged only when it freed"
 cm.set_pin_source(None)     # no scheduler to ask: no release
 alloc["reserved"] += 5 * GiB
 for _ in range(30):
@@ -216,6 +230,6 @@ if _real_torch is not None:
     sys.modules["torch"] = _real_torch
 else:
     del sys.modules["torch"]
-print("idle release: after 60 s idle, once per rise, never busy / blind / off")
+print("idle release: after 60 s idle, once per rise, never busy / blind / off; malloc_trim once per idle period")
 
 print("ALL OK")

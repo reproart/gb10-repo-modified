@@ -556,6 +556,106 @@ def last_mem_prep():
             f"{kv.get('big')} GiB in 2 MiB+ blocks {how}")
 
 
+_MEM_KEYS = ("MemTotal", "MemFree", "MemAvailable", "Buffers", "Cached", "SwapCached", "AnonPages",
+             "Slab", "PageTables", "KernelStack", "SwapTotal", "SwapFree")
+
+
+def _local_counters():
+    flag = os.environ.get("GB10_VMSTAT")
+    local = urlparse(BASE_URL).hostname in ("127.0.0.1", "localhost", "::1")
+    return not ((flag is not None and flag != "1") or (flag is None and not local))
+
+
+def meminfo():
+    """Where this machine's memory is, in bytes: avail (MemAvailable), cache (page cache,
+    Cached: on GB10 servers mostly the mmapped PLE table), anon (process heaps), swap
+    (in use), driver (MemTotal minus everything the kernel itemizes: on GB10 the CUDA
+    allocations of a model server, which no process's RSS shows). {} when not local
+    (vmstat()'s rule) or on another OS."""
+    if not _local_counters():
+        return {}
+    try:
+        v = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                if key in _MEM_KEYS:
+                    v[key] = int(rest.split()[0]) * 1024
+    except (OSError, ValueError, IndexError):
+        return {}
+    if len(v) < len(_MEM_KEYS):
+        return {}
+    itemized = sum(v[k] for k in ("MemFree", "Buffers", "Cached", "SwapCached", "AnonPages", "Slab",
+                                  "PageTables", "KernelStack"))
+    return {"avail": v["MemAvailable"], "cache": v["Cached"], "anon": v["AnonPages"],
+            "swap": v["SwapTotal"] - v["SwapFree"], "driver": max(0, v["MemTotal"] - itemized)}
+
+
+def psi_memory():
+    """(some, full) microseconds stalled on memory since boot (/proc/pressure/memory):
+    some = at least one task waited, full = all non-idle tasks did. None if unavailable."""
+    if not _local_counters():
+        return None
+    try:
+        with open("/proc/pressure/memory") as f:
+            tot = {line.split()[0]: int(line.rsplit("total=", 1)[1]) for line in f if "total=" in line}
+        return tot.get("some", 0), tot.get("full", 0)
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+class MemWatch:
+    """Samples meminfo() every `every` s while active: at the end str() says how low
+    available memory went, what had grown or shrunk at that moment against the start
+    (driver = CUDA allocations, page cache, anon), how much went to swap and how long
+    tasks stalled on memory (PSI). '' when not local."""
+
+    def __init__(self, every=0.2):
+        self.every, self.start, self.low, self.end, self.psi = every, {}, {}, {}, None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _take(self):
+        m = meminfo()
+        if m and (not self.low or m["avail"] < self.low["avail"]):
+            self.low = m
+        return m
+
+    def _run(self):
+        while not self._stop.wait(self.every):
+            self._take()
+
+    def __enter__(self):
+        self.start = self._take()
+        self._psi0 = psi_memory()
+        if self.start:
+            self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        if self.start:
+            self._stop.set()
+            self._thread.join()
+            self.end = self._take()
+            p1 = psi_memory()
+            if self._psi0 and p1:
+                self.psi = (p1[0] - self._psi0[0], p1[1] - self._psi0[1])
+
+    def __str__(self):
+        if not self.start or not self.low or not self.end:
+            return ""
+        g = 2.0 ** 30
+        a, lo = self.start, self.low
+
+        def d(k):
+            return f"{(lo[k] - a[k]) / g:+.1f}"
+        s = (f"mem: avail {a['avail'] / g:.1f} -> low {lo['avail'] / g:.1f} GiB (there: driver {d('driver')}, "
+             f"page cache {d('cache')}, anon {d('anon')} GiB); swap {(self.end['swap'] - a['swap']) / g:+.2f} GiB")
+        if self.psi:
+            s += f"; stalled on memory {self.psi[1] / 1e6:.1f} s all tasks, {self.psi[0] / 1e6:.1f} s some"
+        return s
+
+
 def vm_summary(v0, v1):
     """The vmstat() delta as one short note, '' without counters."""
     if not v0 or not v1:
@@ -663,6 +763,9 @@ _SIDECAR = (f"http://{urlparse(BASE_URL).hostname}:{_SIDECAR_PORT}/metrics"
             if _SIDECAR_PORT else None)
 _PLE = {"ple_ops": "vllm:ple_mmap_ops_total", "ple_op_ms": "vllm:ple_mmap_op_ms_total",
         "ple_gather_ms": "vllm:ple_mmap_gather_ms_total"}
+_TORCH = {"torch_reserved": "vllm:torch_cuda_reserved_bytes",
+          "torch_peak": "vllm:torch_cuda_max_reserved_bytes",
+          "torch_allocated": "vllm:torch_cuda_allocated_bytes"}
 _SIDECAR_LAG = float(os.environ.get("GB10_METRICS_INTERVAL", "5") or 5) + 1.0
 _SIDECAR_SEEN = [False]
 
@@ -685,12 +788,24 @@ def sidecar(settle=False):
     except Exception:  # noqa: BLE001 - optional
         return {}
     out = {}
-    for key, name in _PLE.items():
+    for key, name in (*_PLE.items(), *_TORCH.items()):
         m = re.search(rf"^{re.escape(name)}\s+([0-9.eE+-]+)$", text, re.M)
         if m:
             out[key] = float(m.group(1))
-    _SIDECAR_SEEN[0] = _SIDECAR_SEEN[0] or bool(out)
+    _SIDECAR_SEEN[0] = _SIDECAR_SEEN[0] or any(k in out for k in _PLE)
     return out
+
+
+def torch_summary(s0, s1):
+    """'torch reserved +3.6 GiB (peak +3.9)' over a sidecar() pair: what the engine's
+    caching allocator took from the machine (vllm-flash-ar's sidecar), '' without it."""
+    if "torch_reserved" not in s0 or "torch_reserved" not in s1:
+        return ""
+    g = 2.0 ** 30
+    s = f"torch reserved {(s1['torch_reserved'] - s0['torch_reserved']) / g:+.1f} GiB"
+    if "torch_peak" in s0 and "torch_peak" in s1:
+        s += f" (peak {(s1['torch_peak'] - s0['torch_peak']) / g:+.1f}, now {s1['torch_reserved'] / g:.1f} GiB)"
+    return s
 
 
 def ple_summary(s0, s1):

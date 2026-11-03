@@ -177,7 +177,17 @@ export EXTRA_ENV="${EXTRA_ENV:-}"
 # pools stay). On GB10 they are host memory, held at the peak of the last large request:
 # 8 GiB on a GX10 after a multi-stream long-context run (2026-11-02), with ~2 GiB left
 # available and earlyoom at 1. 0 = keep them. The next large request allocates again.
+# Once per idle period the engine also calls malloc_trim(0): freed heap back to the
+# system rather than to swap later (EXTRA_ENV=VLLM_IDLE_MALLOC_TRIM=0 turns that off).
 export IDLE_RELEASE_SEC="${IDLE_RELEASE_SEC:-60}"
+# 1: the container may not use swap: docker --memory / --memory-swap both at the host's
+# RAM, which limits nothing but sets memory.swap.max = 0 (./serve.sh checks it), as the
+# SGLang servers here run (NOSWAP in ../scripts/serve-sglang.sh). Under a long prefill's
+# memory pressure the kernel then drops page cache (the PLE table's clean pages, read
+# again from disk when needed) instead of writing the engine's memory to swap on the
+# disk the table is read from. 0 = swap allowed, as before. Off until measured
+# (../bench/perf.py --only prefill prints a mem line per prompt).
+export NOSWAP="${NOSWAP:-0}"
 
 # The watchdog (./watchdog.sh): restart the server when available memory is under
 # WATCHDOG_MIN_AVAIL_MB AND no request has run or waited for WATCHDOG_IDLE_MIN

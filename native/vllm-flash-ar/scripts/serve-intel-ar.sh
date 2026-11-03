@@ -387,10 +387,16 @@ ENV_ARGS=()
 for e in "${ENVS[@]}"; do ENV_ARGS+=(-e "$e"); done
 CPU_ARGS=()
 [ -n "${CPUSET:-}" ] && CPU_ARGS=(--cpuset-cpus "$CPUSET")
+# NOSWAP=1: a memory limit at the host's RAM (limits nothing) with no swap above it.
+MEM_ARGS=()
+if [ "${NOSWAP:-0}" = 1 ]; then
+  memk=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+  MEM_ARGS=(--memory "${memk}k" --memory-swap "${memk}k")
+fi
 
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 # shellcheck disable=SC2086
-docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@]+"${CPU_ARGS[@]}"} \
+docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@]+"${CPU_ARGS[@]}"} ${MEM_ARGS[@]+"${MEM_ARGS[@]}"} \
   --gpus all --ipc=host --shm-size 16g -p "${BIND_PFX}${PORT}:8000" ${METRICS_PUBLISH[@]+"${METRICS_PUBLISH[@]}"} \
   --log-opt max-size="$LOG_MAX_SIZE" --log-opt max-file="$LOG_MAX_FILE" \
   --health-cmd "$HEALTH_CMD" --health-start-period=10m \
@@ -411,5 +417,14 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
     --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3 \
     ${PIN_ARG[@]+"${PIN_ARG[@]}"} ${SPEC[@]+"${SPEC[@]}"}
 
-echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), idle_release=${IDLE_RELEASE_SEC:-0}s, hc_fp8=${HC_FP8:-0}$([ "${PROFILE:-0}" = 1 ] && echo ", profiler to $PROFILE_DIR$([ "${PROFILE_SHAPES:-0}" = 1 ] && echo ' (shapes, eager)')"), metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
+echo ">> $NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (ctx $CTX, yarn=$YARN, mtp=$MTP, seqs=$SEQS, chunk=${BATCHED_TOKENS:-8192}, gpu_mem=$GPU_MEM, kv=${KV_BYTES:-auto}, draft_vocab=$DRAFT_VOCAB, draft_head=$DRAFT_HEAD, det_topk=$DET_TOPK, exact_topk=$EXACT_TOPK, det_moe_align=${DET_MOE_ALIGN:-0} (from $DET_MIN tokens), idle_release=${IDLE_RELEASE_SEC:-0}s, hc_fp8=${HC_FP8:-0}, noswap=${NOSWAP:-0}$([ "${PROFILE:-0}" = 1 ] && echo ", profiler to $PROFILE_DIR$([ "${PROFILE_SHAPES:-0}" = 1 ] && echo ' (shapes, eager)')"), metrics=$METRICS_PORT, cpus=${CPUSET:-all}, restart=${RESTART:-unless-stopped})"
+if [ "${NOSWAP:-0}" = 1 ]; then
+  swapmax=$(docker exec "$NAME" cat /sys/fs/cgroup/memory.swap.max 2>/dev/null || true)
+  if [ "$swapmax" = 0 ]; then
+    echo ">> no swap for $NAME (memory.swap.max = 0)"
+  else
+    echo "WARNING: NOSWAP=1, but the container's memory.swap.max is '${swapmax:-unreadable}', not 0:" >&2
+    echo "  the kernel or Docker does not limit swap here (cgroup v1 without swap accounting?)." >&2
+  fi
+fi
 echo ">> follow with: docker logs -f $NAME"
