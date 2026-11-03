@@ -419,8 +419,11 @@ sessions, accepting ~5% slower long prefill.
   available after the start, the allocator taking ~3 GiB of it on the first
   8K-32K prompts (100.3 -> 103.4 GiB reserved; the idle release hands it back
   after a minute, so the next long prompt takes it again), and the 101K prompt's
-  page-cache churn then running at ~1 GiB, earlyoom's SIGTERM line; the
-  `NOSWAP=1` run's 101K request failed there. With that little page cache the
+  page-cache churn then running at ~1 GiB, earlyoom's SIGTERM line. In the
+  `NOSWAP=1` run earlyoom stopped the engine during that prompt (journal: "mem
+  avail: 1009 of 124544 MiB ... sending SIGTERM to ... VLLM::EngineCor", with
+  14.5 GiB of swap free that the container could not use); with swap allowed
+  the same prompt bottomed out at 1.0 GiB and lived. With that little page cache the
   PLE gather also slows: ~260 ms of disk reads per 8K chunk at 101K, against
   ~184 ms measured at 30g on 2026-09-24. The perf line now flags a prompt that
   takes available memory under 1.5 GiB. More room comes from `KV_BYTES`
