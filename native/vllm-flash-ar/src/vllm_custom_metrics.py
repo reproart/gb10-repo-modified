@@ -36,6 +36,10 @@ peak of the last large request. CUDA graph pools stay (empty_cache leaves them).
 It runs again only once later work has raised the allocator's hold by that much
 again, so blocks it cannot free do not make it repeat. Each release logs a line.
 It runs with VLLM_CUSTOM_METRICS_PORT=0 too (the thread then serves nothing).
+Once per idle period it also calls glibc's malloc_trim(0) (VLLM_IDLE_MALLOC_TRIM,
+default 1): the engine's freed heap (model loading, Python objects) goes back to
+the system instead of staying resident until the kernel swaps it out under a
+long prefill's pressure. A line in the log when it gave back 64 MiB or more.
 
 Data sources register themselves from the engine process: vllm_ple_mmap keeps
 lifetime counters (_STATS_LIFE, never reset — the log-window _STATS still
@@ -64,6 +68,8 @@ _INTERVAL = min(60.0, max(1.0, float(os.environ.get("VLLM_CUSTOM_METRICS_INTERVA
 _IDLE_SEC = max(0.0, float(os.environ.get("VLLM_IDLE_EMPTY_CACHE_SEC", "0") or 0))
 _IDLE_MIN = int(float(os.environ.get("VLLM_IDLE_EMPTY_CACHE_MIN_MB", "512") or 512) * 2**20)
 _idle = {"since": None, "floor": None}   # idle start (monotonic s); reserved after the last release
+_TRIM = os.environ.get("VLLM_IDLE_MALLOC_TRIM", "1") == "1"
+_trim = {"done": False, "fn": None}      # malloc_trim ran in this idle period; the libc function
 
 _started = False
 _ensured = False
@@ -243,12 +249,16 @@ def _maybe_release_idle(torch) -> None:
     now = time.monotonic()
     if has():
         _idle["since"] = None
+        _trim["done"] = False
         return
     if _idle["since"] is None:
         _idle["since"] = now
         return
     if now - _idle["since"] < _IDLE_SEC:
         return
+    if _TRIM and not _trim["done"]:
+        _trim["done"] = True
+        _malloc_trim(now - _idle["since"])
     reserved = torch.cuda.memory_reserved()
     allocated = torch.cuda.memory_allocated()
     floor = _idle["floor"]
@@ -264,6 +274,35 @@ def _maybe_release_idle(torch) -> None:
     _emit(logging.INFO, "vllm_custom_metrics: engine idle %.0fs, torch.cuda.empty_cache() gave back "
           "%.2f GiB (reserved %.2f -> %.2f GiB, allocated %.2f GiB)"
           % (now - _idle["since"], freed / gib, reserved / gib, after / gib, allocated / gib))
+
+
+def _rss() -> int:
+    """This process's resident memory in bytes (CUDA allocations on GB10 are not in it)."""
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def _malloc_trim(idle_s: float) -> None:
+    """glibc's malloc_trim(0): free heap pages back to the system. Logged when it gave
+    back 64 MiB or more; skipped silently without glibc."""
+    if _trim["fn"] is None:
+        try:
+            import ctypes
+            _trim["fn"] = ctypes.CDLL("libc.so.6").malloc_trim
+        except (OSError, AttributeError):
+            _trim["fn"] = False
+    if not _trim["fn"]:
+        return
+    before = _rss()
+    _trim["fn"](0)
+    after = _rss()
+    if before - after >= 64 * 2**20:
+        gib = 2.0 ** 30
+        _emit(logging.INFO, "vllm_custom_metrics: engine idle %.0fs, malloc_trim(0) gave back %.2f GiB "
+              "of heap (resident %.2f -> %.2f GiB)" % (idle_s, (before - after) / gib, before / gib, after / gib))
 
 
 def _refresher() -> None:

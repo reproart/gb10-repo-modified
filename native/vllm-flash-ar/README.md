@@ -278,7 +278,8 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `DET_MOE_ALIGN_MIN_TOKENS` | `auto` | the steps it applies to, from this many tokens up; `auto` = `SEQS` × (1 + `MTP`) + 1 (33), one more than the largest decode-only step: prefill takes it, decode keeps the kernel. `9` = every step where an expert can fill more than one block |
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
-| `IDLE_RELEASE_SEC` | `60` | after this many seconds without a request the engine calls `torch.cuda.empty_cache()`: torch's freed GPU blocks (host memory on GB10, kept at the last large request's peak; 8 GiB after a long-context run here) go back to the system, CUDA graph pools stay; once per rise; a line in `docker logs`. `0` = keep them |
+| `IDLE_RELEASE_SEC` | `60` | after this many seconds without a request the engine calls `torch.cuda.empty_cache()`: torch's freed GPU blocks (host memory on GB10, kept at the last large request's peak; 8 GiB after a long-context run here) go back to the system, CUDA graph pools stay; once per rise; a line in `docker logs`. Once per idle period also `malloc_trim(0)`: the engine's freed heap back to the system instead of to swap later (a line when it gave back ≥ 64 MiB; `EXTRA_ENV=VLLM_IDLE_MALLOC_TRIM=0` turns it off). `0` = keep them |
+| `NOSWAP` | `0` | `1` = the container may not use swap: `--memory` / `--memory-swap` at the host's RAM (no limit, `memory.swap.max` = 0, checked after the start), as the SGLang servers here run. Under a long prefill's pressure the kernel then drops page cache (the PLE table's clean pages) instead of writing the engine's memory to swap on the disk the table is read from. Being measured: see "Long prefill and the host's memory" |
 | `HC_FP8` | `1` | The hyper-connection projections (`input_mix_weight_down` + block_inject, `input_mix_weight_up`; ~13.5 MB of BF16 a mix, ~98 mixes a decode step) in FP8 with a scale per row, on a Triton GEMM for decode inputs (patch 16): decode 74.5 tok/s against 69.7, HumanEval 96.3% either way, prefill within run-to-run spread. On since 2026-11-03. Lossy (answers differ a little from BF16's, deterministically); `0` = BF16 as shipped |
 | `WATCHDOG` | `0` | `1` = `./serve.sh` starts `./watchdog.sh` in the background (`./stop.sh` stops it): it restarts the server when available memory is under `WATCHDOG_MIN_AVAIL_MB` (`2048`) **and** no request has run or waited for `WATCHDOG_IDLE_MIN` (`5`) minutes (vLLM's `/metrics`, read again just before the stop), at most once per `WATCHDOG_COOLDOWN_MIN` (`60`), checking every `WATCHDOG_INTERVAL` (`60`) s; never starts a stopped server, stops itself if a restart fails. Costs the prefix cache and ~5 min. Log: `~/.cache/gb10/vllm-flash-ar-watchdog.log` |
 | `PROFILE` / `PROFILE_DIR` | `0` / `/tmp/gb10-profile` | `1` = vLLM's torch profiler endpoints, traces to `PROFILE_DIR` (mounted at the same path): `python3 ../bench/profile_decode.py` then shows where a decode step's GPU time goes, per kernel group. Costs nothing until a profile is started. `PROFILE_SHAPES=1` adds op input shapes and runs eagerly (no CUDA graphs), so each top kernel names its weight and a second table gives the time per layer and the rate it reads its weight at (GB/s): for finding layers and how far each is from the memory's bandwidth. Kernel times hold; the gaps between them are eager-mode ones |
@@ -397,6 +398,27 @@ sessions, accepting ~5% slower long prefill.
   download, copy or build beside the server gets there for sure: `./build.sh`
   and `./download.sh` refuse beside a GPU job (`../scripts/mem-prep.sh idle`);
   a hand-run `hf download` does not, so put that check in front of it.
+- **Long prefill and the host's memory** (being measured, 2026-11-03). The
+  48 GiB PLE table lives in the page cache, and a unique prompt reads rows of
+  it that are not there yet, so prefill always takes memory from somewhere;
+  with ~5 GiB available while serving, the kernel finds it by reclaiming on
+  the allocating thread and by swapping the engine's memory out. In the
+  `HC_FP8` prefill A/B (patch 16) each run's slow prompt was the one where
+  that happened, whichever the setting: 32K at 1503 tok/s with 338K pages
+  swapped out against 2086 without, 8K at 1689 with 51K. A long prompt also
+  grows torch's allocator by its temporary buffers (after a minute idle the
+  idle release hands them back, so the next long prompt grows it again).
+  `../bench/perf.py --only prefill` now prints, per prompt, how low available
+  memory went and what had moved at that moment (driver = CUDA allocations,
+  page cache, anon), the swap written and the seconds tasks waited on memory
+  (PSI), and with `GB10_METRICS_PORT=18400` torch's growth. Levers to compare
+  with it: `NOSWAP=1` (page cache goes before the engine's memory),
+  the idle `malloc_trim(0)` (heap freed instead of swapped), `KV_BYTES=25g`
+  (4.7 GiB more for everything else), `vm.watermark_scale_factor` above
+  `host-tuning.sh`'s 50 (the kernel frees memory earlier, in the background),
+  `EXTRA="--long-prefill-token-threshold 4800"` (chunks of 4800 tokens, three
+  of the 1600-token state blocks, for prompts longer than that: smaller
+  temporary buffers, more steps).
 - **1M context is out of reach on one box**: the QSA layers refuse an fp8 KV
   cache, and in bf16 a single 1M request needs ~30 GiB of KV. 500k with YaRN
   was upstream's validated ceiling.
