@@ -68,9 +68,11 @@
 #   patch out of the way) changed nothing. NVIDIA's 102.9 tok/s with MTP ran
 #   inclusionAI's SGLang branch. MTP is off by default until a release drafts
 #   with this model; MTP=1 still runs it (and costs ~half the speed).
-#   With MTP=1 (triton attention, the default here): prefill 3019 / 3479 / 1222
-#   / 442 tok/s at 2K / 8K / 32K / 101K; 22.6 / 33.6 / 46.4 / 63.3 tok/s
-#   aggregate at 1 / 2 / 4 / 8 streams.
+#   Prefill, MTP=0 on flashinfer attention with 64-token pages (the default
+#   since): 3257 / 3775 / 3791 / 2963 tok/s at 2K / 8K / 32K / 101K (TTFT 34 s
+#   at 101K). The first run, MTP=1 on triton attention (SGLang's pick without
+#   --attention-backend): 3019 / 3479 / 1222 / 442 (TTFT 228 s), and 22.6 /
+#   33.6 / 46.4 / 63.3 tok/s aggregate at 1 / 2 / 4 / 8 streams.
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.21}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
 
@@ -139,10 +141,14 @@ else
   MAX_RUNNING="${MAX_RUNNING:-16}"
 fi
 MAMBA_CACHE="${MAMBA_CACHE:-}"
-# Empty = SGLang's choice (inclusionAI's notebooks: 8192 / 64 / flashinfer).
+# Attention: flashinfer with 64-token pages, as inclusionAI's notebooks run it.
+# SGLang 0.5.21 picks triton when none is given, and its MLA prefill is the
+# long-context bottleneck: 1222 / 442 tok/s at 32K / 101K (with MTP on) against
+# 3791 / 2963 on flashinfer (MTP off), decode the same (44.7 tok/s), GX10
+# 2026-11-04. Empty = SGLang's choice. CHUNKED_PREFILL empty = SGLang's (8192).
 CHUNKED_PREFILL="${CHUNKED_PREFILL:-}"
-PAGE_SIZE="${PAGE_SIZE:-}"
-ATTENTION_BACKEND="${ATTENTION_BACKEND:-}"
+PAGE_SIZE="${PAGE_SIZE-64}"
+ATTENTION_BACKEND="${ATTENTION_BACKEND-flashinfer}"
 
 # Thinking is on by default in the chat template; per request:
 # "chat_template_kwargs": {"enable_thinking": false}.
