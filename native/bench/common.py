@@ -152,11 +152,35 @@ def cache_hit_significant(hits, prompt_tokens):
 
 # ---- chat --------------------------------------------------------------------
 
+def broken(text, expect=None):
+    """Why an answer looks like garbage, '' if it does not: one character or one word
+    making up most of it (a model whose logits went NaN repeats token 0, often '!'),
+    or, with `expect`, that string missing (perf.py's prefill prompts ask for OK).
+    Speed measured on such answers means nothing."""
+    from collections import Counter
+
+    t = (text or "").strip()
+    if expect is not None:
+        return "" if expect.lower() in t.lower() else f"answered {t[:40]!r}, not {expect!r}"
+    chars = [c for c in t if not c.isspace()]
+    if len(chars) >= 20:
+        c, n = Counter(chars).most_common(1)[0]
+        if n / len(chars) > 0.6:
+            return f"{100 * n // len(chars)}% of it is {c!r} ({t[:30]!r}...)"
+    words = t.split()
+    if len(words) >= 12:
+        w, n = Counter(words).most_common(1)[0]
+        if n / len(words) > 0.7:
+            return f"{100 * n // len(words)}% of its words are {w[:20]!r}"
+    return ""
+
+
 def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=None,
          ignore_eos=False, on_chunk=None):
     """One chat completion -> dict(e2e, ttft, completion_tokens, prompt_tokens,
     cached_tokens, finish_reason, content, stopped). ttft is None when not
-    streaming; content is only collected when not streaming.
+    streaming; streamed, content holds the first ~8000 characters (answer and
+    reasoning), enough for broken() to tell an answer from garbage.
 
     on_chunk(t, completion_tokens) (streaming only) is called on every chunk
     that carries text, with its perf_counter() time and the completion tokens
@@ -223,9 +247,12 @@ def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=
                 text = False
                 for ch in d.get("choices") or []:
                     delta = ch.get("delta") or {}
-                    if (delta.get("content") or delta.get("reasoning_content")
-                            or delta.get("reasoning")):
+                    piece = (delta.get("content") or delta.get("reasoning_content")
+                             or delta.get("reasoning"))
+                    if piece:
                         text = True
+                        if len(content) < 8000:
+                            content += piece
                         if ttft is None:
                             ttft = time.perf_counter() - t0
                     finish = ch.get("finish_reason") or finish

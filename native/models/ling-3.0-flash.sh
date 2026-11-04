@@ -58,6 +58,11 @@
 #           The profile refuses humming and marlin for that reason.
 #
 # Measured here (2026-11-04, GX10, perf.py: code prompt, greedy, thinking off):
+#   !! NOT VALID: bench/consistency.py on the same setup (SGLang 0.5.23, flashinfer,
+#   FP8 head, MTP off) got "!!!!..." for every answer and no logprobs: the model's
+#   logits were NaN (argmax of NaN is token 0). perf.py did not read the text, so
+#   every number below is the speed of garbage, and the MTP accept length of ~1.05
+#   may be that too. Being traced (2026-11-04); perf.py now flags such answers.
 #   MTP=0, FP8 head      decode 44.5 / 44.7 tok/s (two boots; NVIDIA: 43.9 for
 #                        the cookbook recipe + FP8 head)
 #   MTP=1, FP8 heads     decode 23.6 tok/s, accept length 1.02-1.07
