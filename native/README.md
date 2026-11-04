@@ -788,10 +788,13 @@ unchanged), on inclusionAI's own SGLang branches. Here, on the release:
   whose int4 default moved from SGLang's Marlin pick to triton.
 - No generation_config.json in the repository: the profile's header gives the
   one-line file that makes the card's sampling (0.6 / 0.95 / 20) the default.
+- Attention on flashinfer with 64-token pages (`ATTENTION_BACKEND`,
+  `PAGE_SIZE`), as inclusionAI's notebooks run it: without the flag SGLang
+  0.5.21 picks triton, whose MLA prefill made long prompts crawl.
 Measured here (2026-11-04, GX10): **44.5-44.7 tok/s** single-stream decode
-with `MTP=0` and the FP8 head (NVIDIA: 43.9 for the same recipe). With MTP on
-(triton attention, SGLang's default here): prefill 3019 / 3479 / 1222 / 442
-tok/s at 2K / 8K / 32K / 101K, the long end being attention-bound.
+with `MTP=0` and the FP8 head (NVIDIA: 43.9 for the same recipe); prefill
+**3257 / 3775 / 3791 / 2963 tok/s** at 2K / 8K / 32K / 101K on flashinfer,
+against 3019 / 3479 / 1222 / 442 in the first run (triton, MTP on).
 
 ```bash
 scripts/mem-prep.sh idle && $HF download inclusionAI/Ling-3.0-flash-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-fp4
