@@ -767,12 +767,16 @@ flashinfer_mxfp4`, `EP=1`, `KV_CACHE_DTYPE=fp8_e4m3`; `WEIGHTS=rl` for the
 text MoE (5.1B active; 35 KDA linear-attention layers + 7 gated MLA; thinking,
 tool calls, native 256K context) with its built-in MTP layer as the draft
 (NEXTN, 3 steps / 4 tokens), on stock SGLang 0.5.21, the MXFP4 export
-(65.6 GiB) by default. NVIDIA measured this model on one Spark at 36.1 tok/s
+(65.6 GiB) by default; MTP off by default (below). NVIDIA measured this model on one Spark at 36.1 tok/s
 for the cookbook recipe and 102.9 with Humming MoE kernels, an FP8 lm_head and
 MTP (a repetitive greedy test; on GSM8K 37.8 -> 53.9 tok/s, accuracy
 unchanged), on inclusionAI's own SGLang branches. Here, on the release:
-- MTP as theirs; 0.5.21 does not point the draft at the target checkpoint
-  for this architecture, so the profile passes it.
+- MTP (`MTP=1`) as theirs; 0.5.21 does not point the draft at the target
+  checkpoint for this architecture, so the profile passes it. On stock 0.5.21
+  the drafts are rejected: accept length 1.02-1.12 and decode 19.3-23.6 tok/s,
+  with the FP8 heads and without them (the log showed the draft sharing the
+  target's FP8 head; layer 42 is complete in the checkpoint). Off by default
+  until a release drafts with this model.
 - The FP8 lm_head is this project's `patches/gb10_fp8_side.py` (as in the
   Flash-Next profile), with the draft running the converted head too: the
   draft-sharing trap NVIDIA describes (accept length 1.00) cannot happen,
@@ -784,7 +788,10 @@ unchanged), on inclusionAI's own SGLang branches. Here, on the release:
   whose int4 default moved from SGLang's Marlin pick to triton.
 - No generation_config.json in the repository: the profile's header gives the
   one-line file that makes the card's sampling (0.6 / 0.95 / 20) the default.
-Unmeasured here.
+Measured here (2026-11-04, GX10): **44.5-44.7 tok/s** single-stream decode
+with `MTP=0` and the FP8 head (NVIDIA: 43.9 for the same recipe). With MTP on
+(triton attention, SGLang's default here): prefill 3019 / 3479 / 1222 / 442
+tok/s at 2K / 8K / 32K / 101K, the long end being attention-bound.
 
 ```bash
 scripts/mem-prep.sh idle && $HF download inclusionAI/Ling-3.0-flash-fp4 --local-dir /models/inclusionAI/Ling-3.0-flash-fp4
