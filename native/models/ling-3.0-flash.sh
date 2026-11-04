@@ -57,7 +57,20 @@
 #           gemm1_alpha). flashinfer_mxfp4 (SwigluStep) and triton apply it.
 #           The profile refuses humming and marlin for that reason.
 #
-# Measured here: nothing yet.
+# Measured here (2026-11-04, GX10, perf.py: code prompt, greedy, thinking off):
+#   MTP=0, FP8 head      decode 44.5 / 44.7 tok/s (two boots; NVIDIA: 43.9 for
+#                        the cookbook recipe + FP8 head)
+#   MTP=1, FP8 heads     decode 23.6 tok/s, accept length 1.02-1.07
+#   MTP=1, BF16 heads    decode 19.3 tok/s, accept length 1.02-1.12
+#   So MTP drafts are rejected on stock 0.5.21 whatever the head: the log said
+#   the draft shared the target's FP8 head ("shares the FP8 copy"), the
+#   checkpoint's layer 42 is complete and loads by name, and BF16 heads (the
+#   patch out of the way) changed nothing. NVIDIA's 102.9 tok/s with MTP ran
+#   inclusionAI's SGLang branch. MTP is off by default until a release drafts
+#   with this model; MTP=1 still runs it (and costs ~half the speed).
+#   With MTP=1 (triton attention, the default here): prefill 3019 / 3479 / 1222
+#   / 442 tok/s at 2K / 8K / 32K / 101K; 22.6 / 33.6 / 46.4 / 63.3 tok/s
+#   aggregate at 1 / 2 / 4 / 8 streams.
 SGLANG_VERSION="${SGLANG_VERSION:-0.5.21}"
 SGLANG_INDEX="${SGLANG_INDEX:-}"
 
@@ -87,8 +100,10 @@ MOE_RUNNER_BACKEND="${MOE_RUNNER_BACKEND:-}"
 if [ -z "$MOE_RUNNER_BACKEND" ] && [ "$WEIGHTS" = int4 ]; then MOE_RUNNER_BACKEND=triton; fi
 
 # Speculative decoding with the checkpoint's MTP layer (NEXTN): 1 = on, 0 = off.
-# NVIDIA's and inclusionAI's Spark setting: 3 steps, top-k 1, 4 draft tokens.
-MTP="${MTP:-1}"
+# Off by default: on stock SGLang 0.5.21 the drafts are rejected (accept length
+# ~1.05, decode 19-24 tok/s against 44.5 without; see "Measured here" above).
+# NVIDIA's and inclusionAI's Spark setting, for MTP=1: 3 steps, top-k 1, 4 draft tokens.
+MTP="${MTP:-0}"
 MTP_STEPS="${MTP_STEPS:-3}"
 MTP_DRAFT_TOKENS="${MTP_DRAFT_TOKENS:-4}"
 
