@@ -112,6 +112,25 @@ class LayoutTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "split_ngram_parts"):
                 g.map_table(shards, d, ck.shard_size, ck.shard_size * 4)  # too few slots
 
+    def test_refuses_a_file_that_is_not_safetensors_by_name(self):
+        with tempfile.TemporaryDirectory() as d:
+            Checkpoint(d)
+            bad = os.path.join(d, "model-00009-of-00009.safetensors")
+            with open(bad, "wb") as f:   # e.g. a download cut off, or another format
+                f.write(b"\xff" * 8 + b"not a header" * 10)
+            with self.assertRaises(ValueError) as cm:
+                g.scan_table_dir(d)
+            self.assertIn("model-00009-of-00009.safetensors is not a whole safetensors file", str(cm.exception))
+            with open(bad, "wb") as f:   # a plausible length, but not JSON
+                f.write(struct.pack("<Q", 16) + b"\x00" * 16)
+            with self.assertRaises(ValueError) as cm:
+                g.scan_table_dir(d)
+            self.assertIn("not a JSON object", str(cm.exception))
+            with open(bad, "wb") as f:   # empty
+                pass
+            with self.assertRaises(ValueError):
+                g.scan_table_dir(d)
+
     def test_rejects_unknown_dtype(self):
         with tempfile.TemporaryDirectory() as d:
             write_safetensors(os.path.join(d, "a.safetensors"),
