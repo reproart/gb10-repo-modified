@@ -791,7 +791,10 @@ unchanged), on inclusionAI's own SGLang branches. Here, on the release:
 - Attention on flashinfer with 64-token pages (`ATTENTION_BACKEND`,
   `PAGE_SIZE`), as inclusionAI's notebooks run it: without the flag SGLang
   0.5.21 picks triton, whose MLA prefill made long prompts crawl.
-Measured here (2026-11-04, GX10): **44.5-44.7 tok/s** single-stream decode
+**Not valid yet** (2026-11-04): on the same setup `bench/consistency.py` got
+"!!!!..." for every answer and no logprobs (NaN logits), so the numbers below
+are the speed of garbage; being traced, and `bench/perf.py` now flags such
+answers. Measured here (2026-11-04, GX10): **44.5-44.7 tok/s** single-stream decode
 with `MTP=0` and the FP8 head (NVIDIA: 43.9 for the same recipe); prefill
 **3257 / 3775 / 3791 / 2963 tok/s** at 2K / 8K / 32K / 101K on flashinfer,
 against 3019 / 3479 / 1222 / 442 in the first run (triton, MTP on).

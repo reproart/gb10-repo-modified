@@ -72,7 +72,7 @@ import time
 import uuid
 
 import common
-from common import (CODE_PROMPT, GpuWatch, MemWatch, PeakWatch, cache_hit_significant, calibrate, chat,
+from common import (CODE_PROMPT, GpuWatch, MemWatch, PeakWatch, broken, cache_hit_significant, calibrate, chat,
                     decode_rate, delta, metrics, ple_summary, restarted, sidecar, spec_summary,
                     torch_summary, unique_prompt, vm_summary, vmstat)
 
@@ -141,6 +141,10 @@ def single_stream(n=5, max_tokens=700):
         print(f"   {r['completion_tokens']:>4} tok  decode {_fmt(decode_rate(r), '.1f')} tok/s  "
               f"e2e {r['completion_tokens'] / r['e2e']:.1f} tok/s  ttft {_fmt(r['ttft'], '.2f', 's')}"
               f"{'  ' + spec if spec else ''}")
+    bad = [broken(r["content"]) for r, _ in rows]
+    if any(bad):
+        print(f"   !! {sum(map(bool, bad))} of {len(rows)} answers look broken: {next(b for b in bad if b)}"
+              " — these speeds are of garbage; check the server before anything else")
     short = [r for r, _ in rows if r["completion_tokens"] < max_tokens * 0.5]
     if short:
         print(f"   note: {len(short)} run(s) stopped early (<50% of max_tokens) — "
@@ -228,6 +232,9 @@ def prefill(targets):
               f"{'   ' + ple if ple else ''}{'   ' + str(gpu) if str(gpu) else ''}")
         if vm:
             print(f"   {'':>7} {vm}")
+        bad = broken(r["content"], expect="OK")
+        if bad:
+            print(f"   {'':>7} !! the answer looks wrong ({bad}): check the server")
         if str(mem):
             ts = torch_summary(s0, s_prev)
             print(f"   {'':>7} {mem}{'; ' + ts if ts else ''}")
