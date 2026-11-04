@@ -100,12 +100,33 @@ class ShardInfo:
     dtype: str  # safetensors dtype string
 
 
+SAFETENSORS_MAX_HEADER = 100 * 2**20  # the format's own limit
+
+
 def read_safetensors_header(path: str) -> tuple[dict, int]:
-    """(tensor entries, absolute offset where tensor data starts)."""
+    """(tensor entries, absolute offset where tensor data starts).
+
+    A file that is not a whole safetensors file (an interrupted download, a
+    partial copy, another format under that name) is refused by name before its
+    first 8 bytes are taken for a header length: read as one, they asked for
+    terabytes and the server died of a bare MemoryError (2026-11-04)."""
+    size = os.path.getsize(path)
     with open(path, "rb") as f:
-        (n,) = struct.unpack("<Q", f.read(8))
-        header = json.loads(f.read(n))
-    header.pop("__metadata__", None)
+        head = f.read(8)
+        n = struct.unpack("<Q", head)[0] if len(head) == 8 else -1
+        if not 2 <= n <= min(size - 8, SAFETENSORS_MAX_HEADER):
+            raise ValueError(
+                f"{path} is not a whole safetensors file ({size} bytes; its first 8 bytes "
+                f"give a header of {n} bytes): an interrupted download or copy? "
+                "Download it again (hf download ... --local-dir re-checks every file)."
+            )
+        raw = f.read(n)
+    try:
+        header = json.loads(raw)
+        header.pop("__metadata__", None)  # AttributeError: not a JSON object
+    except (ValueError, AttributeError) as e:
+        raise ValueError(f"{path}: the safetensors header is not a JSON object ({e}): a "
+                         "damaged file? Download it again.") from None
     return header, 8 + n
 
 
