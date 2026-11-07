@@ -1383,6 +1383,28 @@ the page cache or from storage, and SGLang's resident-set trimmer unmaps the
 whole table every 30 s once it holds over 8 GiB. perf.py's vm line now also
 prints what was read from disk and the major faults, to tell the two apart.
 
+**Three more runs with those counters** (same build, server restarted):
+
+| Prompt | Run 1: tok/s, read, major faults | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| 2K | 1774, 0.08 GiB, 309 | 1595, 0.06 GiB, 8.6K | 1259, 0.09 GiB, 15K |
+| 8K | 1910, 0.27 GiB, 1.1K | 1703, 0.23 GiB, 28K | 1161, 0.51 GiB, 80K |
+| 32K | 1974, 0.86 GiB, 7.6K | 1619, 1.00 GiB, 148K | 1339, 1.36 GiB, 193K |
+| 101K | 1848, 2.24 GiB, 72K | 1337, 3.67 GiB, 597K | 1532, 2.96 GiB, 378K |
+
+Decode 69.8 / 69.0 / 68.3 tok/s, 211-241 at 8 streams. The prefill follows
+the major faults, not the bytes read: about the same data came from storage
+in every run, but in the fast one the readahead hints had brought it in
+before the gather touched it, in the slow ones the gather faulted on it and
+waited (~35 us a fault: run 2's 101K prompt took 21 s longer with 525K more
+faults). The hints were one posix_fadvise per page (~100K a 4096-token
+chunk) from one background Python thread, which needs the GIL between two
+calls while the scheduler's thread holds it launching the chunk's kernels;
+when they went out depended on that thread, hence runs that differ by a
+third. patches/gb10_ple_mmap.py now sends them in batches, process_madvise
+with MADV_WILLNEED over up to 1024 merged page ranges a call (~100 calls a
+chunk); checked on a disk file that it reads exactly the pages asked for.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).

@@ -75,7 +75,11 @@ unset _dir _name
 #         cookbook deletes it before each start. For comparison only.
 # Both read rows the same way afterwards (GPU through the host page tables,
 # page-cache hints before prefill, resident set capped at
-# SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB, default 8).
+# SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB, default 8). In mmap mode the hints go
+# out in batches (process_madvise, boot log "page-cache hints ... batched"):
+# one posix_fadvise a page, from a thread that needs the GIL between two of
+# them, came too late in some runs and the prefill waited on storage itself
+# (results/RESULTS.md, 2026-11-07). GB10_PLE_PREFETCH=fadvise compares.
 PLE_TABLE="${PLE_TABLE:-mmap}"
 # mmap: the directory holding the table shards. Any directory with the same
 # ...ngram_embedding.shard_<k>.weight tensors works (e.g. the FP8 table shards

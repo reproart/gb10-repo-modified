@@ -338,14 +338,50 @@ def pages_for_rows(table: MappedTable, ids: np.ndarray, page: int) -> dict[int, 
     return out
 
 
+def page_ranges(table: MappedTable, ids: np.ndarray, page: int) -> np.ndarray:
+    """[n, 2] uint64 (address, length) of the pages the rows `ids` live on, in
+    the mapping, adjacent pages merged: what process_madvise takes."""
+    ids = np.asarray(ids, dtype=np.int64)
+    k = ids // table.shard_size
+    ok = k < table.num_shards
+    k, ids = k[ok], ids[ok]
+    local = ids - k * table.shard_size
+    ok = local < table.rows[k]
+    k, local = k[ok], local[ok]
+    start = table.bases[k] + local * table.row_bytes
+    pages = np.unique(np.concatenate([start // page, (start + table.row_bytes - 1) // page]))
+    if pages.size == 0:
+        return np.zeros((0, 2), dtype=np.uint64)
+    breaks = np.flatnonzero(np.diff(pages) != 1) + 1
+    first = pages[np.concatenate([[0], breaks])]
+    last = pages[np.concatenate([breaks - 1, [pages.size - 1]])]
+    return np.stack([first * page, (last - first + 1) * page], axis=1).astype(np.uint64)
+
+
+_SYS_PIDFD_OPEN = 434        # the same number on every architecture (new syscalls)
+_SYS_PROCESS_MADVISE = 440
+_MADV_WILLNEED = 3
+_IOV_MAX = 1024              # UIO_MAXIOV: ranges per process_madvise call
+
+
 class Prefetcher:
-    """posix_fadvise(WILLNEED) the pages a prefill-sized gather will fault.
+    """Readahead hints for the pages a prefill-sized gather will fault.
 
     The same idea as SGLang's PleFilePrefetcher (which only knows its single
     table file): a cold prefill chunk faults tens of thousands of pages one at
     a time from inside the kernel; hinting them first lets the block layer
-    serve them concurrently. One background thread; decode-sized gathers and
-    CUDA-graph capture are skipped.
+    serve them concurrently. Decode-sized gathers and CUDA-graph capture are
+    skipped.
+
+    The hints go out from a background thread in batches: process_madvise
+    (Linux 5.10+) with MADV_WILLNEED on up to 1024 page ranges of the mapping
+    a call, ~100 calls for a 4096-token chunk. One posix_fadvise per page (the
+    fallback, and what SGLang's prefetcher does) is ~100K calls a chunk, and the
+    thread needs the GIL between two of them while the scheduler's thread holds
+    it launching the prefill's kernels: on GB10 the hints then came too late in
+    some runs and the gather took the faults itself, one wait for storage
+    each (perf.py: the same ~3 GiB read for a 101K prompt as 72K major faults
+    at 1848 tok/s, or as 597K at 1337 tok/s).
     """
 
     def __init__(self, table: MappedTable, min_rows: int = PREFETCH_MIN_ROWS) -> None:
@@ -354,8 +390,43 @@ class Prefetcher:
         self._page = os.sysconf("SC_PAGE_SIZE")
         self._min_rows = min_rows
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ple-prefetch")
+        self._libc = _libc()
+        self._libc.syscall.restype = ctypes.c_long
+        self._pidfd = None
+        if os.environ.get("GB10_PLE_PREFETCH", "batched") == "batched":
+            fd = self._libc.syscall(ctypes.c_long(_SYS_PIDFD_OPEN), ctypes.c_long(os.getpid()),
+                                    ctypes.c_long(0))
+            if fd >= 0:
+                self._pidfd = int(fd)
+            else:
+                logger.info("PLE table: pidfd_open failed (errno %d); page-cache hints one "
+                            "posix_fadvise a page", ctypes.get_errno())
+        self.calls = 0
+
+    @property
+    def batched(self) -> bool:
+        return self._pidfd is not None
+
+    def _advise_batched(self, ids: np.ndarray) -> bool:
+        ranges = page_ranges(self._table, ids, self._page)
+        for i in range(0, len(ranges), _IOV_MAX):
+            iov = np.ascontiguousarray(ranges[i:i + _IOV_MAX])
+            got = self._libc.syscall(
+                ctypes.c_long(_SYS_PROCESS_MADVISE), ctypes.c_long(self._pidfd),
+                ctypes.c_void_p(iov.ctypes.data), ctypes.c_size_t(len(iov)),
+                ctypes.c_long(_MADV_WILLNEED), ctypes.c_long(0))
+            self.calls += 1
+            if got < 0:
+                err = ctypes.get_errno()
+                logger.warning("PLE table: process_madvise(MADV_WILLNEED) failed (errno %d); "
+                               "page-cache hints one posix_fadvise a page from now on", err)
+                self._pidfd = None
+                return False
+        return True
 
     def _advise(self, ids: np.ndarray) -> None:
+        if self._pidfd is not None and self._advise_batched(ids):
+            return
         for f, pages in pages_for_rows(self._table, ids, self._page).items():
             fd = self._fds[f]
             for p in pages.tolist():
@@ -363,6 +434,7 @@ class Prefetcher:
                     os.posix_fadvise(fd, p * self._page, self._page, os.POSIX_FADV_WILLNEED)
                 except OSError:
                     return
+                self.calls += 1
 
     def enqueue(self, flat_ids) -> bool:
         if flat_ids.numel() < self._min_rows:
@@ -555,6 +627,9 @@ def _attach_table(torch, emb, config, layer_id) -> None:
 
     if envs.SGLANG_QWEN4_PLE_FILE_PREFETCH.get():
         table._prefetcher = Prefetcher(table)
+        logger.info("PLE table: page-cache hints for gathers of >= %d rows, %s", PREFETCH_MIN_ROWS,
+                    f"batched (process_madvise, up to {_IOV_MAX} ranges a call)"
+                    if table._prefetcher.batched else "one posix_fadvise a page")
     budget_gb = float(envs.SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB.get())
     if budget_gb > 0:
         from sglang.srt.models.qwen4_exp_ple_table import PleFileRssTrimmer
