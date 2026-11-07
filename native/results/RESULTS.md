@@ -1456,6 +1456,26 @@ before the gather is launched, in the scheduler's thread: batched, that is
 (estimated ~0.1 s a chunk; ~0.75 s a chunk was lost to the faults in the
 slow runs).
 
+**Hints before the gather: three runs** (server restarted, no drop_caches;
+tok/s, major faults, kswapd reclaim, pages read again after reclaim):
+
+| Prompt | Run 1 (free 7.3 -> 3.0 GiB) | Run 2 (free 3.5 -> 2.6) | Run 3 (free 2.9 -> 2.5) |
+|---|---:|---:|---:|
+| 2K | 1805, 269, 0, 7K | 1883, 2.4K, 0, 2K | 1345, 17K, 0.14 GiB, 9K |
+| 8K | 1910, 720, 0, 25K | 1919, 8.7K, 0, 9K | 1349, 85K, 0.55 GiB, 35K |
+| 32K | 1971, 7.3K, 0, 77K | 1847, 59K, 0.44 GiB, 38K | 1239, 361K, 2.29 GiB, 162K |
+| 101K | 1774, 50K, 0, 159K | 1462, 394K, 2.62 GiB, 192K | 1392, 549K, 3.81 GiB, 325K |
+
+The slowdown starts exactly where kswapd starts reclaiming (free memory at
+the watermarks, ~2.5-3 GiB here), and with it pages are read twice. The
+hints before the gather did not change the slow case: hinted pages are in
+the page cache when the gather starts, and still faulted on. The likely
+cause: the multi-gen LRU puts a page brought in by readahead and not yet
+accessed into its oldest or second-oldest generation (lru_gen_add_folio), the
+first pages kswapd evicts, so under reclaim a chunk's hinted pages go before
+the gather reads them. (The earlier test with the multi-gen LRU off ran with
+the hints still beside the gather, so it did not separate the two causes.)
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).
