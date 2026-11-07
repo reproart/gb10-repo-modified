@@ -1405,6 +1405,31 @@ third. patches/gb10_ple_mmap.py now sends them in batches, process_madvise
 with MADV_WILLNEED over up to 1024 merged page ranges a call (~100 calls a
 chunk); checked on a disk file that it reads exactly the pages asked for.
 
+**With the batched hints: the same pattern, so that was not the cause.**
+Three runs again (MTP_EXPERTS=fp4, W8A8 prefill, batched hints):
+
+| Prompt | Run 1 (free 10.3 GiB at its start) | Run 2 (free 4.0) | Run 3 (free 3.0) |
+|---|---:|---:|---:|
+| 2K | 1701, 0.07 GiB, 274 | 1721, 0.04 GiB, 3.5K | 1272, 0.11 GiB, 19K |
+| 8K | 1959, 0.26 GiB, 1.1K | 1747, 0.16 GiB, 11K | 1110, 0.49 GiB, 96K |
+| 32K | 1952, 0.89 GiB, 6.8K | 1699, 0.70 GiB, 66K | 1357, 1.70 GiB, 312K |
+| 101K | 1807, 2.18 GiB, 52K | 1520, 2.42 GiB, 310K | 1377, 4.03 GiB, 609K |
+
+(tok/s, read from disk, major faults.) Decode 69.7 / 68.0 / 68.7 tok/s,
+237-246 at 8 streams. What tracks the slowdown in all nine runs is the free
+memory (MemFree, not MemAvailable, which stayed at ~14 GiB) at a run's start:
+~9-10 GiB after a server start, 3-4 GiB two runs later, the page cache having
+grown into it. And the slow runs read more (4.03 against 2.18 GiB for the
+101K prompt): pages read twice. The likely mechanism: once free memory sits
+near the watermarks (vm.min_free_kbytes 1 GiB, watermark_scale_factor 50 from
+host-tuning.sh), kswapd reclaims page cache all the time, and readahead pages
+that the gather has not touched yet are the first it drops (the multi-gen LRU
+adds unaccessed clean pages to the oldest generation), so the gather faults on
+them anyway. perf.py now prints MemFree's low point, the kswapd reclaim and
+the refaults (workingset_refault_file: pages read again soon after being
+dropped) to check it. The batched hints stay (100x fewer system calls), but
+did not change this.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).

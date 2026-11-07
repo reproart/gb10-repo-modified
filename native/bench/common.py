@@ -511,7 +511,9 @@ def vmstat():
     """The kernel's memory-pressure counters on this machine (/proc/vmstat):
     direct compaction stalls, pages scanned and allocation stalls in direct
     reclaim, pages swapped out; and what was read from storage (pgpgin, KiB)
-    and the page faults that had to wait for it (pgmajfault): on Qwen3.8-
+    and the page faults that had to wait for it (pgmajfault), the pages the
+    background reclaim (kswapd) freed and the page-cache pages read again
+    soon after reclaim had dropped them (workingset_refault_file): on Qwen3.8-
     Flash-Next the n-gram table is read from the checkpoint's files as the
     GPU touches its rows, so a prefill's speed follows how much of it came
     from the disk rather than the page cache. {} when the server is not local (the same
@@ -527,7 +529,7 @@ def vmstat():
     except OSError:
         return {}
     out = {"compact_stall": 0, "direct_scan": 0, "alloc_stall": 0, "swap_out": 0,
-           "disk_in_kb": 0, "major_faults": 0}
+           "disk_in_kb": 0, "major_faults": 0, "kswapd_steal": 0, "refault": 0}
     for line in text.splitlines():
         key, _, val = line.partition(" ")
         if not val.strip().isdigit():
@@ -544,6 +546,10 @@ def vmstat():
             out["disk_in_kb"] = int(val)
         elif key == "pgmajfault":
             out["major_faults"] = int(val)
+        elif key.startswith("pgsteal_kswapd"):
+            out["kswapd_steal"] += int(val)
+        elif key in ("workingset_refault_file", "workingset_refault"):
+            out["refault"] = int(val)
     return out
 
 
@@ -623,8 +629,9 @@ def meminfo():
         return {}
     itemized = sum(v[k] for k in ("MemFree", "Buffers", "Cached", "SwapCached", "AnonPages", "Slab",
                                   "PageTables", "KernelStack"))
-    return {"avail": v["MemAvailable"], "cache": v["Cached"], "anon": v["AnonPages"],
-            "swap": v["SwapTotal"] - v["SwapFree"], "driver": max(0, v["MemTotal"] - itemized)}
+    return {"avail": v["MemAvailable"], "free": v["MemFree"], "cache": v["Cached"],
+            "anon": v["AnonPages"], "swap": v["SwapTotal"] - v["SwapFree"],
+            "driver": max(0, v["MemTotal"] - itemized)}
 
 
 def psi_memory():
@@ -648,6 +655,7 @@ class MemWatch:
 
     def __init__(self, every=0.2):
         self.every, self.start, self.low, self.end, self.psi = every, {}, {}, {}, None
+        self.low_free = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -655,6 +663,8 @@ class MemWatch:
         m = meminfo()
         if m and (not self.low or m["avail"] < self.low["avail"]):
             self.low = m
+        if m and (self.low_free is None or m["free"] < self.low_free):
+            self.low_free = m["free"]
         return m
 
     def _run(self):
@@ -686,7 +696,8 @@ class MemWatch:
         def d(k):
             return f"{(lo[k] - a[k]) / g:+.1f}"
         s = (f"mem: avail {a['avail'] / g:.1f} -> low {lo['avail'] / g:.1f} GiB (there: driver {d('driver')}, "
-             f"page cache {d('cache')}, anon {d('anon')} GiB); swap {(self.end['swap'] - a['swap']) / g:+.2f} GiB")
+             f"page cache {d('cache')}, anon {d('anon')} GiB); free {a['free'] / g:.1f} -> low "
+             f"{self.low_free / g:.1f} GiB; swap {(self.end['swap'] - a['swap']) / g:+.2f} GiB")
         if self.psi:
             s += f"; stalled on memory {self.psi[1] / 1e6:.1f} s all tasks, {self.psi[0] / 1e6:.1f} s some"
         if lo["avail"] < 1.5 * g:
@@ -706,7 +717,9 @@ def vm_summary(v0, v1):
     disk = d.get("disk_in_kb", 0) / 2**20
     return (f"vm: {n(d['compact_stall'])} compaction stalls, {n(d['alloc_stall'])} reclaim stalls"
             f" ({n(d['direct_scan'])} pages scanned), {n(d['swap_out'])} swapped out;"
-            f" read from disk {disk:.2f} GiB, {n(d.get('major_faults', 0))} major faults")
+            f" read from disk {disk:.2f} GiB, {n(d.get('major_faults', 0))} major faults;"
+            f" kswapd freed {d.get('kswapd_steal', 0) * os.sysconf('SC_PAGE_SIZE') / 2**30:.2f} GiB,"
+            f" {n(d.get('refault', 0))} pages read again after reclaim")
 
 
 def gpu_sample():
