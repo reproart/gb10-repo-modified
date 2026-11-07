@@ -1499,6 +1499,17 @@ cgroup's memory.stat, and the service unit of scripts/install-service.sh
 sets MemoryMax=110G. perf.py now prints the server's cgroup, its limits, use
 and what it reclaimed per prefill prompt.
 
+**No cgroup limit either**: the server ran in the login session's scope
+(`/user.slice/user-1000.slice/session-2.scope`, memory.max and memory.high
+"max") and reclaimed nothing itself, while 101K prompts again went to 1629 /
+1563 tok/s with 185K / 221K major faults. (The "read again after reclaim"
+counter counts any page evicted at some earlier time, e.g. while the weights
+loaded, so it says nothing about now; it misled the previous two notes.)
+What stays is the gather taking storage faults itself on rows the hints
+were sent for. Rather than a sixth guess at why, `PLE_GATHER=cpu` reads
+prefill chunks' rows on CPU threads (patches/gb10_ple_mmap.py, CpuGather),
+where faults are served in parallel; to be measured.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).
