@@ -213,6 +213,58 @@ class PrefetchTest(unittest.TestCase):
             self.assertEqual({f: set(p.tolist()) for f, p in got.items()}, want)
 
 
+class BatchedPrefetchTest(unittest.TestCase):
+    def table(self, d):
+        ck = Checkpoint(d, vocab=5000, parts=9, dim=160, drop=4)
+        return ck, g.map_table(g.scan_table_dir(d)[1], d, ck.shard_size, ck.vocab)
+
+    def test_ranges_cover_exactly_the_rows_pages(self):
+        with tempfile.TemporaryDirectory() as d:
+            ck, t = self.table(d)
+            page = 4096
+            ids = np.array(random.Random(2).sample(range(ck.vocab + 50), 900), dtype=np.int64)
+            want = set()
+            for r in ids.tolist():
+                a = t.row_address(r)
+                if a:
+                    want.update({a // page, (a + t.row_bytes - 1) // page})
+            ranges = g.page_ranges(t, ids, page)
+            got = set()
+            for addr, length in ranges.tolist():
+                self.assertEqual((addr % page, length % page), (0, 0))
+                got.update(range(addr // page, (addr + length) // page))
+            self.assertEqual(got, want)
+            starts = ranges[:, 0] // page
+            ends = starts + ranges[:, 1] // page
+            self.assertTrue(bool((starts[1:] > ends[:-1]).all()))      # merged, sorted, disjoint
+            self.assertEqual(g.page_ranges(t, np.array([ck.vocab + 10]), page).shape, (0, 2))
+
+    def test_process_madvise_on_this_kernel_and_the_fallbacks(self):
+        with tempfile.TemporaryDirectory() as d:
+            ck, t = self.table(d)
+            ids = np.arange(0, ck.vocab, 3, dtype=np.int64)
+            n_ranges = len(g.page_ranges(t, ids, os.sysconf("SC_PAGE_SIZE")))
+            p = g.Prefetcher(t, min_rows=1)
+            if not p.batched:
+                self.skipTest("no pidfd_open here (kernel < 5.3 or seccomp)")
+            p._advise(ids)
+            if not p.batched:
+                self.skipTest("process_madvise(MADV_WILLNEED) refused here (kernel < 5.10?)")
+            self.assertEqual(p.calls, -(-n_ranges // g._IOV_MAX))
+            # a refused call (a bad pidfd here) falls back to one fadvise a page, for good
+            p._pidfd, p.calls = 2**20, 0
+            with self.assertLogs("sglang.srt.models.qwen4_exp.gb10_ple_mmap", "WARNING"):
+                p._advise(ids)
+            self.assertFalse(p.batched)
+            pages = sum(len(v) for v in g.pages_for_rows(t, ids, p._page).values())
+            self.assertEqual(p.calls, 1 + pages)
+            os.environ["GB10_PLE_PREFETCH"] = "fadvise"
+            try:
+                self.assertFalse(g.Prefetcher(t, min_rows=1).batched)
+            finally:
+                del os.environ["GB10_PLE_PREFETCH"]
+
+
 class HookTest(unittest.TestCase):
     def test_hook_runs_after_import_and_sources_stay_readable(self):
         import importlib
