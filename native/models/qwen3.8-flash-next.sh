@@ -125,8 +125,10 @@ DRAFT_VOCAB="${DRAFT_VOCAB-$ROOT/models/vocab/qwen3.8-flash-next-draft-vocab-655
 #         a call and ~3.6 GiB freed. patches/gb10_mtp_fp4.py converts on torch
 #         if flashinfer's quantizer does not build for GB10 (boot log line
 #         "GB10_MTP_FP4: ..."). The draft only proposes tokens: acceptance
-#         can move, an answer cannot. Not measured yet.
-MTP_EXPERTS="${MTP_EXPERTS:-bf16}"
+#         can move, an answer cannot.
+# Measured (results/RESULTS.md): decode 69.3-69.9 tok/s against 66.7-67.5,
+# accept_len unchanged (3.6-3.85), 224-234 tok/s at 8 streams. The default.
+MTP_EXPERTS="${MTP_EXPERTS:-fp4}"
 
 # BF16 GEMM library for the dense layers left in BF16 (attention, GDN and
 # shared-expert projections). SGLang's own BF16 backends are SM90/SM100 only;

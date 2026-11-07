@@ -662,7 +662,8 @@ thinking and 99.4% with medium thinking; +67% over the cookbook's cell.
 **Next steps (2026-11-07, not measured yet).** A decode profile on SGLang
 0.5.21 (~54 ms a step) leaves the NVFP4 MoE (~17 ms) and the FP8 Marlin
 layers (~19 ms) at the memory's bandwidth; what is left:
-- `MTP_EXPERTS=fp4` (off by default until measured): the MTP draft's 512
+- `MTP_EXPERTS=fp4` (the default since: decode 69.3-69.9 tok/s against
+  66.7-67.5, accept_len unchanged): the MTP draft's 512
   BF16 experts (~2.3 ms a step, 5 GiB) converted to NVFP4 at load by
   SGLang itself (`--speculative-draft-model-quantization modelopt_fp4`) and
   run as W4A16 on its Marlin MoE (`--speculative-moe-runner-backend marlin`);

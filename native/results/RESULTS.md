@@ -1362,6 +1362,27 @@ run's 44 passed in the second, the second's 92 in the first: the
 +-1-2-problem noise of greedy runs here (the HC kernel's atomic adds alone
 make them differ). `FP8_SIDE_PREFILL=w8a8` is now the profile default.
 
+**`MTP_EXPERTS=fp4`** (the MTP draft's 512 BF16 experts converted to NVFP4 at
+load by SGLang, run as W4A16 on its Marlin MoE; with the W8A8 prefill),
+three `perf.py` runs back to back:
+
+| | w8a8 prefill, BF16 draft experts | + `MTP_EXPERTS=fp4`, runs 1 / 2 / 3 |
+|---|---:|---:|
+| Decode, single stream (median of 5) | 67.5 | **69.3 / 69.9 / 69.8** |
+| accept_len | 3.48-3.80 | 3.60-3.85 |
+| Aggregate at 8 streams | 224.9 | 229.8 / 223.9 / 234.2 |
+| TTFT, short prompt | 128 ms | 126 ms |
+| Prefill 2K / 8K / 32K / 101K | 1696 / 1907 / 1965 / 1853 | 1656 / 1756 / 1841 / 1748; 1872 / 1951 / 1882 / 1644; 1185 / 1142 / 1513 / 1209 |
+
+Decode +3.5% with acceptance unchanged, as the profile predicted (~2.3 ms of
+a ~54 ms step in BF16 experts); `MTP_EXPERTS=fp4` is now the default. The
+draft cannot touch prefill; the prefill spread between the three runs (up to
+-35% in the third) is the n-gram table: perf.py's prompts are unique random
+words, so nearly every token reads table rows no earlier prompt read, from
+the page cache or from storage, and SGLang's resident-set trimmer unmaps the
+whole table every 30 s once it holds over 8 GiB. perf.py's vm line now also
+prints what was read from disk and the major faults, to tell the two apart.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).

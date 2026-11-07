@@ -510,7 +510,11 @@ def gpu_watch_enabled():
 def vmstat():
     """The kernel's memory-pressure counters on this machine (/proc/vmstat):
     direct compaction stalls, pages scanned and allocation stalls in direct
-    reclaim, pages swapped out. {} when the server is not local (the same
+    reclaim, pages swapped out; and what was read from storage (pgpgin, KiB)
+    and the page faults that had to wait for it (pgmajfault): on Qwen3.8-
+    Flash-Next the n-gram table is read from the checkpoint's files as the
+    GPU touches its rows, so a prefill's speed follows how much of it came
+    from the disk rather than the page cache. {} when the server is not local (the same
     rule and GB10_VMSTAT=0/1 override as GB10_GPU_WATCH) or on another OS.
     The stalls land on the allocating thread, i.e. a prefill chunk."""
     flag = os.environ.get("GB10_VMSTAT")
@@ -522,7 +526,8 @@ def vmstat():
             text = f.read()
     except OSError:
         return {}
-    out = {"compact_stall": 0, "direct_scan": 0, "alloc_stall": 0, "swap_out": 0}
+    out = {"compact_stall": 0, "direct_scan": 0, "alloc_stall": 0, "swap_out": 0,
+           "disk_in_kb": 0, "major_faults": 0}
     for line in text.splitlines():
         key, _, val = line.partition(" ")
         if not val.strip().isdigit():
@@ -535,6 +540,10 @@ def vmstat():
             out["alloc_stall"] += int(val)
         elif key == "pswpout":
             out["swap_out"] = int(val)
+        elif key == "pgpgin":
+            out["disk_in_kb"] = int(val)
+        elif key == "pgmajfault":
+            out["major_faults"] = int(val)
     return out
 
 
@@ -694,8 +703,10 @@ def vm_summary(v0, v1):
 
     def n(x):
         return f"{x / 1e6:.1f}M" if x >= 1e6 else f"{x / 1e3:.0f}K" if x >= 1e4 else str(x)
+    disk = d.get("disk_in_kb", 0) / 2**20
     return (f"vm: {n(d['compact_stall'])} compaction stalls, {n(d['alloc_stall'])} reclaim stalls"
-            f" ({n(d['direct_scan'])} pages scanned), {n(d['swap_out'])} swapped out")
+            f" ({n(d['direct_scan'])} pages scanned), {n(d['swap_out'])} swapped out;"
+            f" read from disk {disk:.2f} GiB, {n(d.get('major_faults', 0))} major faults")
 
 
 def gpu_sample():
