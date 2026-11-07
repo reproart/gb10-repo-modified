@@ -18,8 +18,10 @@ server stopped (it needs ~3 GB and a few minutes):
    Marlin GEMM they run on now (weight-only, made for few rows) against cuBLAS on
    BF16 weights (stock SGLang), dequantize + cuBLAS, and FP8 W8A8 with per-token
    activation scales (SGLang's fp8_scaled_mm, its Triton scaled_mm,
-   torch._scaled_mm), and what each would cost a 4096-token chunk over the
-   model's 36 GDN + 12 attention + 48 shared-expert layers.
+   torch._scaled_mm), the server's FP8_SIDE_PREFILL=w8a8 path (the plain weight
+   restored from Marlin's layout each call, then fp8_scaled_mm: "marlin->w8a8"),
+   and what each would cost a 4096-token chunk over the model's 36 GDN +
+   12 attention + 48 shared-expert layers.
 Exit code: the number of FAIL lines. BENCH_DRY=1: sections 1-3 on the CPU with
 Triton's interpreter and tiny sizes (a check of this script; times mean nothing).
 BENCH_SECTIONS=1,3: only those sections.
@@ -160,13 +162,15 @@ if 1 in SECTIONS:
         _, _, wd, sd, wu, su = copies[0]
         out = hck.fused_hc_mix_fp8(x, wd, sd, wu, su, HC, HS, num_ctas=SMS)
         err = rel(out, mix_fp32(x, wd, sd, wu, su))
+        # not a check: the kernel (like SGLang's BF16 one) sums its split-K
+        # partials with atomic adds, so their order, and the last bits, vary
         same = torch.equal(out, hck.fused_hc_mix_fp8(x, wd, sd, wu, su, HC, HS, num_ctas=SMS))
-        ok = err < 1e-2 and same
+        ok = err < 1e-2
         fails += not ok
         t8 = graph_us(lambda i: hck.fused_hc_mix_fp8(x, *copies[i][2:], HC, HS, num_ctas=SMS),
                       len(copies))
         line = (f"  {'PASS' if ok else 'FAIL'} {rows:3d} rows: FP8 {t8:6.1f} us "
-                f"({fp8_bytes / t8 / 1e3:4.0f} GB/s), rel {err:.1e}, same bits: {same}")
+                f"({fp8_bytes / t8 / 1e3:4.0f} GB/s), rel {err:.1e}, same bits twice: {same}")
         if stock is not None and rows <= 16:
             n_b = max(4, len(copies) // 2)
             tb = graph_us(lambda i: stock(x, copies[i][0], copies[i][1], HC, HS), n_b)
@@ -292,12 +296,18 @@ if 4 in SECTIONS and not DRY:
                                 out_dtype=x.dtype)
     w8a8["torch"] = _torch_scaled
 
+    import gb10_fp8_prefill as pre
+
+    unpack_ok = pre.setup(prepare_fp8_layer_for_marlin, dev)
+    print(f"  gb10_fp8_prefill.setup: {'ready' if unpack_ok else 'disabled: ' + pre._state['why']}")
+    fails += not unpack_ok
+
     # (name, N, K, layers in the model)
     shapes = [("GDN in_proj_qkvz", 16384, 2560, 36), ("GDN in_proj_ba (padded)", 128, 2560, 36),
               ("GDN out_proj", 2560, 6144, 36), ("attn qkv_proj", 13312, 2560, 12),
               ("attn o_proj", 2560, 6144, 12), ("shared gate_up", 1280, 2560, 48),
               ("shared down", 2560, 640, 48)]
-    names = ["marlin", "bf16", "dq+bf16"] + [f"w8a8-{k}" for k in w8a8]
+    names = ["marlin", "bf16", "dq+bf16"] + [f"w8a8-{k}" for k in w8a8] + ["marlin->w8a8"]
     chunk = {n: 0.0 for n in names}
     for label, n, k, count in shapes:
         w = (torch.randn(n, k, device=dev) * 0.02).to(torch.bfloat16)
@@ -313,7 +323,19 @@ if 4 in SECTIONS and not DRY:
         }
         for key, fn in w8a8.items():
             fns[f"w8a8-{key}"] = functools.partial(lambda f, x: f(x, q, s), fn)
-        print(f"  {label} [{n} x {k}] x{count}:")
+        note = ""
+        if unpack_ok:
+            # the server's path (FP8_SIDE_PREFILL=w8a8): restore the plain weight from
+            # Marlin's layout, then fp8_scaled_mm (m is not marked, so "marlin" stays Marlin)
+            m._gb10_wscale_col = m._gb10_wscale.float().view(-1, 1).contiguous()
+            plain = pre.unpack(m.weight, m._gb10_marlin_n, k, pre._state["inv"])
+            exact = torch.equal(plain.view(torch.uint8), q.view(torch.uint8))
+            fails += not exact
+            t_un = eager_us(lambda: pre.unpack(m.weight, m._gb10_marlin_n, k, pre._state["inv"]))
+            note = (f" (weight restored from Marlin's layout {'bit for bit' if exact else 'WRONG: FAIL'},"
+                    f" {t_un:.0f} us a call)")
+            fns["marlin->w8a8"] = lambda x: pre.apply_w8a8(m, x)
+        print(f"  {label} [{n} x {k}] x{count}:{note}")
         for rows in (4, 512, 2048, 4096, 8192):
             x = torch.randn(rows, k, device=dev).to(torch.bfloat16)
             ref = x.float() @ wdq.float().T
@@ -340,7 +362,7 @@ if 4 in SECTIONS and not DRY:
         del m, w, q, wdq
         torch.cuda.empty_cache()
     print("  a 4096-token chunk, all side layers: "
-          + ", ".join(f"{k} {v / 1e3:.0f} ms" for k, v in chunk.items()))
+          + ", ".join(f"{k} {v / 1e3:.0f} ms" for k, v in chunk.items() if v != 0))
 
 print("\nALL OK" if not fails else f"\n{fails} FAILED")
 sys.exit(fails)

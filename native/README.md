@@ -668,17 +668,21 @@ layers (~19 ms) at the memory's bandwidth; what is left:
   run as W4A16 on its Marlin MoE (`--speculative-moe-runner-backend marlin`);
   `patches/gb10_mtp_fp4.py` converts on torch if flashinfer's quantizer
   does not build for GB10. Only acceptance can move.
-- The FP8 hyper-connection mix kernel reads its 6.7 MB at ~150 GB/s
-  (43.6 us, ~106 calls a step); its tiles are now parameters, and
-  `patches/bench_sglang_gb10_gpu.py` sweeps them.
+- The FP8 hyper-connection mix kernel: 36.7 us at 4 rows outside the server
+  (~180 GB/s); a tile sweep found nothing better.
 - Prefill (1.4-1.7K tok/s here against 1.8-2.0K for vllm-flash-ar on the
-  same model): `FP8_HC`'s path for prefill-sized inputs was an eager
-  chain of five passes over the [rows, 10240] gate where stock SGLang runs
-  a compiled one; it is now cuBLAS plus one Triton pass. The FP8 side layers
-  run on Marlin, a kernel made for a few rows (SGLang warns it "may degrade
-  performance for compute-heavy workloads"): the same bench times it at
-  prefill sizes against cuBLAS BF16, dequantize + cuBLAS and FP8 W8A8.
-  `bench/profile_decode.py --prefill 16384` profiles a prefill.
+  same model), from `patches/bench_sglang_gb10_gpu.py`
+  ([RESULTS](results/RESULTS.md#kernel-bench-on-sglang-0521-2026-11-07)):
+  `FP8_HC`'s path for prefill-sized inputs was an eager chain of five passes
+  over the [rows, 10240] gate; it is now cuBLAS plus one Triton pass, x2 a
+  mix, ~218 ms saved per 4096-token chunk (on by default with `FP8_HC`).
+  The FP8 side layers run on Marlin, a kernel made for a few rows: a
+  4096-token chunk's side layers take 364 ms there against 186 ms on
+  SGLang's FP8 W8A8 GEMM. `FP8_SIDE_PREFILL=w8a8` (off until measured end to
+  end) sends prefill-sized inputs of the large ones there, the plain weight
+  restored from Marlin's layout each call (`patches/gb10_fp8_prefill.py`;
+  no second copy in memory). `bench/profile_decode.py --prefill 16384`
+  profiles a prefill.
 
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
 slot), 24 without; a 374K-token KV pool at 0.85 (the cookbook's cell: ~93K). `MAMBA_SSM_DTYPE=bfloat16`
@@ -1049,6 +1053,7 @@ patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                gb10_skinny.py (+ its kernel): few-row BF16 GEMM for routers ·
                gb10_fp8_hc.py (+ its kernel): FP8 hyper-connection mix ·
                gb10_mtp_fp4.py: torch NVFP4 quantizer for MTP_EXPERTS=fp4 ·
+               gb10_fp8_prefill.py (+ its kernel): FP8 W8A8 prefill for Marlin layers ·
                bench_sglang_gb10_gpu.py: GPU bench of the HC mix and side layers ·
                gb10_nvfp4_scales.py: per-shard NVFP4 scales on Marlin ·
                gb10_tool_fences.py: tool-call markers in code blocks stay text (qwen3_coder) ·

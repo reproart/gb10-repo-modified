@@ -1254,6 +1254,61 @@ read close to what GB10 delivers, so further gains need fewer bytes (a
 different checkpoint, or the MTP's BF16 experts in 4 bits for the draft),
 not faster kernels.
 
+### Kernel bench on SGLang 0.5.21 (2026-11-07)
+
+`patches/bench_sglang_gb10_gpu.py` on gx10-1cc3 (torch 2.13 cu130, server
+stopped), against a decode profile there of ~54 ms a step (MoE ~17 ms, FP8
+Marlin ~19 ms, `_hc_mix_fp8` 43.6 us x ~106).
+
+**Hyper-connection mix at decode sizes** (weights from memory, CUDA graph):
+
+| Rows | FP8 copy (`FP8_HC`) | SGLang BF16 kernel |
+|---:|---:|---:|
+| 1 / 4 / 8 / 16 | 36.7-37.6 us, ~180 GB/s | 60.4-60.6 us, ~218 GB/s |
+| 32 | 47.4 us, 139 GB/s | (stops at 16 rows) |
+
+The tile sweep found nothing worth a change: best at 4 rows
+(32, 256, 32, 64, 4 warps, 3 stages) 35.9 us against the default's 36.7-39.6
+(the same default measured twice), and the default is best at 32 rows. The
+"same bits" lines the first run marked FAIL at 8-32 rows are not an error:
+the kernel sums split-K partials with atomic adds, as SGLang's own does, so
+their order varies; the error against FP32 was 1.7e-3 on every row count
+(the bench reports it as information now).
+
+**The mix at prefill sizes** (one mix, eager):
+
+| Rows | Old FP8 path (eager chain) | New (cuBLAS + one Triton pass) | SGLang BF16, torch.compile'd |
+|---:|---:|---:|---:|
+| 2048 | 2254 us | 1129 us | |
+| 4096 | 4353 us | **2105 us** | 1868 us |
+| 8192 | 8731 us | 4279 us | |
+
+x2.0-2.07 for the 97 mixes of a 4096-token chunk: **~218 ms saved per
+chunk** (a chunk takes ~2.5-2.8 s at 1.5-1.6K tok/s). `FP8_HC`'s prefill was
+slower than stock SGLang's BF16 path until now; it is within 13% of it.
+
+**FP8 side layers at prefill sizes** (us per call; TFLOPS):
+
+| Layer x count | Rows | Marlin (now) | cuBLAS BF16 | FP8 W8A8 (`fp8_scaled_mm`) |
+|---|---:|---:|---:|---:|
+| GDN in_proj_qkvz [16384 x 2560] x36 | 4096 | 4408 (78) | 3636 (95) | **2139 (161)** |
+| GDN out_proj [2560 x 6144] x36 | 4096 | 2750 (47) | 1512 (85) | **1228 (105)** |
+| attn qkv_proj [13312 x 2560] x12 | 4096 | 3610 (77) | 2823 (99) | **1763 (158)** |
+| attn o_proj [2560 x 6144] x12 | 4096 | 2664 (48) | 1550 (83) | **1218 (106)** |
+| shared gate_up / down x48 | 4096 | 382 / 216 | 311 / 202 | 312 / 168 |
+| a 4096-token chunk, all side layers | | **364 ms** | 264 ms | **186 ms** |
+
+At 4 rows Marlin stays the fastest (qkvz 181 us vs 191 for W8A8, out_proj 27
+vs 67), so decode keeps it. W8A8's error against the dequantized weight is
+3e-2 (activations per token in FP8) against 3e-3 for Marlin. A single 8192-row
+FP8 GEMM fell to ~97 TFLOPS (qkvz 7061 us); 4096-row slices avoid it.
+SGLang's Triton scaled_mm (~50 TFLOPS) and torch._scaled_mm (29-97) are no
+alternative; dequantize + cuBLAS (370 ms a chunk) neither. Hence
+`FP8_SIDE_PREFILL=w8a8` (patches/gb10_fp8_prefill.py; off until measured end
+to end): prefill-sized inputs of the four large layers go to
+fp8_scaled_mm on the plain weight, restored from Marlin's layout each call,
+so no second copy of the weights is kept.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).

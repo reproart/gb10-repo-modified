@@ -297,6 +297,13 @@ nothing written` и `... shard tensors left in place`, затем строки `
 меняются. Подробности и бенчмарк `patches/bench_sglang_gb10_gpu.py` — в
 README.
 
+`FP8_SIDE_PREFILL=w8a8` (выключено по умолчанию): на префилле большие
+FP8-слои идут через FP8 W8A8 вместо Marlin. На чанк 4096 токенов боковые слои
+занимают 186 мс против 364. Вес восстанавливается из раскладки Marlin на
+каждый вызов, вторая копия в памяти не хранится. Активации префилла
+квантуются в FP8, поэтому перед включением по умолчанию нужен HumanEval с
+`FP8_SIDE_PREFILL_ROWS=64`.
+
 **Abliterated-вариант** (без отказов, веса Huihui):
 
 ```bash
@@ -1125,6 +1132,7 @@ patches/              патчи SGLang, включаются профилями
   gb10_fp8_side         BF16-слои, головы и драфт DFlash → FP8 (Marlin)
   gb10_fp8_hc           hyper-connections Flash-Next → FP8
   gb10_mtp_fp4          квантователь NVFP4 на torch для MTP_EXPERTS=fp4
+  gb10_fp8_prefill      FP8 W8A8 на префилле для слоёв на Marlin (FP8_SIDE_PREFILL=w8a8)
   bench_sglang_gb10_gpu GPU-бенчмарк смешивания HC и боковых слоёв (сервер остановлен)
   gb10_marlin_lean      перепаковка MoE в Marlin без лишней копии
   gb10_ablate           абляция векторами (ABLATE=...)

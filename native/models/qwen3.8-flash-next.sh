@@ -160,6 +160,23 @@ FP8_SIDE="${FP8_SIDE:-1}"
 FP8_DRAFT_HEAD="${FP8_DRAFT_HEAD:-1}"
 FP8_HEAD="${FP8_HEAD:-1}"
 
+# Prefill-sized inputs of the large FP8 side layers (GDN in_proj_qkvz /
+# out_proj, attention qkv / o): Marlin is a weight-only kernel made for a few
+# rows (~47-78 TFLOPS here); SGLang's FP8 GEMM (fp8_scaled_mm on GB10's FP8
+# tensor cores, activations quantized per token) runs them at 105-160.
+#   marlin  every input on Marlin, as before.
+#   w8a8    inputs of FP8_SIDE_PREFILL_ROWS+ rows on FP8 W8A8: the plain FP8
+#           weight is restored from Marlin's layout each call (one gather pass,
+#           no second copy in memory; patches/gb10_fp8_prefill.py learns and
+#           checks the byte order at load, boot log "FP8 side prefill: ...").
+#           Bench: a 4096-token chunk's side layers 364 ms -> ~186 ms (+ the
+#           gather). Lossier than weight-only for the prompt's KV and GDN
+#           state (activations in FP8, rel. error ~3e-2 per GEMM against
+#           ~3e-3); decode is unchanged. Not measured end to end yet: check
+#           HumanEval with FP8_SIDE_PREFILL_ROWS=64 (the problems are short).
+FP8_SIDE_PREFILL="${FP8_SIDE_PREFILL:-marlin}"
+FP8_SIDE_PREFILL_ROWS="${FP8_SIDE_PREFILL_ROWS:-1024}"
+
 # A Triton GEMM for the small layers that stay BF16 because they select
 # something: the MoE routers (mlp.gate [512 x 2560]) and the QSA indexer
 # projections (index_qk_proj [640 x 2560]), ~64 calls a decode step at ~46 us
@@ -280,6 +297,11 @@ model_env() {
   else
     unset GB10_FP8_SIDE
   fi
+  case "$FP8_SIDE_PREFILL" in
+    marlin) unset GB10_FP8_SIDE_PREFILL GB10_FP8_SIDE_PREFILL_ROWS ;;
+    w8a8) export GB10_FP8_SIDE_PREFILL=w8a8 GB10_FP8_SIDE_PREFILL_ROWS="$FP8_SIDE_PREFILL_ROWS" ;;
+    *) echo "FP8_SIDE_PREFILL must be marlin or w8a8, not '$FP8_SIDE_PREFILL'" >&2; exit 1 ;;
+  esac
   # Heads: with MTP they are converted after the draft takes its copy of
   # the target head; without MTP the target head is converted at load.
   unset GB10_FP8_DRAFT_HEAD GB10_FP8_TARGET_HEAD
@@ -373,5 +395,5 @@ model_summary() {
   [ "$MTP" = 1 ] && heads="$heads, draft $([ "$FP8_DRAFT_HEAD" = 1 ] && echo FP8 || echo BF16)"
   local draft_experts=""
   [ "$MTP" = 1 ] && draft_experts="; draft experts $([ "$MTP_EXPERTS" = fp4 ] && echo "NVFP4 at load (Marlin W4A16)" || echo BF16)"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab$draft_experts; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple$([ -n "$ABLATE" ] && echo "; ablation $(basename "$ABLATE") alpha $ABLATE_ALPHA at layer $ABLATE_AT, $ABLATE_STREAMS stream(s)")"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin$([ "$FP8_SIDE_PREFILL" = w8a8 ] && echo "; W8A8 from $FP8_SIDE_PREFILL_ROWS rows"))" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab$draft_experts; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple$([ -n "$ABLATE" ] && echo "; ablation $(basename "$ABLATE") alpha $ABLATE_ALPHA at layer $ABLATE_AT, $ABLATE_STREAMS stream(s)")"
 }
