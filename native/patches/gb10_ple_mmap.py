@@ -54,6 +54,7 @@ import re
 import struct
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
@@ -373,15 +374,20 @@ class Prefetcher:
     serve them concurrently. Decode-sized gathers and CUDA-graph capture are
     skipped.
 
-    The hints go out from a background thread in batches: process_madvise
-    (Linux 5.10+) with MADV_WILLNEED on up to 1024 page ranges of the mapping
-    a call, ~100 calls for a 4096-token chunk. One posix_fadvise per page (the
-    fallback, and what SGLang's prefetcher does) is ~100K calls a chunk, and the
-    thread needs the GIL between two of them while the scheduler's thread holds
-    it launching the prefill's kernels: on GB10 the hints then came too late in
-    some runs and the gather took the faults itself, one wait for storage
-    each (perf.py: the same ~3 GiB read for a 101K prompt as 72K major faults
-    at 1848 tok/s, or as 597K at 1337 tok/s).
+    The hints go out in batches: process_madvise (Linux 5.10+) with
+    MADV_WILLNEED on up to 1024 page ranges of the mapping a call, ~100 calls
+    for a 4096-token chunk, in the calling thread before the gather is
+    launched (GB10_PLE_PREFETCH_SYNC=0: from a background thread, as before).
+    Started together with the gather, they lost the race in runs where the
+    page cache already held much of the table from earlier prompts: the GPU
+    reached pages they had not put in the page cache yet and waited for each
+    (2026-11-07: right after a drop_caches 29K major faults for a 101K prompt
+    at 1872 tok/s, the run after it 282K at 1568, with no reclaim at all; each
+    such fault costs the gather ~35 us). One posix_fadvise per page, the
+    fallback and what SGLang's prefetcher does, is ~100K calls a chunk: too
+    slow to make before the gather, and from a thread it needs the GIL between
+    two of them. The boot log has the mode, and every 100 prefill gathers the
+    time the hints took.
     """
 
     def __init__(self, table: MappedTable, min_rows: int = PREFETCH_MIN_ROWS) -> None:
@@ -402,6 +408,12 @@ class Prefetcher:
                 logger.info("PLE table: pidfd_open failed (errno %d); page-cache hints one "
                             "posix_fadvise a page", ctypes.get_errno())
         self.calls = 0
+        # Batched hints go out before the gather is launched, in the calling
+        # thread: a background thread lets the GPU reach pages the hints have
+        # not put in the page cache yet, and it then waits for each one itself.
+        self._sync = os.environ.get("GB10_PLE_PREFETCH_SYNC", "1") == "1"
+        self._stats = {"n": 0, "s": 0.0, "max": 0.0}
+        self.log_every = 100
 
     @property
     def batched(self) -> bool:
@@ -446,7 +458,21 @@ class Prefetcher:
         # .cpu() syncs the stream, as in SGLang's own prefetcher: acceptable
         # for prefill chunks, which is all that reaches this line.
         ids = flat_ids.cpu().numpy()
-        self._pool.submit(self._advise, ids)
+        if not (self._sync and self.batched):
+            self._pool.submit(self._advise, ids)
+            return True
+        t = time.perf_counter()
+        self._advise(ids)
+        dt = time.perf_counter() - t
+        st = self._stats
+        st["n"] += 1
+        st["s"] += dt
+        st["max"] = max(st["max"], dt)
+        if st["n"] >= self.log_every:
+            logger.info("PLE table: page-cache hints before the last %d prefill gathers took "
+                        "%.1f ms each on average, %.1f at most", st["n"],
+                        1e3 * st["s"] / st["n"], 1e3 * st["max"])
+            self._stats = {"n": 0, "s": 0.0, "max": 0.0}
         return True
 
 

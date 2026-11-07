@@ -1436,6 +1436,26 @@ memory 2.9 / 3.9 GiB at the runs' starts) the prefill stayed slow: 2K / 8K /
 32K / 101K 1687 / 1568 / 1366 / 1397 and 1598 / 1598 / 1308 / 1342 tok/s,
 337K / 508K major faults for the 101K prompt (2.45 / 3.16 GiB read).
 
+**Memory pressure is not it either.** After `drop_caches` (MGLRU back on,
+server not restarted) with the new counters:
+
+| Prompt | Right after drop_caches: tok/s, major faults | Next run |
+|---|---:|---:|
+| 2K | 1731, 65 | 1888, 3.1K |
+| 8K | 1916, 422 | 1833, 14K |
+| 32K | 1971, 3.2K | 1840, 60K |
+| 101K | **1872, 29K** | **1568, 282K** |
+
+kswapd freed nothing and no page was read again after reclaim in either
+run; free memory never went under 7.8 GiB. So no page was dropped before
+the gather used it: the gather got to pages before the hints had put them in
+the page cache, more often the fuller the page cache was (the hints were
+started together with the gather, from a background thread). They now go out
+before the gather is launched, in the scheduler's thread: batched, that is
+~100 system calls a 4096-token chunk, and the log reports what they cost
+(estimated ~0.1 s a chunk; ~0.75 s a chunk was lost to the faults in the
+slow runs).
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).
