@@ -1309,6 +1309,28 @@ to end): prefill-sized inputs of the four large layers go to
 fp8_scaled_mm on the plain weight, restored from Marlin's layout each call,
 so no second copy of the weights is kept.
 
+**Second run, with that path** ("marlin->w8a8": restore the plain weight from
+Marlin's layout, then fp8_scaled_mm). The restored weights matched bit for bit
+on every shape; the gather took 526 / 198 / 430 / 193 us a call for
+qkvz / out_proj / qkv / o (~160 GB/s of reads plus writes). At 4096 rows:
+
+| Layer x count | Marlin | marlin->w8a8 | Saved per 4096-token chunk |
+|---|---:|---:|---:|
+| GDN in_proj_qkvz x36 | 4424 us | 2784 us | 59 ms |
+| GDN out_proj x36 | 2761 us | 1561 us | 43 ms |
+| attn qkv_proj x12 | 3623 us | 2259 us | 16 ms |
+| attn o_proj x12 | 2773 us | 1566 us | 14 ms |
+
+~133 ms a chunk on the four large layers (the server leaves in_proj_ba and
+the shared expert on Marlin: the gather and the per-token quantization cost
+more than they save there). Break-even near 1024-1500 rows: at 512 Marlin won
+on every layer (qkvz 530 vs 895 us), at 2048 the new path on every large one
+(qkvz 1766 vs 2215), hence FP8_SIDE_PREFILL_ROWS=2048 by default. At 8192 rows
+it was 7394 vs 8746 us for qkvz: the two 4096-row slices are fast, the copy
+joining their 268 MB of output is not, so CHUNKED_PREFILL stays at 4096 with
+it. HC prefill on this run: x2.05-2.16, 222 ms a chunk. Together ~355 ms of a
+~2.6 s chunk, if the server agrees.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).

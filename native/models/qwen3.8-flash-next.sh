@@ -169,13 +169,16 @@ FP8_HEAD="${FP8_HEAD:-1}"
 #           weight is restored from Marlin's layout each call (one gather pass,
 #           no second copy in memory; patches/gb10_fp8_prefill.py learns and
 #           checks the byte order at load, boot log "FP8 side prefill: ...").
-#           Bench: a 4096-token chunk's side layers 364 ms -> ~186 ms (+ the
-#           gather). Lossier than weight-only for the prompt's KV and GDN
+#           Bench, a 4096-token chunk: the four large layers ~133 ms faster
+#           with the gather included (marlin 369 ms for all side layers);
+#           keep CHUNKED_PREFILL at 4096 (8192-row FP8 GEMMs run slower and
+#           are done in two slices plus a copy). From 2048 rows: below ~1500
+#           the gather costs more than it saves. Lossier than weight-only for the prompt's KV and GDN
 #           state (activations in FP8, rel. error ~3e-2 per GEMM against
 #           ~3e-3); decode is unchanged. Not measured end to end yet: check
 #           HumanEval with FP8_SIDE_PREFILL_ROWS=64 (the problems are short).
 FP8_SIDE_PREFILL="${FP8_SIDE_PREFILL:-marlin}"
-FP8_SIDE_PREFILL_ROWS="${FP8_SIDE_PREFILL_ROWS:-1024}"
+FP8_SIDE_PREFILL_ROWS="${FP8_SIDE_PREFILL_ROWS:-2048}"
 
 # A Triton GEMM for the small layers that stay BF16 because they select
 # something: the MoE routers (mlp.gate [512 x 2560]) and the QSA indexer

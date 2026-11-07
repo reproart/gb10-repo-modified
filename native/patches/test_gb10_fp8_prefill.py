@@ -11,7 +11,7 @@ in the Triton gather (under TRITON_INTERPRET=1), refuse a layout without the
 tile structure, and route a converted layer's inputs: prefill-sized ones to
 W8A8 (fake fp8_scaled_mm / per-token quant in torch), decode-sized ones and
 everything after a failure to Marlin. On the Spark the boot log has "FP8 side
-prefill: W8A8 for inputs of 1024+ rows (Marlin byte order learned and checked
+prefill: W8A8 for inputs of 2048+ rows (Marlin byte order learned and checked
 ...)" or the reason it stayed off.
 """
 

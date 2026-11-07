@@ -679,9 +679,9 @@ layers (~19 ms) at the memory's bandwidth; what is left:
   The FP8 side layers run on Marlin, a kernel made for a few rows: a
   4096-token chunk's side layers take 364 ms there against 186 ms on
   SGLang's FP8 W8A8 GEMM. `FP8_SIDE_PREFILL=w8a8` (off until measured end to
-  end) sends prefill-sized inputs of the large ones there, the plain weight
-  restored from Marlin's layout each call (`patches/gb10_fp8_prefill.py`;
-  no second copy in memory). `bench/profile_decode.py --prefill 16384`
+  end) sends inputs of 2048+ rows of the four large ones there, the plain
+  weight restored from Marlin's layout each call (`patches/gb10_fp8_prefill.py`;
+  no second copy in memory): ~133 ms saved a chunk with that gather included. `bench/profile_decode.py --prefill 16384`
   profiles a prefill.
 
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
