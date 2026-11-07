@@ -1352,7 +1352,15 @@ so only roughly), and the W8A8 side layers +2-4% on top (the bench predicted
 on the same model (1.7-2.1K tok/s). Decode is unchanged, as it should be: the
 two paths only take inputs of 65+ / 2048+ rows; the concurrency sweep moves
 both ways between the runs (2 streams 94 vs 104, 8 streams 225 vs 202).
-W8A8 stays off by default until HumanEval with FP8_SIDE_PREFILL_ROWS=64.
+
+**HumanEval with W8A8 prefill** (medium thinking, FP8_SIDE_PREFILL_ROWS=64 so
+that every problem's prompt goes through it; on the default 2048 a short
+prompt never does): 98.2% (161/164; misses 32, 44, 145; 983 s, 103.7 tok/s
+aggregate at 4 streams) and **99.4%** (163/164; misses 92; 951 s, 108.7
+tok/s) in two runs. The builds before it: 98.8%, 100%, 99.4%; the first
+run's 44 passed in the second, the second's 92 in the first: the
++-1-2-problem noise of greedy runs here (the HC kernel's atomic adds alone
+make them differ). `FP8_SIDE_PREFILL=w8a8` is now the profile default.
 
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 

@@ -173,11 +173,14 @@ FP8_HEAD="${FP8_HEAD:-1}"
 #           with the gather included (marlin 369 ms for all side layers);
 #           keep CHUNKED_PREFILL at 4096 (8192-row FP8 GEMMs run slower and
 #           are done in two slices plus a copy). From 2048 rows: below ~1500
-#           the gather costs more than it saves. Lossier than weight-only for the prompt's KV and GDN
-#           state (activations in FP8, rel. error ~3e-2 per GEMM against
-#           ~3e-3); decode is unchanged. Not measured end to end yet: check
-#           HumanEval with FP8_SIDE_PREFILL_ROWS=64 (the problems are short).
-FP8_SIDE_PREFILL="${FP8_SIDE_PREFILL:-marlin}"
+#           the gather costs more than it saves. Lossier than weight-only for
+#           the prompt's KV and GDN state (activations in FP8, rel. error
+#           ~3e-2 per GEMM against ~3e-3); decode is unchanged.
+# Measured (results/RESULTS.md): prefill 2K-101K +2-4% over marlin (with
+# the HC prefill fix: 1696 / 1907 / 1965 / 1853 tok/s); HumanEval with medium
+# thinking and FP8_SIDE_PREFILL_ROWS=64 (every problem's prompt on W8A8)
+# 98.2% and 99.4% in two runs, as before (98.8-100%). The default since.
+FP8_SIDE_PREFILL="${FP8_SIDE_PREFILL:-w8a8}"
 FP8_SIDE_PREFILL_ROWS="${FP8_SIDE_PREFILL_ROWS:-2048}"
 
 # A Triton GEMM for the small layers that stay BF16 because they select

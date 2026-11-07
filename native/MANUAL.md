@@ -279,11 +279,13 @@ $HF download RadixArk/Qwen3.8-Flash-Next-NVFP4 --local-dir /models/RadixArk/Qwen
 ./serve.sh qwen3.8-flash-next
 ```
 
-Загрузка весов ~7 минут. **65.8 ток/с** на одном потоке, 212–224 суммарно
-на 8; HumanEval 97.6% без размышления, 99.4% с medium. Всё это уже
-включено по умолчанию: FP8 для BF16-слоёв (`FP8_SIDE`), обеих голов
-(`FP8_HEAD`, `FP8_DRAFT_HEAD`) и hyper-connections (`FP8_HC`), словарь
-драфта на 65K токенов (`DRAFT_VOCAB`).
+Загрузка весов ~7 минут. **65.8–67.5 ток/с** на одном потоке, 202–225
+суммарно на 8; префилл 2K / 8K / 32K / 101K — **1696 / 1907 / 1965 / 1853
+ток/с** (на уровне vllm-flash-ar); HumanEval 97.6% без размышления, 99.4% с
+medium. Всё это уже включено по умолчанию: FP8 для BF16-слоёв (`FP8_SIDE`,
+на префилле W8A8: `FP8_SIDE_PREFILL`), обеих голов (`FP8_HEAD`,
+`FP8_DRAFT_HEAD`) и hyper-connections (`FP8_HC`), словарь драфта на 65K
+токенов (`DRAFT_VOCAB`).
 
 **При первом старте** в логе должно быть `PLE table: ... read in place ...,
 nothing written` и `... shard tensors left in place`, затем строки `FP8 side`,
@@ -297,12 +299,13 @@ nothing written` и `... shard tensors left in place`, затем строки `
 меняются. Подробности и бенчмарк `patches/bench_sglang_gb10_gpu.py` — в
 README.
 
-`FP8_SIDE_PREFILL=w8a8` (выключено по умолчанию): на префилле большие
+`FP8_SIDE_PREFILL=w8a8` (включено по умолчанию; `marlin` выключает): на префилле большие
 FP8-слои идут через FP8 W8A8 вместо Marlin. На чанк 4096 токенов боковые слои
 занимают 186 мс против 364. Вес восстанавливается из раскладки Marlin на
 каждый вызов, вторая копия в памяти не хранится. Активации префилла
-квантуются в FP8, поэтому перед включением по умолчанию нужен HumanEval с
-`FP8_SIDE_PREFILL_ROWS=64`.
+квантуются в FP8. HumanEval с medium, когда каждый промпт шёл через W8A8
+(`FP8_SIDE_PREFILL_ROWS=64`): 98.2% и 99.4% в двух прогонах, как раньше.
+Префилл 2K–101K: 1696 / 1907 / 1965 / 1853 ток/с.
 
 **Abliterated-вариант** (без отказов, веса Huihui):
 
