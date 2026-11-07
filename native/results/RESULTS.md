@@ -1430,6 +1430,12 @@ the refaults (workingset_refault_file: pages read again soon after being
 dropped) to check it. The batched hints stay (100x fewer system calls), but
 did not change this.
 
+**The multi-gen LRU is not it**: with it switched off at run time
+(`/sys/kernel/mm/lru_gen/enabled` 0x0003 -> n, server not restarted, free
+memory 2.9 / 3.9 GiB at the runs' starts) the prefill stayed slow: 2K / 8K /
+32K / 101K 1687 / 1568 / 1366 / 1397 and 1598 / 1598 / 1308 / 1342 tok/s,
+337K / 508K major faults for the 101K prompt (2.45 / 3.16 GiB read).
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).
