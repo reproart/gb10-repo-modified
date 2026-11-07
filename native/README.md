@@ -678,8 +678,9 @@ layers (~19 ms) at the memory's bandwidth; what is left:
   mix, ~218 ms saved per 4096-token chunk (on by default with `FP8_HC`).
   The FP8 side layers run on Marlin, a kernel made for a few rows: a
   4096-token chunk's side layers take 364 ms there against 186 ms on
-  SGLang's FP8 W8A8 GEMM. `FP8_SIDE_PREFILL=w8a8` (off until measured end to
-  end) sends inputs of 2048+ rows of the four large ones there, the plain
+  SGLang's FP8 W8A8 GEMM. `FP8_SIDE_PREFILL=w8a8` (the default since
+  HumanEval: 98.2% and 99.4% with medium thinking and every prompt on it)
+  sends inputs of 2048+ rows of the four large ones there, the plain
   weight restored from Marlin's layout each call (`patches/gb10_fp8_prefill.py`;
   no second copy in memory): ~133 ms saved a chunk with that gather included.
   Measured: prefill 2K / 8K / 32K / 101K 1666 / 1847 / 1896 / 1785 tok/s
