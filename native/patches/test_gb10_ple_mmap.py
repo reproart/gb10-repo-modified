@@ -265,6 +265,39 @@ class BatchedPrefetchTest(unittest.TestCase):
                 del os.environ["GB10_PLE_PREFETCH"]
 
 
+class SyncPrefetchTest(unittest.TestCase):
+    def test_hints_are_out_before_enqueue_returns(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+        with tempfile.TemporaryDirectory() as d:
+            ck = Checkpoint(d, vocab=5000, parts=9, dim=160, drop=4)
+            t = g.map_table(g.scan_table_dir(d)[1], d, ck.shard_size, ck.vocab)
+            p = g.Prefetcher(t, min_rows=8)
+            if not p.batched:
+                self.skipTest("no process_madvise here")
+            ids = torch.arange(0, ck.vocab, 5)
+            self.assertFalse(p.enqueue(ids[:4]))                 # decode-sized: nothing
+            self.assertTrue(p.enqueue(ids))
+            self.assertGreater(p.calls, 0)                        # done inline, not queued
+            self.assertEqual(p._stats["n"], 1)
+            p.log_every = 2
+            with self.assertLogs("sglang.srt.models.qwen4_exp.gb10_ple_mmap", "INFO") as cm:
+                p.enqueue(ids)
+            self.assertIn("page-cache hints before the last 2 prefill gathers", cm.output[0])
+            self.assertEqual(p._stats["n"], 0)
+            os.environ["GB10_PLE_PREFETCH_SYNC"] = "0"
+            try:
+                q = g.Prefetcher(t, min_rows=8)
+                q.enqueue(ids)
+                q._pool.shutdown(wait=True)                       # background, as before
+                self.assertGreater(q.calls, 0)
+                self.assertEqual(q._stats["n"], 0)
+            finally:
+                del os.environ["GB10_PLE_PREFETCH_SYNC"]
+
+
 class HookTest(unittest.TestCase):
     def test_hook_runs_after_import_and_sources_stay_readable(self):
         import importlib
