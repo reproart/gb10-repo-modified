@@ -1476,6 +1476,19 @@ first pages kswapd evicts, so under reclaim a chunk's hinted pages go before
 the gather reads them. (The earlier test with the multi-gen LRU off ran with
 the hints still beside the gather, so it did not separate the two causes.)
 
+**Multi-gen LRU off, hints before the gather: still slow.** Three runs
+(free memory 2.7-6.4 GiB): 101K at 1572 / 1412 / 1451 tok/s, 238K / 525K /
+384K major faults, kswapd freeing 2.9 / 4.2 / 3.1 GiB and 332K / 673K / 615K
+pages read again after reclaim; 8K at 1797 / 1692 / 1474. So it is not the
+LRU's order either. kswapd reclaimed 3-4 GiB a 101K prompt here even with
+4-6 GiB free, above the plain watermarks (min 1 GiB from host-tuning.sh,
+low/high ~1.6/2.2 GiB with watermark_scale_factor 50): the watermark boost
+(vm.watermark_boost_factor, default 15000: after a fragmentation event kswapd
+reclaims up to 1.5x the high watermark more) would do that, and on GB10 the
+CUDA driver's allocations (+1-1.7 GiB during the 101K prompt) can supply the
+events. The hints themselves cost 47-49 ms a 4096-token chunk on average
+(81-120 ms at most): ~2% of a chunk.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).
