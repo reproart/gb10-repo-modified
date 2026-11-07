@@ -686,8 +686,18 @@ layers (~19 ms) at the memory's bandwidth; what is left:
   no second copy in memory): ~133 ms saved a chunk with that gather included.
   Measured: prefill 2K / 8K / 32K / 101K 1666 / 1847 / 1896 / 1785 tok/s
   with the HC fix, 1696 / 1907 / 1965 / 1853 with `w8a8` too (September:
-  1458 / 1648 / 1661 / 1499), level with vllm-flash-ar; decode unchanged. `bench/profile_decode.py --prefill 16384`
-  profiles a prefill.
+  1458 / 1648 / 1661 / 1499); decode unchanged. `bench/profile_decode.py
+  --prefill 16384` profiles a prefill.
+- The n-gram table on prefill: those figures were the good runs. Back to back
+  the prefill fell to 1.2-1.6K tok/s, the GPU gather taking a fault served
+  from storage for hundreds of thousands of table rows a prompt (~35 us each,
+  one at a time) although page-cache hints had been sent for them; five
+  kernel-side suspects were ruled out (results/RESULTS.md, 2026-11-07).
+  `PLE_GATHER=cpu`, the default now, reads a prefill chunk's rows on CPU
+  threads, which take their faults in parallel, and hands the GPU a filled
+  buffer: **2151-2312 tok/s at 2K-32K and 2114-2137 at 101K, the same in
+  every run**, a few hundred major faults a prompt; +40-50% over September,
+  above vllm-flash-ar (1.7-2.1K).
 
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
 slot), 24 without; a 374K-token KV pool at 0.85 (the cookbook's cell: ~93K). `MAMBA_SSM_DTYPE=bfloat16`

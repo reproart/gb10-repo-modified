@@ -99,11 +99,12 @@ PLE_FILE_DIR="${PLE_FILE_DIR:-}"
 #        rare: 101K prompts 1.4-1.6K tok/s instead of 1.8-1.9K
 #        (results/RESULTS.md, 2026-11-07).
 #   cpu  CPU threads copy the rows into a pinned buffer (each waiting on its
-#        own faults, so storage serves them in parallel; ~16 ms a 4096-token
-#        chunk from the page cache), then one copy to the GPU
-#        (patches/gb10_ple_mmap.py, CpuGather; boot log "gathers of >= 2048
-#        rows on N CPU threads"). Not measured on the Spark yet.
-PLE_GATHER="${PLE_GATHER:-gpu}"
+#        own faults, so storage serves them in parallel), then one copy to the
+#        GPU (patches/gb10_ple_mmap.py, CpuGather; boot log "gathers of >= 2048
+#        rows on N CPU threads"). Measured: prefill 2K-32K 2151-2312 tok/s,
+#        101K 2114-2137, the same in three runs back to back, a few hundred
+#        major faults a prompt (results/RESULTS.md). The default.
+PLE_GATHER="${PLE_GATHER:-cpu}"
 
 # Checkpoint quantization and its kernels (cookbook: RadixArk export).
 QUANTIZATION="${QUANTIZATION:-modelopt_fp4}"
