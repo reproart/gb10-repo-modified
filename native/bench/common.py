@@ -706,6 +706,85 @@ class MemWatch:
         return s
 
 
+_SERVER_MARKS = (b"sglang.launch_server", b"vllm.entrypoints", b"vllm serve", b"bin/vllm",
+                 b"llama-server")
+_CG_KEYS = ("file", "anon", "pgsteal", "pgsteal_direct", "pgsteal_kswapd", "workingset_refault_file")
+
+
+def server_cgroup():
+    """The cgroup v2 directory of the local model server: of the first process whose
+    command line names sglang.launch_server, vllm or llama-server (GB10_SERVER_PID
+    overrides). None when not local (vmstat()'s rule), not found or not cgroup v2."""
+    if not _local_counters():
+        return None
+    pids = [os.environ["GB10_SERVER_PID"]] if os.environ.get("GB10_SERVER_PID") else None
+    if pids is None:
+        pids = []
+        try:
+            for d in os.listdir("/proc"):
+                if not d.isdigit() or int(d) == os.getpid():
+                    continue
+                try:
+                    with open(f"/proc/{d}/cmdline", "rb") as f:
+                        cmd = f.read().replace(b"\0", b" ")
+                except OSError:
+                    continue
+                if any(m in cmd for m in _SERVER_MARKS):
+                    pids.append(d)
+        except OSError:
+            return None
+    for pid in sorted(pids, key=int):
+        try:
+            with open(f"/proc/{pid}/cgroup") as f:
+                path = next((ln[3:].strip() for ln in f if ln.startswith("0::")), None)
+        except OSError:
+            continue
+        if path is not None and os.path.exists(f"/sys/fs/cgroup{path}/memory.stat"):
+            return f"/sys/fs/cgroup{path}"
+    return None
+
+
+def cgroup_mem(path):
+    """{max, high (bytes, None = no limit), current, and memory.stat's file, anon,
+    pgsteal* (pages), workingset_refault_file} of a cgroup v2 directory, {} on error.
+    Reclaim inside a cgroup at its own limit (memory.high / memory.max, e.g. the
+    MemoryMax of scripts/install-service.sh's unit) is counted only here, not in
+    /proc/vmstat: page cache dropped that way is invisible in vm_summary()."""
+    if not path:
+        return {}
+    out = {}
+    try:
+        for k in ("max", "high", "current"):
+            with open(f"{path}/memory.{k}") as f:
+                v = f.read().strip()
+            out[k] = None if v == "max" else int(v)
+        with open(f"{path}/memory.stat") as f:
+            for line in f:
+                key, _, val = line.partition(" ")
+                if key in _CG_KEYS:
+                    out[key] = int(val)
+    except (OSError, ValueError):
+        return {}
+    return out
+
+
+def cgroup_summary(path, c0, c1):
+    """The server cgroup's limits and what it reclaimed between c0 and c1, one line;
+    '' without data."""
+    if not c0 or not c1:
+        return ""
+    g, page = 2.0 ** 30, os.sysconf("SC_PAGE_SIZE")
+
+    def lim(v):
+        return "none" if v is None else f"{v / g:.1f} GiB"
+    steal = (c1.get("pgsteal", 0) - c0.get("pgsteal", 0)) * page / g
+    direct = (c1.get("pgsteal_direct", 0) - c0.get("pgsteal_direct", 0)) * page / g
+    refault = c1.get("workingset_refault_file", 0) - c0.get("workingset_refault_file", 0)
+    return (f"server cgroup {path.removeprefix('/sys/fs/cgroup')}: max {lim(c1['max'])}, high "
+            f"{lim(c1['high'])}, using {c1['current'] / g:.1f} GiB (page cache {c1.get('file', 0) / g:.1f});"
+            f" it reclaimed {steal:.2f} GiB ({direct:.2f} by its own tasks), {refault} refaults")
+
+
 def vm_summary(v0, v1):
     """The vmstat() delta as one short note, '' without counters."""
     if not v0 or not v1:

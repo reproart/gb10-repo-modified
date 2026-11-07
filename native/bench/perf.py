@@ -74,7 +74,8 @@ import uuid
 import common
 from common import (CODE_PROMPT, GpuWatch, MemWatch, PeakWatch, broken, cache_hit_significant, calibrate, chat,
                     decode_rate, delta, metrics, ple_summary, restarted, sidecar, spec_summary,
-                    torch_summary, unique_prompt, vm_summary, vmstat)
+                    torch_summary, unique_prompt, vm_summary, vmstat, server_cgroup, cgroup_mem,
+                    cgroup_summary)
 
 
 def _med(xs):
@@ -212,13 +213,15 @@ def concurrency(levels, tokens=300):
 def prefill(targets):
     print("## 4. Long-context prefill (unique prompts, prefix cache checked)")
     s_prev = sidecar(settle=True)
+    cg = server_cgroup()
     for target in targets:
         m0, s0 = metrics(), s_prev
         prompt = unique_prompt(uuid.uuid4().hex, target)
-        v0 = vmstat()
+        v0, c0 = vmstat(), cgroup_mem(cg)
         with GpuWatch() as gpu, MemWatch() as mem:
             r = chat(prompt, 8, stream=True)
         vm = vm_summary(v0, vmstat())
+        cgs = cgroup_summary(cg, c0, cgroup_mem(cg))
         hits = r["cached_tokens"]
         if hits is None:
             hits = delta(m0, metrics(), "pc_hits")
@@ -232,6 +235,8 @@ def prefill(targets):
               f"{'   ' + ple if ple else ''}{'   ' + str(gpu) if str(gpu) else ''}")
         if vm:
             print(f"   {'':>7} {vm}")
+        if cgs:
+            print(f"   {'':>7} {cgs}")
         bad = broken(r["content"], expect="OK")
         if bad:
             print(f"   {'':>7} !! the answer looks wrong ({bad}): check the server")
