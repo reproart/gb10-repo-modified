@@ -1510,6 +1510,27 @@ were sent for. Rather than a sixth guess at why, `PLE_GATHER=cpu` reads
 prefill chunks' rows on CPU threads (patches/gb10_ple_mmap.py, CpuGather),
 where faults are served in parallel; to be measured.
 
+**`PLE_GATHER=cpu`: solved.** Server restarted with it, three runs back to
+back (two `--only prefill`, one full):
+
+| Prompt | Run 1 | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| 2K | 2240 tok/s, 244 major faults | 2283, 7 | 2151, 4 |
+| 8K | 2259, 535 | 2312, 215 | 2295, 22 |
+| 32K | 2271, 943 | 2302, 122 | 2283, 52 |
+| 101K | 2122, 1.1K | 2137, 208 | 2114, 247 |
+
+The same 1-1.7 GiB came from storage per 101K prompt, now through CPU
+threads that wait on their own faults in parallel, so storage time no
+longer adds up one fault at a time on the GPU. Faster than even the best
+GPU-gather runs (1.8-2.0K) and steady with free memory going 12.6 -> 4.8
+GiB over the runs. Full run: decode 66.8 tok/s (median; one 53.9 warm-up
+sample), 222.9 tok/s at 8 streams, TTFT 128 ms; a 32K prompt prefilled at
+2261-2265 tok/s while 1 / 4 streams decoded (longest pause 12.5 s, was
+~15-25). Against September (eager HC prefill, Marlin side layers, GPU
+gather): 2K / 8K / 32K / 101K 1458 / 1648 / 1661 / 1499 -> ~2200 / 2290 /
+2285 / 2125, +40-50%. `PLE_GATHER=cpu` is the default.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).
