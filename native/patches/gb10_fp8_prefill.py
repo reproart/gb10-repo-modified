@@ -21,7 +21,9 @@ fp8_scaled_mm against a reference. Anything off and the path stays disabled
 
 Used for layers with at least MIN_WEIGHT elements (GDN in_proj_qkvz/out_proj,
 attention qkv/o; the small ones gain little) and inputs of at least
-GB10_FP8_SIDE_PREFILL_ROWS rows (default 1024; a decode verify is at most 32).
+GB10_FP8_SIDE_PREFILL_ROWS rows (default 2048; a decode verify is at most 32).
+With the gather the bench put the break-even near 1024-1500 rows: at 512 Marlin
+was faster on every layer, at 2048 the W8A8 path on every large one.
 Inputs over CHUNK_ROWS run in slices of that many rows: one 8192-row GEMM ran
 at 97 TFLOPS against 160 for 4096 rows in the bench.
 
@@ -55,7 +57,7 @@ def mode() -> str:
 
 
 def min_rows() -> int:
-    return int(os.environ.get("GB10_FP8_SIDE_PREFILL_ROWS", "1024"))
+    return int(os.environ.get("GB10_FP8_SIDE_PREFILL_ROWS", "2048"))
 
 
 # ---- Marlin's byte order -----------------------------------------------------------
