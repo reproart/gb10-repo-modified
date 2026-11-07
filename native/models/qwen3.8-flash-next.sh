@@ -112,6 +112,22 @@ MTP_DRAFT_TOKENS="${MTP_DRAFT_TOKENS:-4}"
 # CJK-heavy text especially: DRAFT_VOCAB='' goes back to the full vocabulary.
 DRAFT_VOCAB="${DRAFT_VOCAB-$ROOT/models/vocab/qwen3.8-flash-next-draft-vocab-65536.pt}"
 
+# The MTP draft's 512 routed experts, which the checkpoint keeps in BF16
+# (~5 GiB; its exclude list has mtp.*). The draft reads ~10 of them a token on
+# flashinfer's BF16 MoE, 3 times a decode step (one draft extend, two draft
+# steps): ~2.3 ms of a ~54 ms step in the profile.
+#   bf16  as the checkpoint ships them.
+#   fp4   SGLang's own load-time NVFP4 conversion for the draft
+#         (--speculative-draft-model-quantization modelopt_fp4 on this
+#         checkpoint), run as W4A16 on its NVFP4 Marlin MoE
+#         (--speculative-moe-runner-backend marlin; the online conversion has
+#         no calibrated activation scale for a W4A4 kernel): ~3.5x fewer bytes
+#         a call and ~3.6 GiB freed. patches/gb10_mtp_fp4.py converts on torch
+#         if flashinfer's quantizer does not build for GB10 (boot log line
+#         "GB10_MTP_FP4: ..."). The draft only proposes tokens: acceptance
+#         can move, an answer cannot. Not measured yet.
+MTP_EXPERTS="${MTP_EXPERTS:-bf16}"
+
 # BF16 GEMM library for the dense layers left in BF16 (attention, GDN and
 # shared-expert projections). SGLang's own BF16 backends are SM90/SM100 only;
 # on GB10 cuBLAS picks sm80 WMMA 16x16 kernels for them, ~40% of the decode
@@ -273,6 +289,17 @@ model_env() {
   if [ "$FP8_HEAD" = 1 ]; then
     if [ "$MTP" = 1 ]; then export GB10_FP8_TARGET_HEAD=1; else export GB10_FP8_TARGET_HEAD=load; fi
   fi
+  case "$MTP_EXPERTS" in
+    bf16) unset GB10_MTP_FP4 ;;
+    fp4)
+      if [ "$QUANTIZATION" != modelopt_fp4 ]; then
+        echo "MTP_EXPERTS=fp4 needs QUANTIZATION=modelopt_fp4 (the RadixArk layout), not '$QUANTIZATION'" >&2
+        exit 1
+      fi
+      if [ "$MTP" = 1 ]; then export GB10_MTP_FP4=1; else unset GB10_MTP_FP4; fi
+      ;;
+    *) echo "MTP_EXPERTS must be bf16 or fp4, not '$MTP_EXPERTS'" >&2; exit 1 ;;
+  esac
   if [ "$SKINNY_BF16" = 1 ]; then
     export GB10_SKINNY_BF16=1
   else
@@ -293,7 +320,7 @@ model_env() {
   else
     unset GB10_ABLATE GB10_ABLATE_ALPHA GB10_ABLATE_AT GB10_ABLATE_STREAMS
   fi
-  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_SKINNY_BF16:-}${GB10_FP8_HC:-}${GB10_ABLATE:-}" ]; then
+  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_SKINNY_BF16:-}${GB10_FP8_HC:-}${GB10_MTP_FP4:-}${GB10_ABLATE:-}" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -323,6 +350,12 @@ model_args() {
       --speculative-num-draft-tokens "$MTP_DRAFT_TOKENS"
     )
     [ -n "$DRAFT_VOCAB" ] && args+=(--speculative-token-map "$DRAFT_VOCAB")
+    if [ "$MTP_EXPERTS" = fp4 ]; then
+      args+=(
+        --speculative-draft-model-quantization modelopt_fp4
+        --speculative-moe-runner-backend marlin
+      )
+    fi
   fi
   [ -n "$REASONING_PARSER" ] && args+=(--reasoning-parser "$REASONING_PARSER")
   [ -n "$TOOL_CALL_PARSER" ] && args+=(--tool-call-parser "$TOOL_CALL_PARSER")
@@ -338,5 +371,7 @@ model_summary() {
   local heads="target BF16"
   [ "$FP8_HEAD" = 1 ] && heads="target FP8"
   [ "$MTP" = 1 ] && heads="$heads, draft $([ "$FP8_DRAFT_HEAD" = 1 ] && echo FP8 || echo BF16)"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple$([ -n "$ABLATE" ] && echo "; ablation $(basename "$ABLATE") alpha $ABLATE_ALPHA at layer $ABLATE_AT, $ABLATE_STREAMS stream(s)")"
+  local draft_experts=""
+  [ "$MTP" = 1 ] && draft_experts="; draft experts $([ "$MTP_EXPERTS" = fp4 ] && echo "NVFP4 at load (Marlin W4A16)" || echo BF16)"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab$draft_experts; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple$([ -n "$ABLATE" ] && echo "; ablation $(basename "$ABLATE") alpha $ABLATE_ALPHA at layer $ABLATE_AT, $ABLATE_STREAMS stream(s)")"
 }

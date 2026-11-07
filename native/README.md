@@ -659,6 +659,27 @@ on) stores the hyper-connection mix weights in FP8: **65.8 tok/s**
 single-stream, 212-224 aggregate at 8 streams, HumanEval 97.6% without
 thinking and 99.4% with medium thinking; +67% over the cookbook's cell.
 
+**Next steps (2026-11-07, not measured yet).** A decode profile on SGLang
+0.5.21 (~54 ms a step) leaves the NVFP4 MoE (~17 ms) and the FP8 Marlin
+layers (~19 ms) at the memory's bandwidth; what is left:
+- `MTP_EXPERTS=fp4` (off by default until measured): the MTP draft's 512
+  BF16 experts (~2.3 ms a step, 5 GiB) converted to NVFP4 at load by
+  SGLang itself (`--speculative-draft-model-quantization modelopt_fp4`) and
+  run as W4A16 on its Marlin MoE (`--speculative-moe-runner-backend marlin`);
+  `patches/gb10_mtp_fp4.py` converts on torch if flashinfer's quantizer
+  does not build for GB10. Only acceptance can move.
+- The FP8 hyper-connection mix kernel reads its 6.7 MB at ~150 GB/s
+  (43.6 us, ~106 calls a step); its tiles are now parameters, and
+  `patches/bench_sglang_gb10_gpu.py` sweeps them.
+- Prefill (1.4-1.7K tok/s here against 1.8-2.0K for vllm-flash-ar on the
+  same model): `FP8_HC`'s path for prefill-sized inputs was an eager
+  chain of five passes over the [rows, 10240] gate where stock SGLang runs
+  a compiled one; it is now cuBLAS plus one Triton pass. The FP8 side layers
+  run on Marlin, a kernel made for a few rows (SGLang warns it "may degrade
+  performance for compute-heavy workloads"): the same bench times it at
+  prefill sizes against cuBLAS BF16, dequantize + cuBLAS and FP8 W8A8.
+  `bench/profile_decode.py --prefill 16384` profiles a prefill.
+
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
 slot), 24 without; a 374K-token KV pool at 0.85 (the cookbook's cell: ~93K). `MAMBA_SSM_DTYPE=bfloat16`
 halves the slots. Every knob is commented in the profile.
@@ -1027,6 +1048,8 @@ patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                gb10_fp8_side.py: BF16 side layers and lm_heads to FP8 Marlin ·
                gb10_skinny.py (+ its kernel): few-row BF16 GEMM for routers ·
                gb10_fp8_hc.py (+ its kernel): FP8 hyper-connection mix ·
+               gb10_mtp_fp4.py: torch NVFP4 quantizer for MTP_EXPERTS=fp4 ·
+               bench_sglang_gb10_gpu.py: GPU bench of the HC mix and side layers ·
                gb10_nvfp4_scales.py: per-shard NVFP4 scales on Marlin ·
                gb10_tool_fences.py: tool-call markers in code blocks stay text (qwen3_coder) ·
                sitecustomize.py (loads them) · test_*.py (CPU)
@@ -1035,7 +1058,7 @@ scripts/       00-check-host · 01-install · serve-sglang · install-service ·
                mem-watch: a line a minute on what holds the memory (for earlyoom kills)
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
-bench/         common.py · perf.py · longctx.py · profile_decode.py (GPU time per kernel group)
+bench/         common.py · perf.py · longctx.py · profile_decode.py (GPU time per kernel group; --prefill N)
                consistency.py (tool-call examples, greedy determinism, prefix-cache hits) · answers.py
 results/       RESULTS.md: all measurements (Docker build)
                BUILD-MANIFEST.md: the build behind them
