@@ -681,7 +681,10 @@ layers (~19 ms) at the memory's bandwidth; what is left:
   SGLang's FP8 W8A8 GEMM. `FP8_SIDE_PREFILL=w8a8` (off until measured end to
   end) sends inputs of 2048+ rows of the four large ones there, the plain
   weight restored from Marlin's layout each call (`patches/gb10_fp8_prefill.py`;
-  no second copy in memory): ~133 ms saved a chunk with that gather included. `bench/profile_decode.py --prefill 16384`
+  no second copy in memory): ~133 ms saved a chunk with that gather included.
+  Measured: prefill 2K / 8K / 32K / 101K 1666 / 1847 / 1896 / 1785 tok/s
+  with the HC fix, 1696 / 1907 / 1965 / 1853 with `w8a8` too (September:
+  1458 / 1648 / 1661 / 1499), level with vllm-flash-ar; decode unchanged. `bench/profile_decode.py --prefill 16384`
   profiles a prefill.
 
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a

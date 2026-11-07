@@ -1331,6 +1331,29 @@ joining their 268 MB of output is not, so CHUNKED_PREFILL stays at 4096 with
 it. HC prefill on this run: x2.05-2.16, 222 ms a chunk. Together ~355 ms of a
 ~2.6 s chunk, if the server agrees.
 
+**On the server** (gx10-1cc3, `perf.py`, chunk 4096, cap 8, 0.85; one run
+each, back to back; the 2026-09-28 column is the FP8_HC run above, before
+the prefill fix, on another day):
+
+| | 2026-09-28 (eager HC prefill) | HC prefill fix (default now) | + `FP8_SIDE_PREFILL=w8a8` |
+|---|---:|---:|---:|
+| Prefill 2K | 1458 / 1444 | 1666 | **1696** |
+| Prefill 8K | 1648 / 1511 | 1847 | **1907** |
+| Prefill 32K | 1661 / 1447 | 1896 | **1965** |
+| Prefill 101K | 1499 / 1229 | 1785 | **1853** |
+| Decode, single stream (median of 5) | 65.7-65.9 | 66.7 | 67.5 |
+| Aggregate 1 / 2 / 4 / 8 streams | 60.8-65.0 / 99-102 / 148-153 / 212-224 | 64.2 / 104.2 / 142.7 / 202.2 | 61.7 / 94.3 / 147.5 / 224.9 |
+| TTFT, short prompt | 134-135 ms | 132 ms | 128 ms |
+| Decode during a 32K prefill, 1 / 4 streams | | 0.4 / 2.6 tok/s, pause 15.2 / 16.2 s | 0.6 / 2.9 tok/s, pause 14.9 / 15.2 s |
+
+The prefill fix is +12-19% at 8K-101K over the September runs (another day,
+so only roughly), and the W8A8 side layers +2-4% on top (the bench predicted
+~6%: 133 ms of a ~2.15 s chunk). The prefill is now level with vllm-flash-ar
+on the same model (1.7-2.1K tok/s). Decode is unchanged, as it should be: the
+two paths only take inputs of 65+ / 2048+ rows; the concurrency sweep moves
+both ways between the runs (2 streams 94 vs 104, 8 streams 225 vs 202).
+W8A8 stays off by default until HumanEval with FP8_SIDE_PREFILL_ROWS=64.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).
