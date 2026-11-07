@@ -1489,6 +1489,16 @@ CUDA driver's allocations (+1-1.7 GiB during the 101K prompt) can supply the
 events. The hints themselves cost 47-49 ms a 4096-token chunk on average
 (81-120 ms at most): ~2% of a chunk.
 
+**vm.watermark_boost_factor=0 is not it either**, and that run narrowed it
+down: 2K / 8K / 32K at 1188 / 1224 / 1290 tok/s with 17K / 75K / 308K major
+faults while kswapd freed nothing and no task reclaimed (no allocation
+stall), yet 16K / 72K / 288K pages were read again after being reclaimed.
+Something drops page cache that /proc/vmstat does not count: reclaim inside
+a cgroup at its own limit (memory.high / memory.max) is counted only in that
+cgroup's memory.stat, and the service unit of scripts/install-service.sh
+sets MemoryMax=110G. perf.py now prints the server's cgroup, its limits, use
+and what it reclaimed per prefill prompt.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).
