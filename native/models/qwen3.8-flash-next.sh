@@ -91,6 +91,19 @@ PLE_TABLE="${PLE_TABLE:-mmap}"
 PLE_TABLE_DIR="${PLE_TABLE_DIR:-$MODEL_DIR}"
 # file: where the sparse copy goes (empty = $SGLANG_CACHE_DIR/ple/<model>).
 PLE_FILE_DIR="${PLE_FILE_DIR:-}"
+# Who reads the table rows of a prefill chunk (mmap mode; decode and CUDA
+# graphs always use the GPU kernel):
+#   gpu  the gather kernel, through the host page tables: a row not in the
+#        page cache costs the GPU a fault served from storage, ~35 us each,
+#        one at a time. In some machine states the hints did not keep that
+#        rare: 101K prompts 1.4-1.6K tok/s instead of 1.8-1.9K
+#        (results/RESULTS.md, 2026-11-07).
+#   cpu  CPU threads copy the rows into a pinned buffer (each waiting on its
+#        own faults, so storage serves them in parallel; ~16 ms a 4096-token
+#        chunk from the page cache), then one copy to the GPU
+#        (patches/gb10_ple_mmap.py, CpuGather; boot log "gathers of >= 2048
+#        rows on N CPU threads"). Not measured on the Spark yet.
+PLE_GATHER="${PLE_GATHER:-gpu}"
 
 # Checkpoint quantization and its kernels (cookbook: RadixArk export).
 QUANTIZATION="${QUANTIZATION:-modelopt_fp4}"
@@ -293,6 +306,11 @@ model_env() {
         exit 1
       fi
       export GB10_PLE_MMAP=1 GB10_PLE_TABLE_DIR="$PLE_TABLE_DIR"
+      case "$PLE_GATHER" in
+        gpu) unset GB10_PLE_CPU_GATHER ;;
+        cpu) export GB10_PLE_CPU_GATHER=1 ;;
+        *) echo "PLE_GATHER must be gpu or cpu, not '$PLE_GATHER'" >&2; exit 1 ;;
+      esac
       ;;
     file) unset GB10_PLE_MMAP ;;
     *) echo "PLE_TABLE must be mmap or file, not '$PLE_TABLE'" >&2; exit 1 ;;
