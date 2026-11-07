@@ -52,6 +52,12 @@ if os.environ.get("GB10_FP8_HC") == "1":
     gb10_ple_mmap.install_import_hook(gb10_fp8_hc.TARGET_MODULE, gb10_fp8_hc.apply_target)
     gb10_ple_mmap.install_import_hook(gb10_fp8_hc.MTP_MODULE, gb10_fp8_hc.apply_mtp)
 
+if os.environ.get("GB10_MTP_FP4") == "1":
+    import gb10_mtp_fp4
+    import gb10_ple_mmap
+
+    gb10_ple_mmap.install_import_hook(gb10_mtp_fp4.TARGET_MODULE, gb10_mtp_fp4.apply)
+
 if os.environ.get("GB10_SKINNY_BF16") == "1":
     import gb10_ple_mmap
     import gb10_skinny

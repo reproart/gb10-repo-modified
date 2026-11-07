@@ -13,8 +13,11 @@ row (amax / 448) after loading, and routes the mix through a copy of the
 kernel that reads FP8 (gb10_fp8_hc_kernel): half the bytes. The copy takes
 up to 64 rows (SGLang's stops at 16, and runs more through torch.compile):
 a verify at 8 requests is 32. Longer inputs (prefill) take a torch path
-that converts each weight to BF16 once per call and applies the row scales
-to the outputs. block_inject_weight [4 x 10240] is left alone.
+that converts each weight to BF16 once per call for cuBLAS and applies the
+row scales to the outputs, with the end of the mix (sigmoid, product with the
+streams, mean) in one Triton pass: SGLang's own prefill path is a
+torch.compile'd chain, an eager one would be five passes over the
+[rows, 10240] gate. block_inject_weight [4 x 10240] is left alone.
 
 Enabled by GB10_FP8_HC=1 (models/qwen3.8-flash-next.sh: FP8_HC=1). Lossy:
 the gate that mixes the residual streams moves by per-channel FP8 error;
@@ -36,6 +39,7 @@ WEIGHTS = ("input_mix_weight_down", "input_mix_weight_up")
 
 _patched = {"hc": False}
 _wide = {"ok": True}   # the 32/64-row tiles built and ran
+_prefill = {"ok": True}   # the prefill gate kernel built and ran
 
 
 def scale_of(weight):
@@ -48,21 +52,44 @@ def _kernel(*args, **kwargs):
     return fused_hc_mix_fp8(*args, **kwargs)
 
 
-def mix_reference(x, w_down, s_down, w_up, s_up, hc, hs):
-    """SGLang's _mix_compute on the FP8 weights: the path for prefill-sized
-    inputs. Each weight is converted to x's dtype once (exact: every E4M3
-    value is a BF16 value) and its row scales multiply the GEMM's output
-    columns, so no FP32 copy of a weight or of the [rows, 10240] gate is made."""
+def _gate_apply_torch(gate, s_up, x, hc, hs):
     import torch
-    import torch.nn.functional as F
 
-    t = F.linear(x, w_down.to(x.dtype))
-    t.mul_(s_down.to(t.dtype)).div_(hc)
-    t = F.silu(t)
-    gate = F.linear(t, w_up.to(x.dtype))
     gate.mul_(s_up.to(gate.dtype))
     torch.sigmoid_(gate)
     return (gate.unflatten(-1, (hc, hs)) * x.unflatten(-1, (hc, hs))).mean(dim=-2)
+
+
+def _gate_apply(gate, s_up, x, hc, hs):
+    """The end of the mix: one Triton pass on CUDA (the eager chain is five
+    passes over [rows, hc*hs] buffers: ~0.6 GB a mix at a 4096-token chunk,
+    against ~0.2 GB), the eager chain elsewhere or if the kernel fails."""
+    if x.is_cuda and _prefill["ok"]:
+        try:
+            from gb10_fp8_hc_kernel import hc_gate_apply
+
+            return hc_gate_apply(gate, s_up, x if x.stride(-1) == 1 else x.contiguous(), hc, hs)
+        except Exception as e:  # noqa: BLE001 - keep serving on the eager chain
+            _prefill["ok"] = False
+            logger.warning("FP8 HC: the prefill gate kernel failed (%s: %s); prefill-sized "
+                           "mixes use the eager torch chain", type(e).__name__, e)
+    return _gate_apply_torch(gate, s_up, x, hc, hs)
+
+
+def mix_reference(x, w_down, s_down, w_up, s_up, hc, hs):
+    """SGLang's _mix_compute on the FP8 weights: the path for prefill-sized
+    inputs. Each weight is converted to x's dtype once per call (exact: every
+    E4M3 value is a BF16 value) for a cuBLAS GEMM, and its row scales multiply
+    the GEMM's output columns, so no FP32 copy of a weight is made. The small
+    [rows, lowrank] middle is computed in FP32 like the decode kernel does;
+    the end of the mix (row scale, sigmoid, product with x, mean over the
+    streams) is one Triton pass on CUDA (_gate_apply)."""
+    import torch.nn.functional as F
+
+    t = F.linear(x, w_down.to(x.dtype))
+    t = F.silu(t.float() * (s_down / hc)).to(x.dtype)
+    gate = F.linear(t, w_up.to(x.dtype))
+    return _gate_apply(gate, s_up, x, hc, hs)
 
 
 def make_wrappers(orig_supported, orig_mix, kernel=_kernel):

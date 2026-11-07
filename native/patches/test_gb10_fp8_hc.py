@@ -52,6 +52,7 @@ class ConvertTest(unittest.TestCase):
         self.h = h
         h._patched["hc"] = True
         self.addCleanup(h._patched.__setitem__, "hc", False)
+        self.addCleanup(h._prefill.__setitem__, "ok", True)
         torch.manual_seed(0)
 
     def model(self):
@@ -169,6 +170,43 @@ class ConvertTest(unittest.TestCase):
         mix(torch.randn(8, HC * HS, dtype=torch.bfloat16).as_subclass(FakeCuda), wd, wu, HC, HS)
         self.assertEqual(state["n"], 2)                                      # 16-row kernel still used
 
+    def test_prefill_gate_kernel_failure_falls_back_once(self):
+        import types
+
+        state = {"n": 0}
+
+        def broken(*a):
+            state["n"] += 1
+            raise RuntimeError("no kernel image")
+
+        class FakeCuda(torch.Tensor):
+            @property
+            def is_cuda(self):
+                return True
+
+        fake_mod = types.ModuleType("gb10_fp8_hc_kernel")
+        fake_mod.hc_gate_apply = broken
+        saved = sys.modules.get("gb10_fp8_hc_kernel")
+        sys.modules["gb10_fp8_hc_kernel"] = fake_mod
+        self.addCleanup(lambda: sys.modules.__setitem__("gb10_fp8_hc_kernel", saved)
+                        if saved is not None else sys.modules.pop("gb10_fp8_hc_kernel", None))
+        self.addCleanup(self.h._prefill.__setitem__, "ok", True)
+        conv = hc_module()
+        wd_bf16 = conv.input_mix_weight_down.weight.detach().clone()
+        wu_bf16 = conv.input_mix_weight_up.weight.detach().clone()
+        holder = torch.nn.Module()
+        holder.hc = conv
+        self.h.convert_model(holder)
+        wd, wu = conv.input_mix_weight_down.weight, conv.input_mix_weight_up.weight
+        x = torch.randn(80, HC * HS, dtype=torch.bfloat16)
+        for _ in range(2):
+            out = self.h.mix_reference(x.as_subclass(FakeCuda), wd, self.h.scale_of(wd), wu,
+                                       self.h.scale_of(wu), HC, HS)
+            ref = mix_bf16(x.float(), wd_bf16.float(), wu_bf16.float(), HC, HS)
+            self.assertLess(((out.float() - ref).norm() / ref.norm()).item(), 0.03)
+        self.assertEqual(state["n"], 1)          # tried once, then the eager chain
+        self.assertFalse(self.h._prefill["ok"])
+
     def test_apply_hc_is_idempotent(self):
         import types
 
@@ -208,6 +246,18 @@ def kernel_selfcheck():
         raise AssertionError("65 rows accepted")
     except ValueError:
         pass
+    # the prefill end of the mix, against the eager chain in FP32
+    from gb10_fp8_hc_kernel import hc_gate_apply
+
+    for rows, dtype in ((1, torch.float16), (37, torch.float16), (300, torch.bfloat16)):
+        x = torch.randn(rows, HC * HS).to(dtype)
+        gate = torch.randn(rows, HC * HS).to(dtype)
+        s = torch.rand(HC * HS) + 0.5
+        out = hc_gate_apply(gate, s, x, HC, HS)
+        ref = (torch.sigmoid(gate.float() * s).unflatten(-1, (HC, HS))
+               * x.float().unflatten(-1, (HC, HS))).mean(dim=-2)
+        assert out.shape == (rows, HS) and out.dtype == dtype
+        worst = max(worst, ((out.float() - ref).norm() / ref.norm()).item())
     print(f"worst relative error: {worst:.2e}")
 
 

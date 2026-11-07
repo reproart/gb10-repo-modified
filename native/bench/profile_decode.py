@@ -2,6 +2,7 @@
 """Where a decode step's time goes: a short GPU profile, summed per kernel group.
 
     python3 bench/profile_decode.py                 # profile the running server
+    python3 bench/profile_decode.py --prefill 16384 # profile a prefill instead
     python3 bench/profile_decode.py --trace FILE    # summarize an existing trace
 
 Asks the server to record with the torch profiler while it runs one
@@ -44,6 +45,12 @@ with the weight a GEMM reads and the rate it reads it at: a decode GEMM
 near the memory's bandwidth (~240 GB/s on a GB10) can only get faster by
 reading fewer bytes, one far below it by a better kernel. --trace re-reads a
 trace already written, e.g. after updating this script.
+
+--prefill N profiles a prefill instead of decode steps: one prompt of ~N tokens
+that nothing in the prefix cache shares, answered with one token. On SGLang
+the recording covers all but the last chunk of it (--steps defaults to
+ceil(N / chunked_prefill_size) - 1, read from /get_server_info), so every
+recorded step is a full chunk; on vLLM the profiler brackets the request.
 
 The trace is written by the server process, so this script must run on the
 same machine (the default output dir is /tmp/gb10-profile). Profiling slows
@@ -255,11 +262,14 @@ def newest_trace(directory: str, since: float) -> str | None:
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--trace", help="summarize this trace file instead of profiling")
-    ap.add_argument("--steps", type=int, default=40, help="scheduler steps to record (default 40)")
+    ap.add_argument("--steps", type=int, default=None,
+                    help="scheduler steps to record (default 40; with --prefill, its full chunks)")
     ap.add_argument("--output-dir", default="/tmp/gb10-profile")
     ap.add_argument("--tokens", type=int, default=None,
                     help="answer length while recording (default 400 on SGLang, 160 on vLLM)")
     ap.add_argument("--top", type=int, default=20)
+    ap.add_argument("--prefill", type=int, default=0, metavar="N",
+                    help="profile the prefill of a unique ~N-token prompt instead of decode")
     args = ap.parse_args()
 
     if args.trace:
@@ -273,10 +283,19 @@ def main():
     import common
 
     common.print_header()
-    sglang = bool(common.server_info())
+    info = common.server_info()
+    sglang = bool(info)
     os.makedirs(args.output_dir, exist_ok=True)
     print("warmup...", flush=True)
     common.chat(common.CODE_PROMPT, 64, stream=True)
+    steps = args.steps or 40
+    if args.prefill:
+        prompt = common.unique_prompt(f"profile-{time.time_ns()}", args.prefill)
+        if sglang and not args.steps:
+            chunk = int(info.get("chunked_prefill_size") or 0)
+            steps = max(1, -(-args.prefill // chunk) - 1) if chunk > 0 else 1
+            print(f"prefill of ~{args.prefill} tokens, chunks of {chunk or '?'}: recording "
+                  f"{steps} step(s)", flush=True)
     started = time.time()
 
     def post(path, body=None, timeout=600):
@@ -286,7 +305,7 @@ def main():
 
     if sglang:
         tokens = args.tokens or 400
-        body = json.dumps({"output_dir": args.output_dir, "num_steps": args.steps,
+        body = json.dumps({"output_dir": args.output_dir, "num_steps": steps,
                            "activities": ["CPU", "GPU"]}).encode()
         # start_profile returns when profiling starts; the request below provides the steps.
         t = threading.Thread(target=lambda: post("/start_profile", body), daemon=True)
@@ -301,9 +320,15 @@ def main():
                 sys.exit("the server has no /start_profile: vLLM opens it only with a profiler "
                          "config at launch (vllm-b12x: PROFILE=1 ./serve.sh)")
             raise
-    r = common.chat(common.CODE_PROMPT, tokens, stream=True)
-    print(f"answer while profiling: {r['completion_tokens']} tokens in {r['e2e']:.1f} s "
-          "(slowed by the profiler)")
+    if args.prefill:
+        r = common.chat(prompt, 1, stream=True)
+        pt = r.get("prompt_tokens") or args.prefill
+        print(f"prefill while profiling: {pt} tokens, TTFT {r['ttft']:.1f} s, "
+              f"{pt / max(r['ttft'], 1e-9):.0f} tok/s (slowed by the profiler)")
+    else:
+        r = common.chat(common.CODE_PROMPT, tokens, stream=True)
+        print(f"answer while profiling: {r['completion_tokens']} tokens in {r['e2e']:.1f} s "
+              "(slowed by the profiler)")
     if sglang:
         t.join(timeout=600)
     else:

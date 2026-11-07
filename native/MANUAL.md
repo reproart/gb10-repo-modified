@@ -290,6 +290,13 @@ nothing written` и `... shard tensors left in place`, затем строки `
 `FP8 HC`. Если ответы — мусор, `PLE_TABLE=file` даёт стоковое поведение для
 сравнения.
 
+**Проверяется (2026-11-07, по умолчанию выключено):** `MTP_EXPERTS=fp4`.
+512 экспертов черновика MTP хранятся в чекпойнте в BF16 (5 ГиБ, ~2.3 мс на
+шаг). Эта опция квантует их в NVFP4 при загрузке средствами самого SGLang и
+гоняет через Marlin MoE (W4A16). Может сдвинуться только принятие, ответы не
+меняются. Подробности и бенчмарк `patches/bench_sglang_gb10_gpu.py` — в
+README.
+
 **Abliterated-вариант** (без отказов, веса Huihui):
 
 ```bash
@@ -1029,6 +1036,7 @@ python3 bench/perf.py --only decode      # только один поток
 python3 bench/perf.py --only interference  # декод других потоков, пока идёт префилл промпта ~32K
 python3 bench/longctx.py                 # несколько длинных контекстов разом
 python3 bench/profile_decode.py          # куда уходит шаг декода (по группам ядер)
+python3 bench/profile_decode.py --prefill 16384  # то же для префилла промпта ~16K
 python3 bench/consistency.py             # примеры вызовов инструментов, детерминизм, кэш префиксов
 ../scripts/run-humaneval.sh              # HumanEval без размышления
 ../scripts/run-humaneval.sh think-medium # с размышлением medium
@@ -1116,6 +1124,8 @@ patches/              патчи SGLang, включаются профилями
   gb10_ple_mmap         таблица n-грамм Flash-Next читается на месте
   gb10_fp8_side         BF16-слои, головы и драфт DFlash → FP8 (Marlin)
   gb10_fp8_hc           hyper-connections Flash-Next → FP8
+  gb10_mtp_fp4          квантователь NVFP4 на torch для MTP_EXPERTS=fp4
+  bench_sglang_gb10_gpu GPU-бенчмарк смешивания HC и боковых слоёв (сервер остановлен)
   gb10_marlin_lean      перепаковка MoE в Marlin без лишней копии
   gb10_ablate           абляция векторами (ABLATE=...)
   gb10_tool_fences      пример вызова инструмента в блоке кода остаётся текстом (TOOL_FENCES, вкл.)
