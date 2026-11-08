@@ -1540,6 +1540,24 @@ prompt (the threads now take every miss themselves). With the hints (above)
 is paid back. They stay on (the default); hints first for async I/O at a high
 queue depth, then the threads.
 
+**`PREFILL_DECODE_INTERVAL=1`** (`--prefill-decode-interval 1`, chunk 4096),
+2026-11-08, three `--only interference` runs and two `--only prefill`:
+
+| | interval 0 (2026-11-07) | interval 1, runs 1 / 2 / 3 |
+|---|---:|---:|
+| Longest pause during a 32K prefill, 1 stream | 12.5-24.9 s | 1.85 / 1.84 / 1.84 s |
+| same, 4 streams | 12.5-24.6 s | 1.88 / 1.88 / 1.87 s |
+| Decode during it, 1 / 4 streams | 0.4-1.0 / 1.5-3.8 tok/s | 1.8-3.1 / 7.4-8.3 |
+| The 32K prompt's TTFT under load | 14.3 s (1 stream) | 14.5-14.7 s |
+| Prefill alone 2K / 8K / 32K / 101K | 2151-2283 / 2259-2312 / 2271-2302 / 2114-2137 | 2304-2312 / 2338-2360 / 2327-2333 / 2161-2172 |
+
+The pause is now one 4096-token chunk (~1.85 s) instead of the whole prompt,
+for ~2% on the long prompt's own TTFT, and nothing alone (the decode rounds
+are empty when nothing decodes; the prefill-alone figures are even a little
+higher than the day before). It is the profile default now. A larger interval
+or 2048-token chunks would give the running streams more of the time during a
+long prefill, at the long prompt's expense.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).

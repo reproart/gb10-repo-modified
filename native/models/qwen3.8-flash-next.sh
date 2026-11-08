@@ -282,9 +282,14 @@ CHUNKED_PREFILL="${CHUNKED_PREFILL:-4096}"
 # pause 12.5-25 s). N runs N decode rounds (one MTP step each, ~60 ms at one
 # stream) after every prefill chunk: the pause becomes about one chunk
 # (4096 tokens, ~1.9 s), the long prompt's TTFT grows by ~N steps a chunk.
-# On the 27B profile 1 (with 2048-token chunks) cut the pause to 1.3-2.1 s.
-# 0 = SGLang's default. Not measured on this model yet.
-PREFILL_DECODE_INTERVAL="${PREFILL_DECODE_INTERVAL:-0}"
+# Measured (results/RESULTS.md, 2026-11-08) with 1: the longest pause during
+# a 32K prefill 1.84-1.88 s (was 12.5-25 s), the streams getting 1.8-3.1 /
+# 7.4-8.3 tok/s through it at 1 / 4 streams (was 0.4-1.0 / 1.5-3.8); the 32K
+# prompt's own TTFT 14.5-15.0 s against ~14.3, and prefill alone unchanged
+# (2161-2360 tok/s: with nothing decoding, the rounds are empty). The default.
+# Larger N gives the running streams more during a long prefill, at the long
+# prompt's expense; 0 = SGLang's default.
+PREFILL_DECODE_INTERVAL="${PREFILL_DECODE_INTERVAL:-1}"
 PAGE_SIZE="${PAGE_SIZE:-64}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 
