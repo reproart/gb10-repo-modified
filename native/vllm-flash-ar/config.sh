@@ -34,7 +34,7 @@ export NAME="${NAME:-qwen38-flash}"
 # --- The API: http://<host>:PORT/v1 ---
 # 8888, as every server here (the recipe's own default was 8000: PORT=8000 in
 # config.local.sh keeps old clients working). One server at a time.
-export PORT="${PORT:-8888}"
+export PORT="${PORT:-8000}"
 # Model ids the API answers to: the first is the one /v1/models lists first and
 # replies carry; "qwen" is the recipe's earlier id, kept for existing clients.
 export SERVED_NAME="${SERVED_NAME:-qwen3.8-flash-next qwen}"
@@ -57,7 +57,7 @@ export BIND_ADDR="${BIND_ADDR:-}"
 
 # --- Serving ---
 export SEQS="${SEQS:-8}"            # concurrent requests (don't benchmark with 1-2: excess requests queue)
-export MTP="${MTP:-3}"              # MTP speculative tokens; 0 = off
+export MTP="${MTP:-4}"              # MTP speculative tokens; 0 = off
 export PREFIX_CACHE="${PREFIX_CACHE:-1}"
 # Deterministic memory sizing for unified-memory boxes (GB10 / DGX Spark):
 # near-zero utilization fraction plus an explicit KV pool, so the driver
@@ -119,7 +119,7 @@ export CPUSET="${CPUSET:-}"
 # = it also comes back after a reboot or a crash (the recipe's default). Only
 # with this as the machine's one server: next to the SGLang service or another
 # recipe, two servers would start at boot and share 128 GB.
-export RESTART="${RESTART:-no}"
+export RESTART="${RESTART:-unless-stopped}"
 
 # madvise(MADV_RANDOM) the PLE mmap: no readahead around 160-byte row faults.
 # Upstream (blazux 0c6df7e) measured 4-8% faster cold prefill and a cleaner
