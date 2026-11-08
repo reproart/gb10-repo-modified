@@ -75,7 +75,14 @@ unset _dir _name
 #         cookbook deletes it before each start. For comparison only.
 # Both read rows the same way afterwards (GPU through the host page tables,
 # page-cache hints before prefill, resident set capped at
-# SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB, default 8).
+# SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB, default 8). In mmap mode the hints go
+# out in batches (process_madvise, boot log "page-cache hints ... batched")
+# and before the gather starts, not beside it: started together, the GPU
+# reached pages they had not put in the page cache yet and waited for each,
+# in some runs half a million times for a 101K prompt (results/RESULTS.md,
+# 2026-11-07). The log reports the time the hints take every 100 prefill
+# gathers. GB10_PLE_PREFETCH_SYNC=0 (beside the gather) and
+# GB10_PLE_PREFETCH=fadvise (one call a page) go back, for comparison.
 PLE_TABLE="${PLE_TABLE:-mmap}"
 # mmap: the directory holding the table shards. Any directory with the same
 # ...ngram_embedding.shard_<k>.weight tensors works (e.g. the FP8 table shards
@@ -84,6 +91,20 @@ PLE_TABLE="${PLE_TABLE:-mmap}"
 PLE_TABLE_DIR="${PLE_TABLE_DIR:-$MODEL_DIR}"
 # file: where the sparse copy goes (empty = $SGLANG_CACHE_DIR/ple/<model>).
 PLE_FILE_DIR="${PLE_FILE_DIR:-}"
+# Who reads the table rows of a prefill chunk (mmap mode; decode and CUDA
+# graphs always use the GPU kernel):
+#   gpu  the gather kernel, through the host page tables: a row not in the
+#        page cache costs the GPU a fault served from storage, ~35 us each,
+#        one at a time. In some machine states the hints did not keep that
+#        rare: 101K prompts 1.4-1.6K tok/s instead of 1.8-1.9K
+#        (results/RESULTS.md, 2026-11-07).
+#   cpu  CPU threads copy the rows into a pinned buffer (each waiting on its
+#        own faults, so storage serves them in parallel), then one copy to the
+#        GPU (patches/gb10_ple_mmap.py, CpuGather; boot log "gathers of >= 2048
+#        rows on N CPU threads"). Measured: prefill 2K-32K 2151-2312 tok/s,
+#        101K 2114-2137, the same in three runs back to back, a few hundred
+#        major faults a prompt (results/RESULTS.md). The default.
+PLE_GATHER="${PLE_GATHER:-cpu}"
 
 # Checkpoint quantization and its kernels (cookbook: RadixArk export).
 QUANTIZATION="${QUANTIZATION:-modelopt_fp4}"
@@ -111,6 +132,24 @@ MTP_DRAFT_TOKENS="${MTP_DRAFT_TOKENS:-4}"
 # Outputs cannot change (the target verifies every token); acceptance can, on
 # CJK-heavy text especially: DRAFT_VOCAB='' goes back to the full vocabulary.
 DRAFT_VOCAB="${DRAFT_VOCAB-$ROOT/models/vocab/qwen3.8-flash-next-draft-vocab-65536.pt}"
+
+# The MTP draft's 512 routed experts, which the checkpoint keeps in BF16
+# (~5 GiB; its exclude list has mtp.*). The draft reads ~10 of them a token on
+# flashinfer's BF16 MoE, 3 times a decode step (one draft extend, two draft
+# steps): ~2.3 ms of a ~54 ms step in the profile.
+#   bf16  as the checkpoint ships them.
+#   fp4   SGLang's own load-time NVFP4 conversion for the draft
+#         (--speculative-draft-model-quantization modelopt_fp4 on this
+#         checkpoint), run as W4A16 on its NVFP4 Marlin MoE
+#         (--speculative-moe-runner-backend marlin; the online conversion has
+#         no calibrated activation scale for a W4A4 kernel): ~3.5x fewer bytes
+#         a call and ~3.6 GiB freed. patches/gb10_mtp_fp4.py converts on torch
+#         if flashinfer's quantizer does not build for GB10 (boot log line
+#         "GB10_MTP_FP4: ..."). The draft only proposes tokens: acceptance
+#         can move, an answer cannot.
+# Measured (results/RESULTS.md): decode 69.3-69.9 tok/s against 66.7-67.5,
+# accept_len unchanged (3.6-3.85), 224-234 tok/s at 8 streams. The default.
+MTP_EXPERTS="${MTP_EXPERTS:-fp4}"
 
 # BF16 GEMM library for the dense layers left in BF16 (attention, GDN and
 # shared-expert projections). SGLang's own BF16 backends are SM90/SM100 only;
@@ -144,6 +183,29 @@ FP8_SIDE="${FP8_SIDE:-1}"
 FP8_DRAFT_HEAD="${FP8_DRAFT_HEAD:-1}"
 FP8_HEAD="${FP8_HEAD:-1}"
 
+# Prefill-sized inputs of the large FP8 side layers (GDN in_proj_qkvz /
+# out_proj, attention qkv / o): Marlin is a weight-only kernel made for a few
+# rows (~47-78 TFLOPS here); SGLang's FP8 GEMM (fp8_scaled_mm on GB10's FP8
+# tensor cores, activations quantized per token) runs them at 105-160.
+#   marlin  every input on Marlin, as before.
+#   w8a8    inputs of FP8_SIDE_PREFILL_ROWS+ rows on FP8 W8A8: the plain FP8
+#           weight is restored from Marlin's layout each call (one gather pass,
+#           no second copy in memory; patches/gb10_fp8_prefill.py learns and
+#           checks the byte order at load, boot log "FP8 side prefill: ...").
+#           Bench, a 4096-token chunk: the four large layers ~133 ms faster
+#           with the gather included (marlin 369 ms for all side layers);
+#           keep CHUNKED_PREFILL at 4096 (8192-row FP8 GEMMs run slower and
+#           are done in two slices plus a copy). From 2048 rows: below ~1500
+#           the gather costs more than it saves. Lossier than weight-only for
+#           the prompt's KV and GDN state (activations in FP8, rel. error
+#           ~3e-2 per GEMM against ~3e-3); decode is unchanged.
+# Measured (results/RESULTS.md): prefill 2K-101K +2-4% over marlin (with
+# the HC prefill fix: 1696 / 1907 / 1965 / 1853 tok/s); HumanEval with medium
+# thinking and FP8_SIDE_PREFILL_ROWS=64 (every problem's prompt on W8A8)
+# 98.2% and 99.4% in two runs, as before (98.8-100%). The default since.
+FP8_SIDE_PREFILL="${FP8_SIDE_PREFILL:-w8a8}"
+FP8_SIDE_PREFILL_ROWS="${FP8_SIDE_PREFILL_ROWS:-2048}"
+
 # A Triton GEMM for the small layers that stay BF16 because they select
 # something: the MoE routers (mlp.gate [512 x 2560]) and the QSA indexer
 # projections (index_qk_proj [640 x 2560]), ~64 calls a decode step at ~46 us
@@ -169,13 +231,17 @@ FP8_HC="${FP8_HC:-1}"
 
 # Directional ablation at inference (patches/gb10_ablate.py): per-layer unit
 # vectors from an .npz (keys = layer indices), e.g. the refusal directions
-# built for RadixArk/Qwen3.8-Flash-Next-NVFP4:
+# built for RadixArk/Qwen3.8-Flash-Next-NVFP4, once:
 #   hf download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors \
 #     --local-dir /models/qwen3.8-flash-next-refusal-ablation-vectors
-#   ABLATE=/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz ./serve.sh qwen3.8-flash-next
-# Each listed layer's residual stream loses ABLATE_ALPHA times its
-# component along the layer's vector: h - alpha d (d . h); no weight changes,
-# empty ABLATE = the stock model. ALPHA 1 is the vectors' validated default,
+# then
+#   ABLATE=1 ./serve.sh qwen3.8-flash-next          the vectors at ABLATE_VECTORS
+#   ./serve.sh qwen3.8-flash-next-ablated           the same, as a profile (and a
+#                                                   served name) of its own
+#   ABLATE=/path/other.npz ./serve.sh qwen3.8-flash-next   another file
+# ABLATE empty or 0 = the stock model. Each listed layer's residual stream
+# loses ABLATE_ALPHA times its component along the layer's vector:
+# h - alpha d (d . h); no weight changes. ALPHA 1 is the vectors' validated default,
 # 1.5 stronger (watch for incoherence). ABLATE_AT output|input (which side
 # of each layer; the boot log prints how alike neighbouring vectors are),
 # ABLATE_STREAMS each|mean (all 4 hyper-connection streams, or only their
@@ -183,6 +249,12 @@ FP8_HC="${FP8_HC:-1}"
 # vectors are model- and quantization-specific, and pointless on the
 # abliterated checkpoint (WEIGHTS=abliterated), whose weights already have it.
 ABLATE="${ABLATE:-}"
+ABLATE_VECTORS="${ABLATE_VECTORS:-/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz}"
+case "$ABLATE" in
+  ''|0) ABLATE_FILE="" ;;
+  1) ABLATE_FILE="$ABLATE_VECTORS" ;;
+  *) ABLATE_FILE="$ABLATE" ;;
+esac
 ABLATE_ALPHA="${ABLATE_ALPHA:-1.0}"
 ABLATE_AT="${ABLATE_AT:-output}"
 ABLATE_STREAMS="${ABLATE_STREAMS:-each}"
@@ -213,6 +285,21 @@ MAMBA_SSM_DTYPE="${MAMBA_SSM_DTYPE:-}"
 MEM_FRACTION="${MEM_FRACTION:-0.85}"
 
 CHUNKED_PREFILL="${CHUNKED_PREFILL:-4096}"
+# Decode rounds between the chunks of a long prompt (--prefill-decode-interval).
+# SGLang runs a ready prefill batch before decode and, with MTP, never mixes
+# the two: with 0 the chunks of a 32K prompt run back to back and every stream
+# already generating stops for the whole prefill (perf.py section 5: longest
+# pause 12.5-25 s). N runs N decode rounds (one MTP step each, ~60 ms at one
+# stream) after every prefill chunk: the pause becomes about one chunk
+# (4096 tokens, ~1.9 s), the long prompt's TTFT grows by ~N steps a chunk.
+# Measured (results/RESULTS.md, 2026-11-08) with 1: the longest pause during
+# a 32K prefill 1.84-1.88 s (was 12.5-25 s), the streams getting 1.8-3.1 /
+# 7.4-8.3 tok/s through it at 1 / 4 streams (was 0.4-1.0 / 1.5-3.8); the 32K
+# prompt's own TTFT 14.5-15.0 s against ~14.3, and prefill alone unchanged
+# (2161-2360 tok/s: with nothing decoding, the rounds are empty). The default.
+# Larger N gives the running streams more during a long prefill, at the long
+# prompt's expense; 0 = SGLang's default.
+PREFILL_DECODE_INTERVAL="${PREFILL_DECODE_INTERVAL:-1}"
 PAGE_SIZE="${PAGE_SIZE:-64}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 
@@ -245,6 +332,11 @@ model_env() {
         exit 1
       fi
       export GB10_PLE_MMAP=1 GB10_PLE_TABLE_DIR="$PLE_TABLE_DIR"
+      case "$PLE_GATHER" in
+        gpu) unset GB10_PLE_CPU_GATHER ;;
+        cpu) export GB10_PLE_CPU_GATHER=1 ;;
+        *) echo "PLE_GATHER must be gpu or cpu, not '$PLE_GATHER'" >&2; exit 1 ;;
+      esac
       ;;
     file) unset GB10_PLE_MMAP ;;
     *) echo "PLE_TABLE must be mmap or file, not '$PLE_TABLE'" >&2; exit 1 ;;
@@ -264,6 +356,11 @@ model_env() {
   else
     unset GB10_FP8_SIDE
   fi
+  case "$FP8_SIDE_PREFILL" in
+    marlin) unset GB10_FP8_SIDE_PREFILL GB10_FP8_SIDE_PREFILL_ROWS ;;
+    w8a8) export GB10_FP8_SIDE_PREFILL=w8a8 GB10_FP8_SIDE_PREFILL_ROWS="$FP8_SIDE_PREFILL_ROWS" ;;
+    *) echo "FP8_SIDE_PREFILL must be marlin or w8a8, not '$FP8_SIDE_PREFILL'" >&2; exit 1 ;;
+  esac
   # Heads: with MTP they are converted after the draft takes its copy of
   # the target head; without MTP the target head is converted at load.
   unset GB10_FP8_DRAFT_HEAD GB10_FP8_TARGET_HEAD
@@ -273,6 +370,17 @@ model_env() {
   if [ "$FP8_HEAD" = 1 ]; then
     if [ "$MTP" = 1 ]; then export GB10_FP8_TARGET_HEAD=1; else export GB10_FP8_TARGET_HEAD=load; fi
   fi
+  case "$MTP_EXPERTS" in
+    bf16) unset GB10_MTP_FP4 ;;
+    fp4)
+      if [ "$QUANTIZATION" != modelopt_fp4 ]; then
+        echo "MTP_EXPERTS=fp4 needs QUANTIZATION=modelopt_fp4 (the RadixArk layout), not '$QUANTIZATION'" >&2
+        exit 1
+      fi
+      if [ "$MTP" = 1 ]; then export GB10_MTP_FP4=1; else unset GB10_MTP_FP4; fi
+      ;;
+    *) echo "MTP_EXPERTS must be bf16 or fp4, not '$MTP_EXPERTS'" >&2; exit 1 ;;
+  esac
   if [ "$SKINNY_BF16" = 1 ]; then
     export GB10_SKINNY_BF16=1
   else
@@ -283,17 +391,22 @@ model_env() {
   else
     unset GB10_FP8_HC
   fi
-  if [ -n "$ABLATE" ]; then
-    if [ ! -f "$ABLATE" ]; then
-      echo "ABLATE=$ABLATE: no such file" >&2
+  if [ -n "$ABLATE_FILE" ]; then
+    if [ ! -f "$ABLATE_FILE" ]; then
+      if [ "$ABLATE" = 1 ]; then
+        echo "ABLATE=1: no vectors at ABLATE_VECTORS=$ABLATE_VECTORS - download them once:" >&2
+        echo "  hf download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors --local-dir $(dirname "$ABLATE_VECTORS")" >&2
+      else
+        echo "ABLATE=$ABLATE: no such file" >&2
+      fi
       exit 1
     fi
-    export GB10_ABLATE="$ABLATE" GB10_ABLATE_ALPHA="$ABLATE_ALPHA" \
+    export GB10_ABLATE="$ABLATE_FILE" GB10_ABLATE_ALPHA="$ABLATE_ALPHA" \
       GB10_ABLATE_AT="$ABLATE_AT" GB10_ABLATE_STREAMS="$ABLATE_STREAMS"
   else
     unset GB10_ABLATE GB10_ABLATE_ALPHA GB10_ABLATE_AT GB10_ABLATE_STREAMS
   fi
-  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_SKINNY_BF16:-}${GB10_FP8_HC:-}${GB10_ABLATE:-}" ]; then
+  if [ -n "${GB10_PLE_MMAP:-}${GB10_MARLIN_LEAN:-}${GB10_FP8_SIDE:-}${GB10_FP8_DRAFT_HEAD:-}${GB10_FP8_TARGET_HEAD:-}${GB10_SKINNY_BF16:-}${GB10_FP8_HC:-}${GB10_MTP_FP4:-}${GB10_ABLATE:-}" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -305,6 +418,7 @@ model_args() {
     --page-size "$PAGE_SIZE"
     --chunked-prefill-size "$CHUNKED_PREFILL"
     --max-running-requests "$MAX_RUNNING"
+    --prefill-decode-interval "$PREFILL_DECODE_INTERVAL"
     --max-mamba-cache-size "$MAMBA_CACHE"
     --mamba-radix-cache-strategy "$MAMBA_STRATEGY"
     --ple-offload-embedding
@@ -323,6 +437,12 @@ model_args() {
       --speculative-num-draft-tokens "$MTP_DRAFT_TOKENS"
     )
     [ -n "$DRAFT_VOCAB" ] && args+=(--speculative-token-map "$DRAFT_VOCAB")
+    if [ "$MTP_EXPERTS" = fp4 ]; then
+      args+=(
+        --speculative-draft-model-quantization modelopt_fp4
+        --speculative-moe-runner-backend marlin
+      )
+    fi
   fi
   [ -n "$REASONING_PARSER" ] && args+=(--reasoning-parser "$REASONING_PARSER")
   [ -n "$TOOL_CALL_PARSER" ] && args+=(--tool-call-parser "$TOOL_CALL_PARSER")
@@ -338,5 +458,7 @@ model_summary() {
   local heads="target BF16"
   [ "$FP8_HEAD" = 1 ] && heads="target FP8"
   [ "$MTP" = 1 ] && heads="$heads, draft $([ "$FP8_DRAFT_HEAD" = 1 ] && echo FP8 || echo BF16)"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin)" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple$([ -n "$ABLATE" ] && echo "; ablation $(basename "$ABLATE") alpha $ABLATE_ALPHA at layer $ABLATE_AT, $ABLATE_STREAMS stream(s)")"
+  local draft_experts=""
+  [ "$MTP" = 1 ] && draft_experts="; draft experts $([ "$MTP_EXPERTS" = fp4 ] && echo "NVFP4 at load (Marlin W4A16)" || echo BF16)"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin$([ "$FP8_SIDE_PREFILL" = w8a8 ] && echo "; W8A8 from $FP8_SIDE_PREFILL_ROWS rows"))" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab$draft_experts; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple$([ -n "$ABLATE_FILE" ] && echo "; ablation $(basename "$ABLATE_FILE") alpha $ABLATE_ALPHA at layer $ABLATE_AT, $ABLATE_STREAMS stream(s)")"
 }

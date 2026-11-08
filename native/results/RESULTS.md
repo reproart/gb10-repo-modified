@@ -1254,6 +1254,310 @@ read close to what GB10 delivers, so further gains need fewer bytes (a
 different checkpoint, or the MTP's BF16 experts in 4 bits for the draft),
 not faster kernels.
 
+### Kernel bench on SGLang 0.5.21 (2026-11-07)
+
+`patches/bench_sglang_gb10_gpu.py` on gx10-1cc3 (torch 2.13 cu130, server
+stopped), against a decode profile there of ~54 ms a step (MoE ~17 ms, FP8
+Marlin ~19 ms, `_hc_mix_fp8` 43.6 us x ~106).
+
+**Hyper-connection mix at decode sizes** (weights from memory, CUDA graph):
+
+| Rows | FP8 copy (`FP8_HC`) | SGLang BF16 kernel |
+|---:|---:|---:|
+| 1 / 4 / 8 / 16 | 36.7-37.6 us, ~180 GB/s | 60.4-60.6 us, ~218 GB/s |
+| 32 | 47.4 us, 139 GB/s | (stops at 16 rows) |
+
+The tile sweep found nothing worth a change: best at 4 rows
+(32, 256, 32, 64, 4 warps, 3 stages) 35.9 us against the default's 36.7-39.6
+(the same default measured twice), and the default is best at 32 rows. The
+"same bits" lines the first run marked FAIL at 8-32 rows are not an error:
+the kernel sums split-K partials with atomic adds, as SGLang's own does, so
+their order varies; the error against FP32 was 1.7e-3 on every row count
+(the bench reports it as information now).
+
+**The mix at prefill sizes** (one mix, eager):
+
+| Rows | Old FP8 path (eager chain) | New (cuBLAS + one Triton pass) | SGLang BF16, torch.compile'd |
+|---:|---:|---:|---:|
+| 2048 | 2254 us | 1129 us | |
+| 4096 | 4353 us | **2105 us** | 1868 us |
+| 8192 | 8731 us | 4279 us | |
+
+x2.0-2.07 for the 97 mixes of a 4096-token chunk: **~218 ms saved per
+chunk** (a chunk takes ~2.5-2.8 s at 1.5-1.6K tok/s). `FP8_HC`'s prefill was
+slower than stock SGLang's BF16 path until now; it is within 13% of it.
+
+**FP8 side layers at prefill sizes** (us per call; TFLOPS):
+
+| Layer x count | Rows | Marlin (now) | cuBLAS BF16 | FP8 W8A8 (`fp8_scaled_mm`) |
+|---|---:|---:|---:|---:|
+| GDN in_proj_qkvz [16384 x 2560] x36 | 4096 | 4408 (78) | 3636 (95) | **2139 (161)** |
+| GDN out_proj [2560 x 6144] x36 | 4096 | 2750 (47) | 1512 (85) | **1228 (105)** |
+| attn qkv_proj [13312 x 2560] x12 | 4096 | 3610 (77) | 2823 (99) | **1763 (158)** |
+| attn o_proj [2560 x 6144] x12 | 4096 | 2664 (48) | 1550 (83) | **1218 (106)** |
+| shared gate_up / down x48 | 4096 | 382 / 216 | 311 / 202 | 312 / 168 |
+| a 4096-token chunk, all side layers | | **364 ms** | 264 ms | **186 ms** |
+
+At 4 rows Marlin stays the fastest (qkvz 181 us vs 191 for W8A8, out_proj 27
+vs 67), so decode keeps it. W8A8's error against the dequantized weight is
+3e-2 (activations per token in FP8) against 3e-3 for Marlin. A single 8192-row
+FP8 GEMM fell to ~97 TFLOPS (qkvz 7061 us); 4096-row slices avoid it.
+SGLang's Triton scaled_mm (~50 TFLOPS) and torch._scaled_mm (29-97) are no
+alternative; dequantize + cuBLAS (370 ms a chunk) neither. Hence
+`FP8_SIDE_PREFILL=w8a8` (patches/gb10_fp8_prefill.py; off until measured end
+to end): prefill-sized inputs of the four large layers go to
+fp8_scaled_mm on the plain weight, restored from Marlin's layout each call,
+so no second copy of the weights is kept.
+
+**Second run, with that path** ("marlin->w8a8": restore the plain weight from
+Marlin's layout, then fp8_scaled_mm). The restored weights matched bit for bit
+on every shape; the gather took 526 / 198 / 430 / 193 us a call for
+qkvz / out_proj / qkv / o (~160 GB/s of reads plus writes). At 4096 rows:
+
+| Layer x count | Marlin | marlin->w8a8 | Saved per 4096-token chunk |
+|---|---:|---:|---:|
+| GDN in_proj_qkvz x36 | 4424 us | 2784 us | 59 ms |
+| GDN out_proj x36 | 2761 us | 1561 us | 43 ms |
+| attn qkv_proj x12 | 3623 us | 2259 us | 16 ms |
+| attn o_proj x12 | 2773 us | 1566 us | 14 ms |
+
+~133 ms a chunk on the four large layers (the server leaves in_proj_ba and
+the shared expert on Marlin: the gather and the per-token quantization cost
+more than they save there). Break-even near 1024-1500 rows: at 512 Marlin won
+on every layer (qkvz 530 vs 895 us), at 2048 the new path on every large one
+(qkvz 1766 vs 2215), hence FP8_SIDE_PREFILL_ROWS=2048 by default. At 8192 rows
+it was 7394 vs 8746 us for qkvz: the two 4096-row slices are fast, the copy
+joining their 268 MB of output is not, so CHUNKED_PREFILL stays at 4096 with
+it. HC prefill on this run: x2.05-2.16, 222 ms a chunk. Together ~355 ms of a
+~2.6 s chunk, if the server agrees.
+
+**On the server** (gx10-1cc3, `perf.py`, chunk 4096, cap 8, 0.85; one run
+each, back to back; the 2026-09-28 column is the FP8_HC run above, before
+the prefill fix, on another day):
+
+| | 2026-09-28 (eager HC prefill) | HC prefill fix (default now) | + `FP8_SIDE_PREFILL=w8a8` |
+|---|---:|---:|---:|
+| Prefill 2K | 1458 / 1444 | 1666 | **1696** |
+| Prefill 8K | 1648 / 1511 | 1847 | **1907** |
+| Prefill 32K | 1661 / 1447 | 1896 | **1965** |
+| Prefill 101K | 1499 / 1229 | 1785 | **1853** |
+| Decode, single stream (median of 5) | 65.7-65.9 | 66.7 | 67.5 |
+| Aggregate 1 / 2 / 4 / 8 streams | 60.8-65.0 / 99-102 / 148-153 / 212-224 | 64.2 / 104.2 / 142.7 / 202.2 | 61.7 / 94.3 / 147.5 / 224.9 |
+| TTFT, short prompt | 134-135 ms | 132 ms | 128 ms |
+| Decode during a 32K prefill, 1 / 4 streams | | 0.4 / 2.6 tok/s, pause 15.2 / 16.2 s | 0.6 / 2.9 tok/s, pause 14.9 / 15.2 s |
+
+The prefill fix is +12-19% at 8K-101K over the September runs (another day,
+so only roughly), and the W8A8 side layers +2-4% on top (the bench predicted
+~6%: 133 ms of a ~2.15 s chunk). The prefill is now level with vllm-flash-ar
+on the same model (1.7-2.1K tok/s). Decode is unchanged, as it should be: the
+two paths only take inputs of 65+ / 2048+ rows; the concurrency sweep moves
+both ways between the runs (2 streams 94 vs 104, 8 streams 225 vs 202).
+
+**HumanEval with W8A8 prefill** (medium thinking, FP8_SIDE_PREFILL_ROWS=64 so
+that every problem's prompt goes through it; on the default 2048 a short
+prompt never does): 98.2% (161/164; misses 32, 44, 145; 983 s, 103.7 tok/s
+aggregate at 4 streams) and **99.4%** (163/164; misses 92; 951 s, 108.7
+tok/s) in two runs. The builds before it: 98.8%, 100%, 99.4%; the first
+run's 44 passed in the second, the second's 92 in the first: the
++-1-2-problem noise of greedy runs here (the HC kernel's atomic adds alone
+make them differ). `FP8_SIDE_PREFILL=w8a8` is now the profile default.
+
+**`MTP_EXPERTS=fp4`** (the MTP draft's 512 BF16 experts converted to NVFP4 at
+load by SGLang, run as W4A16 on its Marlin MoE; with the W8A8 prefill),
+three `perf.py` runs back to back:
+
+| | w8a8 prefill, BF16 draft experts | + `MTP_EXPERTS=fp4`, runs 1 / 2 / 3 |
+|---|---:|---:|
+| Decode, single stream (median of 5) | 67.5 | **69.3 / 69.9 / 69.8** |
+| accept_len | 3.48-3.80 | 3.60-3.85 |
+| Aggregate at 8 streams | 224.9 | 229.8 / 223.9 / 234.2 |
+| TTFT, short prompt | 128 ms | 126 ms |
+| Prefill 2K / 8K / 32K / 101K | 1696 / 1907 / 1965 / 1853 | 1656 / 1756 / 1841 / 1748; 1872 / 1951 / 1882 / 1644; 1185 / 1142 / 1513 / 1209 |
+
+Decode +3.5% with acceptance unchanged, as the profile predicted (~2.3 ms of
+a ~54 ms step in BF16 experts); `MTP_EXPERTS=fp4` is now the default. The
+draft cannot touch prefill; the prefill spread between the three runs (up to
+-35% in the third) is the n-gram table: perf.py's prompts are unique random
+words, so nearly every token reads table rows no earlier prompt read, from
+the page cache or from storage, and SGLang's resident-set trimmer unmaps the
+whole table every 30 s once it holds over 8 GiB. perf.py's vm line now also
+prints what was read from disk and the major faults, to tell the two apart.
+
+**Three more runs with those counters** (same build, server restarted):
+
+| Prompt | Run 1: tok/s, read, major faults | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| 2K | 1774, 0.08 GiB, 309 | 1595, 0.06 GiB, 8.6K | 1259, 0.09 GiB, 15K |
+| 8K | 1910, 0.27 GiB, 1.1K | 1703, 0.23 GiB, 28K | 1161, 0.51 GiB, 80K |
+| 32K | 1974, 0.86 GiB, 7.6K | 1619, 1.00 GiB, 148K | 1339, 1.36 GiB, 193K |
+| 101K | 1848, 2.24 GiB, 72K | 1337, 3.67 GiB, 597K | 1532, 2.96 GiB, 378K |
+
+Decode 69.8 / 69.0 / 68.3 tok/s, 211-241 at 8 streams. The prefill follows
+the major faults, not the bytes read: about the same data came from storage
+in every run, but in the fast one the readahead hints had brought it in
+before the gather touched it, in the slow ones the gather faulted on it and
+waited (~35 us a fault: run 2's 101K prompt took 21 s longer with 525K more
+faults). The hints were one posix_fadvise per page (~100K a 4096-token
+chunk) from one background Python thread, which needs the GIL between two
+calls while the scheduler's thread holds it launching the chunk's kernels;
+when they went out depended on that thread, hence runs that differ by a
+third. patches/gb10_ple_mmap.py now sends them in batches, process_madvise
+with MADV_WILLNEED over up to 1024 merged page ranges a call (~100 calls a
+chunk); checked on a disk file that it reads exactly the pages asked for.
+
+**With the batched hints: the same pattern, so that was not the cause.**
+Three runs again (MTP_EXPERTS=fp4, W8A8 prefill, batched hints):
+
+| Prompt | Run 1 (free 10.3 GiB at its start) | Run 2 (free 4.0) | Run 3 (free 3.0) |
+|---|---:|---:|---:|
+| 2K | 1701, 0.07 GiB, 274 | 1721, 0.04 GiB, 3.5K | 1272, 0.11 GiB, 19K |
+| 8K | 1959, 0.26 GiB, 1.1K | 1747, 0.16 GiB, 11K | 1110, 0.49 GiB, 96K |
+| 32K | 1952, 0.89 GiB, 6.8K | 1699, 0.70 GiB, 66K | 1357, 1.70 GiB, 312K |
+| 101K | 1807, 2.18 GiB, 52K | 1520, 2.42 GiB, 310K | 1377, 4.03 GiB, 609K |
+
+(tok/s, read from disk, major faults.) Decode 69.7 / 68.0 / 68.7 tok/s,
+237-246 at 8 streams. What tracks the slowdown in all nine runs is the free
+memory (MemFree, not MemAvailable, which stayed at ~14 GiB) at a run's start:
+~9-10 GiB after a server start, 3-4 GiB two runs later, the page cache having
+grown into it. And the slow runs read more (4.03 against 2.18 GiB for the
+101K prompt): pages read twice. The likely mechanism: once free memory sits
+near the watermarks (vm.min_free_kbytes 1 GiB, watermark_scale_factor 50 from
+host-tuning.sh), kswapd reclaims page cache all the time, and readahead pages
+that the gather has not touched yet are the first it drops (the multi-gen LRU
+adds unaccessed clean pages to the oldest generation), so the gather faults on
+them anyway. perf.py now prints MemFree's low point, the kswapd reclaim and
+the refaults (workingset_refault_file: pages read again soon after being
+dropped) to check it. The batched hints stay (100x fewer system calls), but
+did not change this.
+
+**The multi-gen LRU is not it**: with it switched off at run time
+(`/sys/kernel/mm/lru_gen/enabled` 0x0003 -> n, server not restarted, free
+memory 2.9 / 3.9 GiB at the runs' starts) the prefill stayed slow: 2K / 8K /
+32K / 101K 1687 / 1568 / 1366 / 1397 and 1598 / 1598 / 1308 / 1342 tok/s,
+337K / 508K major faults for the 101K prompt (2.45 / 3.16 GiB read).
+
+**Memory pressure is not it either.** After `drop_caches` (MGLRU back on,
+server not restarted) with the new counters:
+
+| Prompt | Right after drop_caches: tok/s, major faults | Next run |
+|---|---:|---:|
+| 2K | 1731, 65 | 1888, 3.1K |
+| 8K | 1916, 422 | 1833, 14K |
+| 32K | 1971, 3.2K | 1840, 60K |
+| 101K | **1872, 29K** | **1568, 282K** |
+
+kswapd freed nothing and no page was read again after reclaim in either
+run; free memory never went under 7.8 GiB. So no page was dropped before
+the gather used it: the gather got to pages before the hints had put them in
+the page cache, more often the fuller the page cache was (the hints were
+started together with the gather, from a background thread). They now go out
+before the gather is launched, in the scheduler's thread: batched, that is
+~100 system calls a 4096-token chunk, and the log reports what they cost
+(estimated ~0.1 s a chunk; ~0.75 s a chunk was lost to the faults in the
+slow runs).
+
+**Hints before the gather: three runs** (server restarted, no drop_caches;
+tok/s, major faults, kswapd reclaim, pages read again after reclaim):
+
+| Prompt | Run 1 (free 7.3 -> 3.0 GiB) | Run 2 (free 3.5 -> 2.6) | Run 3 (free 2.9 -> 2.5) |
+|---|---:|---:|---:|
+| 2K | 1805, 269, 0, 7K | 1883, 2.4K, 0, 2K | 1345, 17K, 0.14 GiB, 9K |
+| 8K | 1910, 720, 0, 25K | 1919, 8.7K, 0, 9K | 1349, 85K, 0.55 GiB, 35K |
+| 32K | 1971, 7.3K, 0, 77K | 1847, 59K, 0.44 GiB, 38K | 1239, 361K, 2.29 GiB, 162K |
+| 101K | 1774, 50K, 0, 159K | 1462, 394K, 2.62 GiB, 192K | 1392, 549K, 3.81 GiB, 325K |
+
+The slowdown starts exactly where kswapd starts reclaiming (free memory at
+the watermarks, ~2.5-3 GiB here), and with it pages are read twice. The
+hints before the gather did not change the slow case: hinted pages are in
+the page cache when the gather starts, and still faulted on. The likely
+cause: the multi-gen LRU puts a page brought in by readahead and not yet
+accessed into its oldest or second-oldest generation (lru_gen_add_folio), the
+first pages kswapd evicts, so under reclaim a chunk's hinted pages go before
+the gather reads them. (The earlier test with the multi-gen LRU off ran with
+the hints still beside the gather, so it did not separate the two causes.)
+
+**Multi-gen LRU off, hints before the gather: still slow.** Three runs
+(free memory 2.7-6.4 GiB): 101K at 1572 / 1412 / 1451 tok/s, 238K / 525K /
+384K major faults, kswapd freeing 2.9 / 4.2 / 3.1 GiB and 332K / 673K / 615K
+pages read again after reclaim; 8K at 1797 / 1692 / 1474. So it is not the
+LRU's order either. kswapd reclaimed 3-4 GiB a 101K prompt here even with
+4-6 GiB free, above the plain watermarks (min 1 GiB from host-tuning.sh,
+low/high ~1.6/2.2 GiB with watermark_scale_factor 50): the watermark boost
+(vm.watermark_boost_factor, default 15000: after a fragmentation event kswapd
+reclaims up to 1.5x the high watermark more) would do that, and on GB10 the
+CUDA driver's allocations (+1-1.7 GiB during the 101K prompt) can supply the
+events. The hints themselves cost 47-49 ms a 4096-token chunk on average
+(81-120 ms at most): ~2% of a chunk.
+
+**vm.watermark_boost_factor=0 is not it either**, and that run narrowed it
+down: 2K / 8K / 32K at 1188 / 1224 / 1290 tok/s with 17K / 75K / 308K major
+faults while kswapd freed nothing and no task reclaimed (no allocation
+stall), yet 16K / 72K / 288K pages were read again after being reclaimed.
+Something drops page cache that /proc/vmstat does not count: reclaim inside
+a cgroup at its own limit (memory.high / memory.max) is counted only in that
+cgroup's memory.stat, and the service unit of scripts/install-service.sh
+sets MemoryMax=110G. perf.py now prints the server's cgroup, its limits, use
+and what it reclaimed per prefill prompt.
+
+**No cgroup limit either**: the server ran in the login session's scope
+(`/user.slice/user-1000.slice/session-2.scope`, memory.max and memory.high
+"max") and reclaimed nothing itself, while 101K prompts again went to 1629 /
+1563 tok/s with 185K / 221K major faults. (The "read again after reclaim"
+counter counts any page evicted at some earlier time, e.g. while the weights
+loaded, so it says nothing about now; it misled the previous two notes.)
+What stays is the gather taking storage faults itself on rows the hints
+were sent for. Rather than a sixth guess at why, `PLE_GATHER=cpu` reads
+prefill chunks' rows on CPU threads (patches/gb10_ple_mmap.py, CpuGather),
+where faults are served in parallel; to be measured.
+
+**`PLE_GATHER=cpu`: solved.** Server restarted with it, three runs back to
+back (two `--only prefill`, one full):
+
+| Prompt | Run 1 | Run 2 | Run 3 |
+|---|---:|---:|---:|
+| 2K | 2240 tok/s, 244 major faults | 2283, 7 | 2151, 4 |
+| 8K | 2259, 535 | 2312, 215 | 2295, 22 |
+| 32K | 2271, 943 | 2302, 122 | 2283, 52 |
+| 101K | 2122, 1.1K | 2137, 208 | 2114, 247 |
+
+The same 1-1.7 GiB came from storage per 101K prompt, now through CPU
+threads that wait on their own faults in parallel, so storage time no
+longer adds up one fault at a time on the GPU. Faster than even the best
+GPU-gather runs (1.8-2.0K) and steady with free memory going 12.6 -> 4.8
+GiB over the runs. Full run: decode 66.8 tok/s (median; one 53.9 warm-up
+sample), 222.9 tok/s at 8 streams, TTFT 128 ms; a 32K prompt prefilled at
+2261-2265 tok/s while 1 / 4 streams decoded (longest pause 12.5 s, was
+~15-25). Against September (eager HC prefill, Marlin side layers, GPU
+gather): 2K / 8K / 32K / 101K 1458 / 1648 / 1661 / 1499 -> ~2200 / 2290 /
+2285 / 2125, +40-50%. `PLE_GATHER=cpu` is the default.
+
+**Are the hints still needed with the CPU gather? Yes.** 2026-11-08, server
+restarted with `SGLANG_QWEN4_PLE_FILE_PREFETCH=0` (no page-cache hints), three
+`--only prefill` runs: 2K 2016 / 2183 / 2200, 8K 2037 / 2179 / 2240, 32K 2108 /
+2207 / 2244, 101K 2008 / 2062 / 2081 tok/s, with 300-500K major faults a 101K
+prompt (the threads now take every miss themselves). With the hints (above)
+2151-2312 and 2114-2137 at 101K: 3-8% faster, so the ~47 ms a chunk they cost
+is paid back. They stay on (the default); hints first for async I/O at a high
+queue depth, then the threads.
+
+**`PREFILL_DECODE_INTERVAL=1`** (`--prefill-decode-interval 1`, chunk 4096),
+2026-11-08, three `--only interference` runs and two `--only prefill`:
+
+| | interval 0 (2026-11-07) | interval 1, runs 1 / 2 / 3 |
+|---|---:|---:|
+| Longest pause during a 32K prefill, 1 stream | 12.5-24.9 s | 1.85 / 1.84 / 1.84 s |
+| same, 4 streams | 12.5-24.6 s | 1.88 / 1.88 / 1.87 s |
+| Decode during it, 1 / 4 streams | 0.4-1.0 / 1.5-3.8 tok/s | 1.8-3.1 / 7.4-8.3 |
+| The 32K prompt's TTFT under load | 14.3 s (1 stream) | 14.5-14.7 s |
+| Prefill alone 2K / 8K / 32K / 101K | 2151-2283 / 2259-2312 / 2271-2302 / 2114-2137 | 2304-2312 / 2338-2360 / 2327-2333 / 2161-2172 |
+
+The pause is now one 4096-token chunk (~1.85 s) instead of the whole prompt,
+for ~2% on the long prompt's own TTFT, and nothing alone (the decode rounds
+are empty when nothing decodes; the prefill-alone figures are even a little
+higher than the day before). It is the profile default now. A larger interval
+or 2048-token chunks would give the running streams more of the time during a
+long prefill, at the long prompt's expense.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).

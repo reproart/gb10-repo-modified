@@ -510,7 +510,13 @@ def gpu_watch_enabled():
 def vmstat():
     """The kernel's memory-pressure counters on this machine (/proc/vmstat):
     direct compaction stalls, pages scanned and allocation stalls in direct
-    reclaim, pages swapped out. {} when the server is not local (the same
+    reclaim, pages swapped out; and what was read from storage (pgpgin, KiB)
+    and the page faults that had to wait for it (pgmajfault), the pages the
+    background reclaim (kswapd) freed and the page-cache pages read again
+    soon after reclaim had dropped them (workingset_refault_file): on Qwen3.8-
+    Flash-Next the n-gram table is read from the checkpoint's files as the
+    GPU touches its rows, so a prefill's speed follows how much of it came
+    from the disk rather than the page cache. {} when the server is not local (the same
     rule and GB10_VMSTAT=0/1 override as GB10_GPU_WATCH) or on another OS.
     The stalls land on the allocating thread, i.e. a prefill chunk."""
     flag = os.environ.get("GB10_VMSTAT")
@@ -522,7 +528,8 @@ def vmstat():
             text = f.read()
     except OSError:
         return {}
-    out = {"compact_stall": 0, "direct_scan": 0, "alloc_stall": 0, "swap_out": 0}
+    out = {"compact_stall": 0, "direct_scan": 0, "alloc_stall": 0, "swap_out": 0,
+           "disk_in_kb": 0, "major_faults": 0, "kswapd_steal": 0, "refault": 0}
     for line in text.splitlines():
         key, _, val = line.partition(" ")
         if not val.strip().isdigit():
@@ -535,6 +542,14 @@ def vmstat():
             out["alloc_stall"] += int(val)
         elif key == "pswpout":
             out["swap_out"] = int(val)
+        elif key == "pgpgin":
+            out["disk_in_kb"] = int(val)
+        elif key == "pgmajfault":
+            out["major_faults"] = int(val)
+        elif key.startswith("pgsteal_kswapd"):
+            out["kswapd_steal"] += int(val)
+        elif key in ("workingset_refault_file", "workingset_refault"):
+            out["refault"] = int(val)
     return out
 
 
@@ -614,8 +629,9 @@ def meminfo():
         return {}
     itemized = sum(v[k] for k in ("MemFree", "Buffers", "Cached", "SwapCached", "AnonPages", "Slab",
                                   "PageTables", "KernelStack"))
-    return {"avail": v["MemAvailable"], "cache": v["Cached"], "anon": v["AnonPages"],
-            "swap": v["SwapTotal"] - v["SwapFree"], "driver": max(0, v["MemTotal"] - itemized)}
+    return {"avail": v["MemAvailable"], "free": v["MemFree"], "cache": v["Cached"],
+            "anon": v["AnonPages"], "swap": v["SwapTotal"] - v["SwapFree"],
+            "driver": max(0, v["MemTotal"] - itemized)}
 
 
 def psi_memory():
@@ -639,6 +655,7 @@ class MemWatch:
 
     def __init__(self, every=0.2):
         self.every, self.start, self.low, self.end, self.psi = every, {}, {}, {}, None
+        self.low_free = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
@@ -646,6 +663,8 @@ class MemWatch:
         m = meminfo()
         if m and (not self.low or m["avail"] < self.low["avail"]):
             self.low = m
+        if m and (self.low_free is None or m["free"] < self.low_free):
+            self.low_free = m["free"]
         return m
 
     def _run(self):
@@ -677,13 +696,93 @@ class MemWatch:
         def d(k):
             return f"{(lo[k] - a[k]) / g:+.1f}"
         s = (f"mem: avail {a['avail'] / g:.1f} -> low {lo['avail'] / g:.1f} GiB (there: driver {d('driver')}, "
-             f"page cache {d('cache')}, anon {d('anon')} GiB); swap {(self.end['swap'] - a['swap']) / g:+.2f} GiB")
+             f"page cache {d('cache')}, anon {d('anon')} GiB); free {a['free'] / g:.1f} -> low "
+             f"{self.low_free / g:.1f} GiB; swap {(self.end['swap'] - a['swap']) / g:+.2f} GiB")
         if self.psi:
             s += f"; stalled on memory {self.psi[1] / 1e6:.1f} s all tasks, {self.psi[0] / 1e6:.1f} s some"
         if lo["avail"] < 1.5 * g:
             s += (f"  !! available fell to {lo['avail'] / g:.1f} GiB: earlyoom stops the server below 1 GiB "
                   "(scripts/host-tuning.sh; ~8 GB without it)")
         return s
+
+
+_SERVER_MARKS = (b"sglang.launch_server", b"vllm.entrypoints", b"vllm serve", b"bin/vllm",
+                 b"llama-server")
+_CG_KEYS = ("file", "anon", "pgsteal", "pgsteal_direct", "pgsteal_kswapd", "workingset_refault_file")
+
+
+def server_cgroup():
+    """The cgroup v2 directory of the local model server: of the first process whose
+    command line names sglang.launch_server, vllm or llama-server (GB10_SERVER_PID
+    overrides). None when not local (vmstat()'s rule), not found or not cgroup v2."""
+    if not _local_counters():
+        return None
+    pids = [os.environ["GB10_SERVER_PID"]] if os.environ.get("GB10_SERVER_PID") else None
+    if pids is None:
+        pids = []
+        try:
+            for d in os.listdir("/proc"):
+                if not d.isdigit() or int(d) == os.getpid():
+                    continue
+                try:
+                    with open(f"/proc/{d}/cmdline", "rb") as f:
+                        cmd = f.read().replace(b"\0", b" ")
+                except OSError:
+                    continue
+                if any(m in cmd for m in _SERVER_MARKS):
+                    pids.append(d)
+        except OSError:
+            return None
+    for pid in sorted(pids, key=int):
+        try:
+            with open(f"/proc/{pid}/cgroup") as f:
+                path = next((ln[3:].strip() for ln in f if ln.startswith("0::")), None)
+        except OSError:
+            continue
+        if path is not None and os.path.exists(f"/sys/fs/cgroup{path}/memory.stat"):
+            return f"/sys/fs/cgroup{path}"
+    return None
+
+
+def cgroup_mem(path):
+    """{max, high (bytes, None = no limit), current, and memory.stat's file, anon,
+    pgsteal* (pages), workingset_refault_file} of a cgroup v2 directory, {} on error.
+    Reclaim inside a cgroup at its own limit (memory.high / memory.max, e.g. the
+    MemoryMax of scripts/install-service.sh's unit) is counted only here, not in
+    /proc/vmstat: page cache dropped that way is invisible in vm_summary()."""
+    if not path:
+        return {}
+    out = {}
+    try:
+        for k in ("max", "high", "current"):
+            with open(f"{path}/memory.{k}") as f:
+                v = f.read().strip()
+            out[k] = None if v == "max" else int(v)
+        with open(f"{path}/memory.stat") as f:
+            for line in f:
+                key, _, val = line.partition(" ")
+                if key in _CG_KEYS:
+                    out[key] = int(val)
+    except (OSError, ValueError):
+        return {}
+    return out
+
+
+def cgroup_summary(path, c0, c1):
+    """The server cgroup's limits and what it reclaimed between c0 and c1, one line;
+    '' without data."""
+    if not c0 or not c1:
+        return ""
+    g, page = 2.0 ** 30, os.sysconf("SC_PAGE_SIZE")
+
+    def lim(v):
+        return "none" if v is None else f"{v / g:.1f} GiB"
+    steal = (c1.get("pgsteal", 0) - c0.get("pgsteal", 0)) * page / g
+    direct = (c1.get("pgsteal_direct", 0) - c0.get("pgsteal_direct", 0)) * page / g
+    refault = c1.get("workingset_refault_file", 0) - c0.get("workingset_refault_file", 0)
+    return (f"server cgroup {path.removeprefix('/sys/fs/cgroup')}: max {lim(c1['max'])}, high "
+            f"{lim(c1['high'])}, using {c1['current'] / g:.1f} GiB (page cache {c1.get('file', 0) / g:.1f});"
+            f" it reclaimed {steal:.2f} GiB ({direct:.2f} by its own tasks), {refault} refaults")
 
 
 def vm_summary(v0, v1):
@@ -694,8 +793,12 @@ def vm_summary(v0, v1):
 
     def n(x):
         return f"{x / 1e6:.1f}M" if x >= 1e6 else f"{x / 1e3:.0f}K" if x >= 1e4 else str(x)
+    disk = d.get("disk_in_kb", 0) / 2**20
     return (f"vm: {n(d['compact_stall'])} compaction stalls, {n(d['alloc_stall'])} reclaim stalls"
-            f" ({n(d['direct_scan'])} pages scanned), {n(d['swap_out'])} swapped out")
+            f" ({n(d['direct_scan'])} pages scanned), {n(d['swap_out'])} swapped out;"
+            f" read from disk {disk:.2f} GiB, {n(d.get('major_faults', 0))} major faults;"
+            f" kswapd freed {d.get('kswapd_steal', 0) * os.sysconf('SC_PAGE_SIZE') / 2**30:.2f} GiB,"
+            f" {n(d.get('refault', 0))} pages read again after reclaim")
 
 
 def gpu_sample():

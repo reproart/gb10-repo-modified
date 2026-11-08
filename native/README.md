@@ -659,6 +659,49 @@ on) stores the hyper-connection mix weights in FP8: **65.8 tok/s**
 single-stream, 212-224 aggregate at 8 streams, HumanEval 97.6% without
 thinking and 99.4% with medium thinking; +67% over the cookbook's cell.
 
+**Next steps (2026-11-07, not measured yet).** A decode profile on SGLang
+0.5.21 (~54 ms a step) leaves the NVFP4 MoE (~17 ms) and the FP8 Marlin
+layers (~19 ms) at the memory's bandwidth; what is left:
+- `MTP_EXPERTS=fp4` (the default since: decode 69.3-69.9 tok/s against
+  66.7-67.5, accept_len unchanged): the MTP draft's 512
+  BF16 experts (~2.3 ms a step, 5 GiB) converted to NVFP4 at load by
+  SGLang itself (`--speculative-draft-model-quantization modelopt_fp4`) and
+  run as W4A16 on its Marlin MoE (`--speculative-moe-runner-backend marlin`);
+  `patches/gb10_mtp_fp4.py` converts on torch if flashinfer's quantizer
+  does not build for GB10. Only acceptance can move.
+- The FP8 hyper-connection mix kernel: 36.7 us at 4 rows outside the server
+  (~180 GB/s); a tile sweep found nothing better.
+- Prefill (1.4-1.7K tok/s here against 1.8-2.0K for vllm-flash-ar on the
+  same model), from `patches/bench_sglang_gb10_gpu.py`
+  ([RESULTS](results/RESULTS.md#kernel-bench-on-sglang-0521-2026-11-07)):
+  `FP8_HC`'s path for prefill-sized inputs was an eager chain of five passes
+  over the [rows, 10240] gate; it is now cuBLAS plus one Triton pass, x2 a
+  mix, ~218 ms saved per 4096-token chunk (on by default with `FP8_HC`).
+  The FP8 side layers run on Marlin, a kernel made for a few rows: a
+  4096-token chunk's side layers take 364 ms there against 186 ms on
+  SGLang's FP8 W8A8 GEMM. `FP8_SIDE_PREFILL=w8a8` (the default since
+  HumanEval: 98.2% and 99.4% with medium thinking and every prompt on it)
+  sends inputs of 2048+ rows of the four large ones there, the plain
+  weight restored from Marlin's layout each call (`patches/gb10_fp8_prefill.py`;
+  no second copy in memory): ~133 ms saved a chunk with that gather included.
+  Measured: prefill 2K / 8K / 32K / 101K 1666 / 1847 / 1896 / 1785 tok/s
+  with the HC fix, 1696 / 1907 / 1965 / 1853 with `w8a8` too (September:
+  1458 / 1648 / 1661 / 1499); decode unchanged. `bench/profile_decode.py
+  --prefill 16384` profiles a prefill.
+- The n-gram table on prefill: those figures were the good runs. Back to back
+  the prefill fell to 1.2-1.6K tok/s, the GPU gather taking a fault served
+  from storage for hundreds of thousands of table rows a prompt (~35 us each,
+  one at a time) although page-cache hints had been sent for them; five
+  kernel-side suspects were ruled out (results/RESULTS.md, 2026-11-07).
+  `PLE_GATHER=cpu`, the default now, reads a prefill chunk's rows on CPU
+  threads, which take their faults in parallel, and hands the GPU a filled
+  buffer: **2151-2312 tok/s at 2K-32K and 2114-2137 at 101K, the same in
+  every run**, a few hundred major faults a prompt; +40-50% over September,
+  above vllm-flash-ar (1.7-2.1K). With `PREFILL_DECODE_INTERVAL=1` (default
+  now) the streams already generating pause ~1.85 s at most while a 32K
+  prompt prefills, not the whole 12-25 s. The general lesson, for any integration
+  that lets a kernel read a file in place: [docs/gpu-file-reads.md](docs/gpu-file-reads.md).
+
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
 slot), 24 without; a 374K-token KV pool at 0.85 (the cookbook's cell: ~93K). `MAMBA_SSM_DTYPE=bfloat16`
 halves the slots. Every knob is commented in the profile.
@@ -672,6 +715,15 @@ or an absolute path. The served name follows (`qwen3.8-flash-next`,
 `./serve.sh qwen3.8-flash-next-abliterated` is the same as
 `WEIGHTS=abliterated ./serve.sh qwen3.8-flash-next`, as a profile the
 service can run.
+
+**Ablation at inference** instead of other weights: `ABLATE=1 ./serve.sh
+qwen3.8-flash-next` removes the refusal directions from the RadixArk weights'
+residual stream (patches/gb10_ablate.py), with the vectors at `ABLATE_VECTORS`
+(Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors, downloaded once; the
+profile prints the command if they are missing). `./serve.sh
+qwen3.8-flash-next-ablated` is the same as a profile of its own, served as
+`qwen3.8-flash-next-ablated`. `ABLATE=<path>` takes another file,
+`ABLATE_ALPHA` the strength.
 
 ### Ornith 1.5 35B-A3B
 
@@ -1027,6 +1079,9 @@ patches/       gb10_ple_mmap.py (+ its kernel): Flash-Next's n-gram table read
                gb10_fp8_side.py: BF16 side layers and lm_heads to FP8 Marlin ·
                gb10_skinny.py (+ its kernel): few-row BF16 GEMM for routers ·
                gb10_fp8_hc.py (+ its kernel): FP8 hyper-connection mix ·
+               gb10_mtp_fp4.py: torch NVFP4 quantizer for MTP_EXPERTS=fp4 ·
+               gb10_fp8_prefill.py (+ its kernel): FP8 W8A8 prefill for Marlin layers ·
+               bench_sglang_gb10_gpu.py: GPU bench of the HC mix and side layers ·
                gb10_nvfp4_scales.py: per-shard NVFP4 scales on Marlin ·
                gb10_tool_fences.py: tool-call markers in code blocks stay text (qwen3_coder) ·
                sitecustomize.py (loads them) · test_*.py (CPU)
@@ -1035,13 +1090,15 @@ scripts/       00-check-host · 01-install · serve-sglang · install-service ·
                mem-watch: a line a minute on what holds the memory (for earlyoom kills)
                build-manifest · lib/config.sh (shared defaults)
 requirements/  one lock per SGLang version (sglang-<ver>-<arch>-py<py>.txt) · constraints-cuda130.txt
-bench/         common.py · perf.py · longctx.py · profile_decode.py (GPU time per kernel group)
+bench/         common.py · perf.py · longctx.py · profile_decode.py (GPU time per kernel group; --prefill N)
                consistency.py (tool-call examples, greedy determinism, prefix-cache hits) · answers.py
 results/       RESULTS.md: all measurements (Docker build)
                BUILD-MANIFEST.md: the build behind them
                REPRODUCTION.md: an independent run
                runs/: saved benchmark output (gitignored)
 docs/          cache-transfer.md: move the weights to a new machine, offline
+               gpu-file-reads.md: a kernel reading a file in place (the PLE table): why prefill
+               varied, how to measure it, the CPU-gather fix, a checklist for new integrations
 ```
 
 The benchmarks read `GB10_BASE_URL` (API root including `/v1`, default

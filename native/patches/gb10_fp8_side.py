@@ -101,6 +101,15 @@ def target_head_mode() -> str:
     return "" if mode == "0" else mode
 
 
+def prefill_mode() -> str:
+    """GB10_FP8_SIDE_PREFILL: marlin (every input on Marlin) or w8a8 (prefill-sized
+    inputs of the large layers on FP8 W8A8, gb10_fp8_prefill)."""
+    m = os.environ.get("GB10_FP8_SIDE_PREFILL", "marlin")
+    if m not in ("marlin", "w8a8"):
+        raise RuntimeError(f"GB10_FP8_SIDE_PREFILL must be marlin or w8a8, not {m!r}")
+    return m
+
+
 def layer_pattern() -> re.Pattern:
     return re.compile(os.environ.get("GB10_FP8_SIDE_LAYERS") or DEFAULT_LAYERS)
 
@@ -129,15 +138,22 @@ class Fp8MarlinSideMethod:
         return
 
     def apply(self, layer, x, bias=None):
-        out = self._apply_fn(
-            input=x,
-            weight=layer.weight,
-            weight_scale=layer.weight_scale,
-            workspace=layer.workspace,
-            size_n=layer._gb10_marlin_n,
-            size_k=layer.input_size_per_partition,
-            bias=bias,
-        )
+        out = None
+        if getattr(layer, "_gb10_w8a8", False):
+            import gb10_fp8_prefill
+
+            if gb10_fp8_prefill.wants(layer, x):
+                out = gb10_fp8_prefill.apply_w8a8(layer, x, bias)
+        if out is None:
+            out = self._apply_fn(
+                input=x,
+                weight=layer.weight,
+                weight_scale=layer.weight_scale,
+                workspace=layer.workspace,
+                size_n=layer._gb10_marlin_n,
+                size_k=layer.input_size_per_partition,
+                bias=bias,
+            )
         if layer._gb10_marlin_n != layer._gb10_n:
             out = out[..., : layer._gb10_n].contiguous()
         return out
@@ -160,6 +176,7 @@ def convert_module(module, prepare_fn, apply_fn) -> None:
         scale = torch.cat([scale, torch.ones(n_pad - n, dtype=scale.dtype, device=scale.device)])
     module.weight = torch.nn.Parameter(q, requires_grad=False)
     module.weight_scale = torch.nn.Parameter(scale.to(torch.bfloat16), requires_grad=False)
+    module._gb10_wscale = scale.float()   # per output channel, for the W8A8 prefill path
     module.orig_dtype = torch.bfloat16
     logical_n = getattr(module, "output_size_per_partition", n)
     module.output_size_per_partition = n_pad  # what the Marlin prepare checks
@@ -200,6 +217,10 @@ def convert_model(model, *, is_linear, is_unquantized, prepare_fn, apply_fn,
             stats["padded"] += 1
         before = w.numel() * w.element_size()
         convert_module(module, prepare_fn, apply_fn)
+        if prefill_mode() == "w8a8":
+            import gb10_fp8_prefill
+
+            stats["w8a8"] = stats.get("w8a8", 0) + gb10_fp8_prefill.mark(module, prepare_fn)
         stats["converted"] += 1
         stats["bytes_before"] += before
         stats["bytes_after"] += module.weight.numel() * module.weight.element_size()
@@ -227,6 +248,9 @@ def convert_model(model, *, is_linear, is_unquantized, prepare_fn, apply_fn,
         stats["converted"], stats["padded"], MIN_N, stats["skipped"],
         stats["bytes_before"] / 2**30, stats["bytes_after"] / 2**30,
     )
+    if prefill_mode() == "w8a8":
+        logger.info("FP8 side (%s): %d of them take FP8 W8A8 for prefill-sized inputs "
+                    "(GB10_FP8_SIDE_PREFILL=w8a8)", label, stats.get("w8a8", 0))
     return stats
 
 

@@ -41,6 +41,7 @@
 | `meerkat-triz` | Qwen3.8-27B + LoRA по ТРИЗ (слитая), FP8 при загрузке | ~54 ГБ | ~30 | измерена, HumanEval не хуже базы |
 | `qwen3.8-flash-next` | Qwen3.8-Flash-Next 176B MoE, NVFP4 | 126 ГиБ | **65.8** | измерена |
 | `qwen3.8-flash-next-abliterated` | то же, abliterated-веса Huihui | 126 ГиБ | | работает |
+| `qwen3.8-flash-next-ablated` | то же, веса RadixArk + абляция векторами отказа на лету | 126 ГиБ | | работает |
 | `ornith-1.5-35b` | Ornith 1.5 35B-A3B FP8 + драфт DFlash | ~35 ГБ + драфт | **97.6** | измерена |
 | `gemma4-31b` | Gemma 4 31B BF16 + MTP | ~62 ГБ | | не измерена |
 | `mimo-v2.6-flash` | MiMo-V2.6-Flash 309B MoE (MXFP4) + DFlash, **на двух Spark**, SGLang 0.5.21 | ~165 ГиБ на каждом | | не измерена |
@@ -279,16 +280,46 @@ $HF download RadixArk/Qwen3.8-Flash-Next-NVFP4 --local-dir /models/RadixArk/Qwen
 ./serve.sh qwen3.8-flash-next
 ```
 
-Загрузка весов ~7 минут. **65.8 ток/с** на одном потоке, 212–224 суммарно
-на 8; HumanEval 97.6% без размышления, 99.4% с medium. Всё это уже
-включено по умолчанию: FP8 для BF16-слоёв (`FP8_SIDE`), обеих голов
-(`FP8_HEAD`, `FP8_DRAFT_HEAD`) и hyper-connections (`FP8_HC`), словарь
-драфта на 65K токенов (`DRAFT_VOCAB`).
+Загрузка весов ~7 минут. **~70 ток/с** на одном потоке, 224–234
+суммарно на 8; префилл 2K / 8K / 32K / 101K — **2150–2310 / 2260–2310 /
+2270–2300 / 2110–2140 ток/с** (выше vllm-flash-ar), стабильно от прогона к
+прогону; HumanEval 97.6% без размышления, 99.4% с medium. Всё это уже включено по умолчанию: FP8 для BF16-слоёв (`FP8_SIDE`,
+на префилле W8A8: `FP8_SIDE_PREFILL`), чтение таблицы n-грамм на префилле
+потоками CPU (`PLE_GATHER=cpu`), обеих голов (`FP8_HEAD`,
+`FP8_DRAFT_HEAD`) и hyper-connections (`FP8_HC`), эксперты черновика MTP в
+NVFP4 (`MTP_EXPERTS`), словарь драфта на 65K токенов (`DRAFT_VOCAB`).
 
 **При первом старте** в логе должно быть `PLE table: ... read in place ...,
 nothing written` и `... shard tensors left in place`, затем строки `FP8 side`,
 `FP8 HC`. Если ответы — мусор, `PLE_TABLE=file` даёт стоковое поведение для
 сравнения.
+
+**С 2026-11-07 по умолчанию:** `MTP_EXPERTS=fp4` (декод 69.3–69.9 ток/с
+против 66.7–67.5, принятие то же; `MTP_EXPERTS=bf16` возвращает как было).
+512 экспертов черновика MTP хранятся в чекпойнте в BF16 (5 ГиБ, ~2.3 мс на
+шаг). Эта опция квантует их в NVFP4 при загрузке средствами самого SGLang и
+гоняет через Marlin MoE (W4A16). Может сдвинуться только принятие, ответы не
+меняются. Подробности и бенчмарк `patches/bench_sglang_gb10_gpu.py` — в
+README.
+
+`FP8_SIDE_PREFILL=w8a8` (включено по умолчанию; `marlin` выключает): на префилле большие
+FP8-слои идут через FP8 W8A8 вместо Marlin. На чанк 4096 токенов боковые слои
+занимают 186 мс против 364. Вес восстанавливается из раскладки Marlin на
+каждый вызов, вторая копия в памяти не хранится. Активации префилла
+квантуются в FP8. HumanEval с medium, когда каждый промпт шёл через W8A8
+(`FP8_SIDE_PREFILL_ROWS=64`): 98.2% и 99.4% в двух прогонах, как раньше.
+Префилл 2K–101K: 1696 / 1907 / 1965 / 1853 ток/с.
+
+Таблицу n-грамм (47.7 ГиБ, читается прямо с диска) на префилле читают потоки
+CPU (`PLE_GATHER=cpu`, по умолчанию). Когда её читал сам GPU, префилл скакал
+от прогона к прогону между 1.2K и 2.0K ток/с: каждая страница не из кэша
+стоила GPU ~35 мкс ожидания диска, по одной. С потоками CPU — 2.1–2.3K
+стабильно. Пока префиллится длинный промпт, остальные потоки больше не стоят
+всё это время: `PREFILL_DECODE_INTERVAL=1` (по умолчанию) вставляет шаг
+декода после каждого чанка, и самая длинная пауза — ~1.85 с вместо 12–25 с
+на промпте 32K. Подробно, с тем, как это измерить и что не помогло, — в
+[docs/gpu-file-reads.md](docs/gpu-file-reads.md): полезно для любой новой
+интеграции, где ядро читает файл на месте.
 
 **Abliterated-вариант** (без отказов, веса Huihui):
 
@@ -298,16 +329,20 @@ $HF download edp1096/Huihui-RadixArk-Qwen3.8-Flash-Next-abliterated-NVFP4 \
 ./serve.sh qwen3.8-flash-next-abliterated
 ```
 
-**Абляция векторами на лету** (без отдельных весов, с регулируемой силой):
+**Абляция векторами на лету** (без отдельных весов, с регулируемой силой).
+Векторы скачиваются один раз; путь к ним — `ABLATE_VECTORS` в профиле
+(по умолчанию `refusal_directions-v4-late.npz` из этого каталога):
 
 ```bash
 $HF download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors \
   --local-dir /models/qwen3.8-flash-next-refusal-ablation-vectors
-ABLATE=/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz \
-  ./serve.sh qwen3.8-flash-next
+ABLATE=1 ./serve.sh qwen3.8-flash-next      # имя модели прежнее
+./serve.sh qwen3.8-flash-next-ablated       # то же отдельным профилем: своё имя
+                                            # модели, годится для systemd
 ```
 
-`ABLATE_ALPHA` (1.0 — по умолчанию карточки, 0 — стоковая модель, 1.5 —
+`ABLATE=0` или пусто — стоковая модель; `ABLATE=/путь/другой.npz` — другой
+файл векторов. `ABLATE_ALPHA` (1.0 — по умолчанию карточки, 0 — стоковая модель, 1.5 —
 сильнее), `ABLATE_AT=output|input`, `ABLATE_STREAMS=each|mean`. В логе:
 `GB10_ABLATE: 43 layers, alpha 1, ...`. Только для весов RadixArk; с
 abliterated-весами смысла не имеет. Содержимое файла векторов можно
@@ -1029,6 +1064,7 @@ python3 bench/perf.py --only decode      # только один поток
 python3 bench/perf.py --only interference  # декод других потоков, пока идёт префилл промпта ~32K
 python3 bench/longctx.py                 # несколько длинных контекстов разом
 python3 bench/profile_decode.py          # куда уходит шаг декода (по группам ядер)
+python3 bench/profile_decode.py --prefill 16384  # то же для префилла промпта ~16K
 python3 bench/consistency.py             # примеры вызовов инструментов, детерминизм, кэш префиксов
 ../scripts/run-humaneval.sh              # HumanEval без размышления
 ../scripts/run-humaneval.sh think-medium # с размышлением medium
@@ -1116,8 +1152,11 @@ patches/              патчи SGLang, включаются профилями
   gb10_ple_mmap         таблица n-грамм Flash-Next читается на месте
   gb10_fp8_side         BF16-слои, головы и драфт DFlash → FP8 (Marlin)
   gb10_fp8_hc           hyper-connections Flash-Next → FP8
+  gb10_mtp_fp4          квантователь NVFP4 на torch для MTP_EXPERTS=fp4
+  gb10_fp8_prefill      FP8 W8A8 на префилле для слоёв на Marlin (FP8_SIDE_PREFILL=w8a8)
+  bench_sglang_gb10_gpu GPU-бенчмарк смешивания HC и боковых слоёв (сервер остановлен)
   gb10_marlin_lean      перепаковка MoE в Marlin без лишней копии
-  gb10_ablate           абляция векторами (ABLATE=...)
+  gb10_ablate           абляция векторами (ABLATE=1)
   gb10_tool_fences      пример вызова инструмента в блоке кода остаётся текстом (TOOL_FENCES, вкл.)
   test_gb10_*.py        проверки на CPU: python3 patches/test_gb10_<имя>.py
 bench/                perf.py, longctx.py, profile_decode.py, answers.py, consistency.py

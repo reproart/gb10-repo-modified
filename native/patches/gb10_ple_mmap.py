@@ -54,6 +54,8 @@ import re
 import struct
 import sys
 import threading
+import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
@@ -202,6 +204,7 @@ class MappedTable:
     mapped_rows: int
     table_bytes: int
     _prefetcher: Optional["Prefetcher"] = field(default=None, repr=False)
+    _cpu_gather: Optional["CpuGather"] = field(default=None, repr=False)
 
     @property
     def row_bytes(self) -> int:
@@ -338,14 +341,55 @@ def pages_for_rows(table: MappedTable, ids: np.ndarray, page: int) -> dict[int, 
     return out
 
 
+def page_ranges(table: MappedTable, ids: np.ndarray, page: int) -> np.ndarray:
+    """[n, 2] uint64 (address, length) of the pages the rows `ids` live on, in
+    the mapping, adjacent pages merged: what process_madvise takes."""
+    ids = np.asarray(ids, dtype=np.int64)
+    k = ids // table.shard_size
+    ok = k < table.num_shards
+    k, ids = k[ok], ids[ok]
+    local = ids - k * table.shard_size
+    ok = local < table.rows[k]
+    k, local = k[ok], local[ok]
+    start = table.bases[k] + local * table.row_bytes
+    pages = np.unique(np.concatenate([start // page, (start + table.row_bytes - 1) // page]))
+    if pages.size == 0:
+        return np.zeros((0, 2), dtype=np.uint64)
+    breaks = np.flatnonzero(np.diff(pages) != 1) + 1
+    first = pages[np.concatenate([[0], breaks])]
+    last = pages[np.concatenate([breaks - 1, [pages.size - 1]])]
+    return np.stack([first * page, (last - first + 1) * page], axis=1).astype(np.uint64)
+
+
+_SYS_PIDFD_OPEN = 434        # the same number on every architecture (new syscalls)
+_SYS_PROCESS_MADVISE = 440
+_MADV_WILLNEED = 3
+_IOV_MAX = 1024              # UIO_MAXIOV: ranges per process_madvise call
+
+
 class Prefetcher:
-    """posix_fadvise(WILLNEED) the pages a prefill-sized gather will fault.
+    """Readahead hints for the pages a prefill-sized gather will fault.
 
     The same idea as SGLang's PleFilePrefetcher (which only knows its single
     table file): a cold prefill chunk faults tens of thousands of pages one at
     a time from inside the kernel; hinting them first lets the block layer
-    serve them concurrently. One background thread; decode-sized gathers and
-    CUDA-graph capture are skipped.
+    serve them concurrently. Decode-sized gathers and CUDA-graph capture are
+    skipped.
+
+    The hints go out in batches: process_madvise (Linux 5.10+) with
+    MADV_WILLNEED on up to 1024 page ranges of the mapping a call, ~100 calls
+    for a 4096-token chunk, in the calling thread before the gather is
+    launched (GB10_PLE_PREFETCH_SYNC=0: from a background thread, as before).
+    Started together with the gather, they lost the race in runs where the
+    page cache already held much of the table from earlier prompts: the GPU
+    reached pages they had not put in the page cache yet and waited for each
+    (2026-11-07: right after a drop_caches 29K major faults for a 101K prompt
+    at 1872 tok/s, the run after it 282K at 1568, with no reclaim at all; each
+    such fault costs the gather ~35 us). One posix_fadvise per page, the
+    fallback and what SGLang's prefetcher does, is ~100K calls a chunk: too
+    slow to make before the gather, and from a thread it needs the GIL between
+    two of them. The boot log has the mode, and every 100 prefill gathers the
+    time the hints took.
     """
 
     def __init__(self, table: MappedTable, min_rows: int = PREFETCH_MIN_ROWS) -> None:
@@ -354,8 +398,49 @@ class Prefetcher:
         self._page = os.sysconf("SC_PAGE_SIZE")
         self._min_rows = min_rows
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ple-prefetch")
+        self._libc = _libc()
+        self._libc.syscall.restype = ctypes.c_long
+        self._pidfd = None
+        if os.environ.get("GB10_PLE_PREFETCH", "batched") == "batched":
+            fd = self._libc.syscall(ctypes.c_long(_SYS_PIDFD_OPEN), ctypes.c_long(os.getpid()),
+                                    ctypes.c_long(0))
+            if fd >= 0:
+                self._pidfd = int(fd)
+            else:
+                logger.info("PLE table: pidfd_open failed (errno %d); page-cache hints one "
+                            "posix_fadvise a page", ctypes.get_errno())
+        self.calls = 0
+        # Batched hints go out before the gather is launched, in the calling
+        # thread: a background thread lets the GPU reach pages the hints have
+        # not put in the page cache yet, and it then waits for each one itself.
+        self._sync = os.environ.get("GB10_PLE_PREFETCH_SYNC", "1") == "1"
+        self._stats = {"n": 0, "s": 0.0, "max": 0.0}
+        self.log_every = 100
+
+    @property
+    def batched(self) -> bool:
+        return self._pidfd is not None
+
+    def _advise_batched(self, ids: np.ndarray) -> bool:
+        ranges = page_ranges(self._table, ids, self._page)
+        for i in range(0, len(ranges), _IOV_MAX):
+            iov = np.ascontiguousarray(ranges[i:i + _IOV_MAX])
+            got = self._libc.syscall(
+                ctypes.c_long(_SYS_PROCESS_MADVISE), ctypes.c_long(self._pidfd),
+                ctypes.c_void_p(iov.ctypes.data), ctypes.c_size_t(len(iov)),
+                ctypes.c_long(_MADV_WILLNEED), ctypes.c_long(0))
+            self.calls += 1
+            if got < 0:
+                err = ctypes.get_errno()
+                logger.warning("PLE table: process_madvise(MADV_WILLNEED) failed (errno %d); "
+                               "page-cache hints one posix_fadvise a page from now on", err)
+                self._pidfd = None
+                return False
+        return True
 
     def _advise(self, ids: np.ndarray) -> None:
+        if self._pidfd is not None and self._advise_batched(ids):
+            return
         for f, pages in pages_for_rows(self._table, ids, self._page).items():
             fd = self._fds[f]
             for p in pages.tolist():
@@ -363,6 +448,7 @@ class Prefetcher:
                     os.posix_fadvise(fd, p * self._page, self._page, os.POSIX_FADV_WILLNEED)
                 except OSError:
                     return
+                self.calls += 1
 
     def enqueue(self, flat_ids) -> bool:
         if flat_ids.numel() < self._min_rows:
@@ -373,9 +459,160 @@ class Prefetcher:
             return False
         # .cpu() syncs the stream, as in SGLang's own prefetcher: acceptable
         # for prefill chunks, which is all that reaches this line.
-        ids = flat_ids.cpu().numpy()
-        self._pool.submit(self._advise, ids)
+        self.hint(flat_ids.cpu().numpy())
         return True
+
+    def hint(self, ids: np.ndarray) -> None:
+        """Hints for the row ids `ids` (host array): batched and done before
+        returning, or the per-page loop queued on the background thread."""
+        if not (self._sync and self.batched):
+            self._pool.submit(self._advise, ids)
+            return
+        t = time.perf_counter()
+        self._advise(ids)
+        dt = time.perf_counter() - t
+        st = self._stats
+        st["n"] += 1
+        st["s"] += dt
+        st["max"] = max(st["max"], dt)
+        if st["n"] >= self.log_every:
+            logger.info("PLE table: page-cache hints before the last %d prefill gathers took "
+                        "%.1f ms each on average, %.1f at most", st["n"],
+                        1e3 * st["s"] / st["n"], 1e3 * st["max"])
+            self._stats = {"n": 0, "s": 0.0, "max": 0.0}
+
+
+CPU_GATHER_MIN_ROWS = PREFETCH_MIN_ROWS
+
+
+class CpuGather:
+    """Prefill-sized gathers on CPU threads instead of the GPU kernel.
+
+    The GPU reads the mapping through the host page tables: a row whose page
+    is not in the page cache costs it a fault served from storage, ~35 us
+    each and apparently one at a time (2026-11-07: a 101K prompt took ~11 s
+    longer with ~220K such faults). The page-cache hints were meant to keep
+    that rare and did not, in some machine states, for reasons not found.
+    Here a pool of CPU threads copies the rows (index_select per shard, which
+    releases the GIL) into a pinned buffer, each thread waiting on its own
+    faults, so storage serves them in parallel; the buffer then goes to the
+    GPU in one copy and is converted to BF16 there. Decode-sized gathers and
+    CUDA-graph capture stay on the kernel. GB10_PLE_CPU_GATHER=1 turns it on
+    (models/qwen3.8-flash-next.sh: PLE_GATHER=cpu), GB10_PLE_CPU_GATHER_THREADS
+    sets the threads (default min(16, CPUs)).
+    """
+
+    def __init__(self, table: MappedTable, threads: Optional[int] = None,
+                 pin: Optional[bool] = None) -> None:
+        import torch
+
+        self._table = table
+        self.min_rows = CPU_GATHER_MIN_ROWS
+        rb = table.row_bytes
+        self._views = [None] * table.num_shards
+        for k in range(table.num_shards):
+            n = int(table.rows[k])
+            if n:
+                buf = (ctypes.c_uint8 * (n * rb)).from_address(int(table.bases[k]))
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")   # a read-only mapping; never written
+                    self._views[k] = torch.frombuffer(buf, dtype=torch.uint8).view(n, rb)
+        self.threads = int(threads or os.environ.get("GB10_PLE_CPU_GATHER_THREADS")
+                           or min(16, os.cpu_count() or 4))
+        self._pool = ThreadPoolExecutor(max_workers=self.threads, thread_name_prefix="ple-cpu-gather")
+        self._pin = torch.cuda.is_available() if pin is None else pin
+        self._buf = None
+        self._done = None      # CUDA event after the last copy out of the buffer
+        self.calls = 0
+        self._stats = {"n": 0, "s": 0.0, "max": 0.0}
+        self.log_every = 100
+
+    def _buffer(self, n: int):
+        import torch
+
+        if self._done is not None:
+            self._done.synchronize()   # the previous gather's copy to the GPU has read it
+            self._done = None
+        if self._buf is None or self._buf.shape[0] < n:
+            self._buf = torch.empty((max(n, 1), self._table.row_bytes), dtype=torch.uint8,
+                                    pin_memory=self._pin)
+        return self._buf[:n]
+
+    def _copy(self, out, kk, ll) -> None:
+        import torch
+
+        bounds = np.concatenate([[0], np.flatnonzero(np.diff(kk)) + 1, [kk.size]]).tolist()
+        for a, b in zip(bounds[:-1], bounds[1:]):
+            torch.index_select(self._views[int(kk[a])], 0, torch.from_numpy(ll[a:b]), out=out[a:b])
+
+    def collect(self, ids: np.ndarray, vocab_start: int = 0, vocab_end: Optional[int] = None):
+        """(rows, pos): the row bytes of the valid ids, grouped by shard, as a
+        [m, row_bytes] uint8 host tensor in one copy, and pos, where each goes
+        in the gather's output. The others (outside [vocab_start, vocab_end) or
+        absent from the checkpoint) read as zero, the kernel's rules. Valid
+        until the next call."""
+        t = self._table
+        ids = np.asarray(ids, dtype=np.int64).reshape(-1)
+        hi = np.iinfo(np.int64).max if vocab_end is None else vocab_end
+        in_tp = (ids >= vocab_start) & (ids < hi)
+        gid = np.where(in_tp, ids, 0)
+        k = np.minimum(gid // t.shard_size, t.num_shards - 1)
+        local = gid - k * t.shard_size
+        pos = np.flatnonzero(in_tp & (local < t.rows[k]))
+        pos = pos[np.argsort(k[pos], kind="stable")]
+        kk, ll = k[pos], local[pos]
+        out = self._buffer(pos.size)
+        if pos.size:
+            cuts = np.linspace(0, pos.size, min(self.threads, pos.size) + 1).astype(np.int64).tolist()
+            jobs = [self._pool.submit(self._copy, out[a:b], kk[a:b], ll[a:b])
+                    for a, b in zip(cuts[:-1], cuts[1:]) if b > a]
+            for j in jobs:
+                j.result()
+        self.calls += 1
+        return out, pos
+
+    def gather(self, ids: np.ndarray, vocab_start: int = 0, vocab_end: Optional[int] = None):
+        """The gather's rows in the order of `ids`, [n, row_bytes] uint8 (a new
+        host tensor; for checks: the server path is gather_into)."""
+        import torch
+
+        n = int(np.asarray(ids).size)
+        rows, pos = self.collect(ids, vocab_start, vocab_end)
+        out = torch.zeros((n, self._table.row_bytes), dtype=torch.uint8)
+        out.index_copy_(0, torch.from_numpy(pos), rows)
+        return out
+
+    def gather_into(self, output, ids: np.ndarray, *, vocab_start: int, vocab_end: int,
+                    is_fp8: bool) -> None:
+        """The gather into `output` ([..., dim] BF16, on the GPU or the host) as the
+        kernel would write it: collect() on the CPU threads, one copy to the
+        output's device, the conversion and the scatter into place there."""
+        import torch
+
+        t0 = time.perf_counter()
+        n = int(np.asarray(ids).size)
+        rows, pos = self.collect(ids, vocab_start, vocab_end)
+        flat = output.view(n, -1)
+        if pos.size < n:
+            flat.zero_()
+        if pos.size:
+            dev = rows.to(output.device, non_blocking=True)
+            dev_pos = torch.from_numpy(pos).to(output.device, non_blocking=True)
+            if output.is_cuda:
+                self._done = torch.cuda.Event()
+                self._done.record()
+            src = dev.view(torch.float8_e4m3fn if is_fp8 else torch.bfloat16).view(pos.size, -1)
+            flat.index_copy_(0, dev_pos, src.to(flat.dtype))
+        dt = time.perf_counter() - t0
+        st = self._stats
+        st["n"] += 1
+        st["s"] += dt
+        st["max"] = max(st["max"], dt)
+        if st["n"] >= self.log_every:
+            logger.info("PLE table: the last %d prefill gathers on %d CPU threads took %.1f ms each "
+                        "on average, %.1f at most", st["n"], self.threads, 1e3 * st["s"] / st["n"],
+                        1e3 * st["max"])
+            self._stats = {"n": 0, "s": 0.0, "max": 0.0}
 
 
 # ---- the SGLang side -----------------------------------------------------------
@@ -473,8 +710,18 @@ def apply(mod) -> None:
                 raise ValueError("PLE prefetch output must be bfloat16 on the id device")
             output = out
         flat_ids = input_ids.reshape(-1).long()
-        if flat_ids.numel():
-            table = self._gb10_table
+        table = self._gb10_table
+        cg = table._cpu_gather
+        if (cg is not None and flat_ids.numel() >= cg.min_rows
+                and not (flat_ids.is_cuda and torch.cuda.is_current_stream_capturing())):
+            # .cpu() syncs the stream, as the prefetcher's does: prefill chunks only
+            ids = flat_ids.cpu().numpy()
+            if table._prefetcher is not None:
+                table._prefetcher.hint(ids)
+            cg.gather_into(output, ids, vocab_start=self.shard_indices.org_vocab_start_index,
+                           vocab_end=self.shard_indices.org_vocab_end_index,
+                           is_fp8=table.dtype == "F8_E4M3")
+        elif flat_ids.numel():
             if table._prefetcher is not None:
                 table._prefetcher.enqueue(flat_ids)
             gather_rows(
@@ -555,6 +802,14 @@ def _attach_table(torch, emb, config, layer_id) -> None:
 
     if envs.SGLANG_QWEN4_PLE_FILE_PREFETCH.get():
         table._prefetcher = Prefetcher(table)
+        logger.info("PLE table: page-cache hints for gathers of >= %d rows, %s", PREFETCH_MIN_ROWS,
+                    f"batched (process_madvise, up to {_IOV_MAX} ranges a call)"
+                    if table._prefetcher.batched else "one posix_fadvise a page")
+    if os.environ.get("GB10_PLE_CPU_GATHER") == "1":
+        table._cpu_gather = CpuGather(table)
+        logger.info("PLE table: gathers of >= %d rows on %d CPU threads (GB10_PLE_CPU_GATHER=1); "
+                    "smaller ones on the GPU kernel", table._cpu_gather.min_rows,
+                    table._cpu_gather.threads)
     budget_gb = float(envs.SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB.get())
     if budget_gb > 0:
         from sglang.srt.models.qwen4_exp_ple_table import PleFileRssTrimmer

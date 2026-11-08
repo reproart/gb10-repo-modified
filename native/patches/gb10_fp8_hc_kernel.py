@@ -1,8 +1,10 @@
 """SGLang 0.5.20's _hc_mix_persistent_kernel (layers/hc_mix_triton.py) reading
 FP8 E4M3 weights with one float32 scale per weight row. Both GEMMs reduce
 along a row of their weight, so each row's scale multiplies that output
-column after the dot: the rest of the kernel is unchanged. Imported on the
-first call (it needs triton, which gb10_fp8_hc must not import at startup)."""
+column after the dot: the rest of the kernel is unchanged. Also the end of
+the mix for prefill-sized inputs (hc_gate_apply: row scale, sigmoid, product
+with x and mean over the streams in one pass). Imported on the first call (it
+needs triton, which gb10_fp8_hc must not import at startup)."""
 
 import triton
 import triton.language as tl
@@ -134,6 +136,59 @@ def _hc_mix_fp8_kernel(
         tl.store(counters_ptr + 2, 0)
 
 
+@triton.jit
+def _hc_gate_apply_kernel(
+    gate_ptr,
+    s_ptr,
+    x_ptr,
+    out_ptr,
+    rows,
+    HS,
+    stride_g,
+    stride_x,
+    stride_o,
+    inv_hc,
+    HC: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_J: tl.constexpr,
+):
+    """out[m, j] = mean_g sigmoid(gate[m, g*HS + j] * s[g*HS + j]) * x[m, g*HS + j]:
+    the end of the mix for prefill-sized inputs, one pass over the gate and x."""
+    m = tl.program_id(0) * BLOCK_M + tl.arange(0, BLOCK_M)
+    j = tl.program_id(1) * BLOCK_J + tl.arange(0, BLOCK_J)
+    mask_m = m < rows
+    mask_j = j < HS
+    mask = mask_m[:, None] & mask_j[None, :]
+    acc = tl.zeros((BLOCK_M, BLOCK_J), dtype=tl.float32)
+    for g in tl.static_range(HC):
+        col = g * HS + j
+        s = tl.load(s_ptr + col, mask=mask_j, other=0.0)
+        a = tl.load(gate_ptr + m[:, None] * stride_g + col[None, :], mask=mask, other=0.0)
+        xv = tl.load(x_ptr + m[:, None] * stride_x + col[None, :], mask=mask, other=0.0)
+        acc += tl.sigmoid(a.to(tl.float32) * s[None, :]) * xv.to(tl.float32)
+    tl.store(out_ptr + m[:, None] * stride_o + j[None, :],
+             (acc * inv_hc).to(out_ptr.dtype.element_ty), mask=mask)
+
+
+def hc_gate_apply(gate, s_up, x, hc, hs):
+    """gate [rows, hc*hs] (the up projection before its row scales), s_up [hc*hs]
+    float32, x [rows, hc*hs] -> [rows, hs] in x's dtype. Both inputs need a unit
+    stride along the last dimension."""
+    import torch
+
+    rows = x.shape[0]
+    out = torch.empty((rows, hs), dtype=x.dtype, device=x.device)
+    if rows == 0:
+        return out
+    block_m, block_j = 8, 256
+    grid = (triton.cdiv(rows, block_m), triton.cdiv(hs, block_j))
+    _hc_gate_apply_kernel[grid](
+        gate, s_up, x, out, rows, hs, gate.stride(0), x.stride(0), out.stride(0), 1.0 / hc,
+        HC=hc, BLOCK_M=block_m, BLOCK_J=block_j, num_warps=4,
+    )
+    return out
+
+
 MAX_ROWS = 64
 _counters_cache = {}
 
@@ -148,11 +203,21 @@ def _get_counters(device):
     return buf
 
 
-def fused_hc_mix_fp8(x, w_down, s_down, w_up, s_up, hc, hs, num_ctas=None):
+def default_tiles(rows_pad):
+    """(BLOCK_N, BLOCK_K, BLOCK_J, BLOCK_R, num_warps, num_stages) for a row tile.
+    16 rows: SGLang's tiles. 32/64: a shorter K tile and two stages, so the
+    pipelined x tile stays well inside GB10's ~100 KB shared memory."""
+    if rows_pad == 16:
+        return (32, 256, 32, 64, 8, 3)
+    return (32, 128, 32, 64, 8, 2)
+
+
+def fused_hc_mix_fp8(x, w_down, s_down, w_up, s_up, hc, hs, num_ctas=None, tiles=None):
     """SGLang's fused_hc_mix (x [rows, hc*hs] contiguous) with FP8 w_down
     [lowrank, hc*hs] / w_up [hc*hs, lowrank] and their float32 per-row
     scales. Up to 64 rows: SGLang's kernel stops at 16, one decode step's
-    verify at 8 requests x 4 draft tokens is 32."""
+    verify at 8 requests x 4 draft tokens is 32. tiles: default_tiles()'s
+    tuple, for a sweep (BLOCK_K must divide hc*hs: K is not masked)."""
     import torch
 
     rows, k = x.shape
@@ -167,12 +232,11 @@ def fused_hc_mix_fp8(x, w_down, s_down, w_up, s_up, hc, hs, num_ctas=None):
     out = torch.empty((rows, hs), dtype=x.dtype, device=device)
     if rows == 0:
         return out
+    bn, bk, bj, br, warps, stages = tiles or default_tiles(rows_pad)
     _hc_mix_fp8_kernel[(num_ctas,)](
         x, w_down, s_down, w_up, s_up, t_raw, out, _get_counters(device),
         k, lowrank, hs, rows, num_ctas, 1.0 / hc,
-        # 16 rows: SGLang's tiles. 32/64: a shorter K tile and two stages, so
-        # the pipelined x tile stays well inside GB10's ~100 KB shared memory.
-        ROWS=rows_pad, HC=hc, BLOCK_N=32, BLOCK_K=256 if rows_pad == 16 else 128,
-        BLOCK_J=32, BLOCK_R=64, num_warps=8, num_stages=3 if rows_pad == 16 else 2,
+        ROWS=rows_pad, HC=hc, BLOCK_N=bn, BLOCK_K=bk,
+        BLOCK_J=bj, BLOCK_R=br, num_warps=warps, num_stages=stages,
     )
     return out

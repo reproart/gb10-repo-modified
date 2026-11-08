@@ -25,6 +25,11 @@ import unittest
 
 import numpy as np
 
+try:
+    import torch
+except ImportError:  # the layout tests need numpy only
+    torch = None
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gb10_ple_mmap as g  # noqa: E402
 
@@ -213,6 +218,134 @@ class PrefetchTest(unittest.TestCase):
             self.assertEqual({f: set(p.tolist()) for f, p in got.items()}, want)
 
 
+class BatchedPrefetchTest(unittest.TestCase):
+    def table(self, d):
+        ck = Checkpoint(d, vocab=5000, parts=9, dim=160, drop=4)
+        return ck, g.map_table(g.scan_table_dir(d)[1], d, ck.shard_size, ck.vocab)
+
+    def test_ranges_cover_exactly_the_rows_pages(self):
+        with tempfile.TemporaryDirectory() as d:
+            ck, t = self.table(d)
+            page = 4096
+            ids = np.array(random.Random(2).sample(range(ck.vocab + 50), 900), dtype=np.int64)
+            want = set()
+            for r in ids.tolist():
+                a = t.row_address(r)
+                if a:
+                    want.update({a // page, (a + t.row_bytes - 1) // page})
+            ranges = g.page_ranges(t, ids, page)
+            got = set()
+            for addr, length in ranges.tolist():
+                self.assertEqual((addr % page, length % page), (0, 0))
+                got.update(range(addr // page, (addr + length) // page))
+            self.assertEqual(got, want)
+            starts = ranges[:, 0] // page
+            ends = starts + ranges[:, 1] // page
+            self.assertTrue(bool((starts[1:] > ends[:-1]).all()))      # merged, sorted, disjoint
+            self.assertEqual(g.page_ranges(t, np.array([ck.vocab + 10]), page).shape, (0, 2))
+
+    def test_process_madvise_on_this_kernel_and_the_fallbacks(self):
+        with tempfile.TemporaryDirectory() as d:
+            ck, t = self.table(d)
+            ids = np.arange(0, ck.vocab, 3, dtype=np.int64)
+            n_ranges = len(g.page_ranges(t, ids, os.sysconf("SC_PAGE_SIZE")))
+            p = g.Prefetcher(t, min_rows=1)
+            if not p.batched:
+                self.skipTest("no pidfd_open here (kernel < 5.3 or seccomp)")
+            p._advise(ids)
+            if not p.batched:
+                self.skipTest("process_madvise(MADV_WILLNEED) refused here (kernel < 5.10?)")
+            self.assertEqual(p.calls, -(-n_ranges // g._IOV_MAX))
+            # a refused call (a bad pidfd here) falls back to one fadvise a page, for good
+            p._pidfd, p.calls = 2**20, 0
+            with self.assertLogs("sglang.srt.models.qwen4_exp.gb10_ple_mmap", "WARNING"):
+                p._advise(ids)
+            self.assertFalse(p.batched)
+            pages = sum(len(v) for v in g.pages_for_rows(t, ids, p._page).values())
+            self.assertEqual(p.calls, 1 + pages)
+            os.environ["GB10_PLE_PREFETCH"] = "fadvise"
+            try:
+                self.assertFalse(g.Prefetcher(t, min_rows=1).batched)
+            finally:
+                del os.environ["GB10_PLE_PREFETCH"]
+
+
+class SyncPrefetchTest(unittest.TestCase):
+    def test_hints_are_out_before_enqueue_returns(self):
+        try:
+            import torch
+        except ImportError:
+            self.skipTest("torch not installed")
+        with tempfile.TemporaryDirectory() as d:
+            ck = Checkpoint(d, vocab=5000, parts=9, dim=160, drop=4)
+            t = g.map_table(g.scan_table_dir(d)[1], d, ck.shard_size, ck.vocab)
+            p = g.Prefetcher(t, min_rows=8)
+            if not p.batched:
+                self.skipTest("no process_madvise here")
+            ids = torch.arange(0, ck.vocab, 5)
+            self.assertFalse(p.enqueue(ids[:4]))                 # decode-sized: nothing
+            self.assertTrue(p.enqueue(ids))
+            self.assertGreater(p.calls, 0)                        # done inline, not queued
+            self.assertEqual(p._stats["n"], 1)
+            p.log_every = 2
+            with self.assertLogs("sglang.srt.models.qwen4_exp.gb10_ple_mmap", "INFO") as cm:
+                p.enqueue(ids)
+            self.assertIn("page-cache hints before the last 2 prefill gathers", cm.output[0])
+            self.assertEqual(p._stats["n"], 0)
+            os.environ["GB10_PLE_PREFETCH_SYNC"] = "0"
+            try:
+                q = g.Prefetcher(t, min_rows=8)
+                q.enqueue(ids)
+                q._pool.shutdown(wait=True)                       # background, as before
+                self.assertGreater(q.calls, 0)
+                self.assertEqual(q._stats["n"], 0)
+            finally:
+                del os.environ["GB10_PLE_PREFETCH_SYNC"]
+
+
+@unittest.skipIf(torch is None, "torch not installed")
+class CpuGatherTest(unittest.TestCase):
+    def ref_rows(self, ck, ids, lo=0, hi=None):
+        hi = ck.vocab * 10 if hi is None else hi
+        out = np.zeros((len(ids), ck.row_bytes), dtype=np.uint8)
+        for i, gid in enumerate(ids.tolist()):
+            if lo <= gid < hi and gid < ck.vocab and ck.present[gid]:
+                out[i] = ck.table[gid]
+        return out
+
+    def test_rows_match_the_kernels_rules(self):
+        for dtype, drop in (("F8_E4M3", 2), ("BF16", None)):
+            with tempfile.TemporaryDirectory() as d:
+                ck = Checkpoint(d, vocab=3000, parts=7, dim=24, dtype=dtype, drop=drop)
+                t = g.map_table(g.scan_table_dir(d)[1], d, ck.shard_size, ck.vocab)
+                cg = g.CpuGather(t, threads=3, pin=False)
+                rng = np.random.default_rng(3)
+                ids = rng.integers(0, ck.vocab + 40, size=5000)
+                got = cg.gather(ids).numpy()
+                np.testing.assert_array_equal(got, self.ref_rows(ck, ids))
+                # a TP window: rows outside it read as zero, as in the kernel
+                got = cg.gather(ids, 500, 2000).numpy()
+                np.testing.assert_array_equal(got, self.ref_rows(ck, ids, 500, 2000))
+                self.assertEqual(cg.calls, 2)
+                one = cg.gather(np.array([ck.shard_size * 3 + 1]), 0, ck.vocab).numpy()
+                np.testing.assert_array_equal(one, self.ref_rows(ck, np.array([ck.shard_size * 3 + 1])))
+
+    def test_gather_into_writes_bf16_like_the_kernel(self):
+        with tempfile.TemporaryDirectory() as d:
+            ck = Checkpoint(d, vocab=900, parts=4, dim=16, drop=1)
+            t = g.map_table(g.scan_table_dir(d)[1], d, ck.shard_size, ck.vocab)
+            cg = g.CpuGather(t, threads=2, pin=False)
+            ids = np.arange(0, 950, 7)
+            out = torch.empty((len(ids), ck.dim), dtype=torch.bfloat16)
+            cg.log_every = 1
+            with self.assertLogs("sglang.srt.models.qwen4_exp.gb10_ple_mmap", "INFO") as cm:
+                cg.gather_into(out, ids, vocab_start=0, vocab_end=ck.vocab, is_fp8=True)
+            self.assertIn("prefill gathers on 2 CPU threads", cm.output[0])
+            ref = torch.frombuffer(bytearray(self.ref_rows(ck, ids).tobytes()),
+                                   dtype=torch.float8_e4m3fn).view(len(ids), ck.dim).to(torch.bfloat16)
+            torch.testing.assert_close(out, ref, rtol=0, atol=0, equal_nan=True)
+
+
 class HookTest(unittest.TestCase):
     def test_hook_runs_after_import_and_sources_stay_readable(self):
         import importlib
@@ -248,10 +381,6 @@ class HookTest(unittest.TestCase):
                     sys.modules.pop(m, None)
 
 
-try:
-    import torch
-except ImportError:  # the layout tests above need numpy only
-    torch = None
 
 
 def fake_sglang_module(allocations):
@@ -453,6 +582,28 @@ class SGLangIntegrationTest(unittest.TestCase):
                 ("model.language_model.layers.0.mlp.gate.weight", None)]
             model.load_weights(iter(weights))
             self.assertEqual(model.seen, [n for n, _ in weights[3:]])
+
+    def test_cpu_gather_path_through_the_wrapper(self):
+        os.environ["GB10_PLE_CPU_GATHER"] = "1"
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                ck, _, _, emb = self.build(d, drop=3)
+                table = emb._gb10_table
+                self.assertIsNotNone(table._cpu_gather)
+                table._cpu_gather.min_rows = 4
+                ids = torch.tensor([[0, 5, ck.shard_size * 3 + 1], [ck.vocab - 1, ck.vocab + 7, 42]])
+                calls = len(self.kernel_calls)
+                out = emb.gather(ids)
+                self.assertEqual(len(self.kernel_calls), calls)              # not the kernel
+                ref = torch.frombuffer(bytearray(ck.table.tobytes()), dtype=torch.float8_e4m3fn)
+                ref = ref.view(ck.vocab, ck.dim).to(torch.bfloat16)
+                for (r, c), gid in np.ndenumerate(ids.numpy()):
+                    want = ref[gid] if gid < ck.vocab and ck.present[gid] else torch.zeros(ck.dim, dtype=torch.bfloat16)
+                    torch.testing.assert_close(out[r, c], want, rtol=0, atol=0, equal_nan=True, msg=f"id {gid}")
+                emb.gather(torch.tensor([[1, 2]]))                            # small: the kernel
+                self.assertEqual(len(self.kernel_calls), calls + 1)
+        finally:
+            del os.environ["GB10_PLE_CPU_GATHER"]
 
     def test_other_backends_stay_stock(self):
         with tempfile.TemporaryDirectory() as d:
