@@ -20,7 +20,8 @@ CUDA-graph capture can keep the kernel.
 
 - SGLang 0.5.21, TP 1, `RadixArk/Qwen3.8-Flash-Next-NVFP4`
 - NEXTN MTP 3/1/4, chunked prefill 4096
-- DGX Spark (GB10, 128 GB unified memory, local NVMe), DGX OS
+- DGX Spark (GB10, 128 GB unified memory, local NVMe), DGX OS 7.6.0, kernel
+  7.0.0-1025-nvidia (aarch64)
 - The table is 47.7 GiB of FP8, read in place (it does not fit next to the
   weights). `cudaDevAttrPageableMemoryAccessUsesHostPageTables` = 1.
 
@@ -103,6 +104,9 @@ The CPU gather takes a few hundred major faults a prompt, against tens or
 hundreds of thousands, for the same bytes read. It is faster than even the GPU
 gather's best runs, because the faults that remain are taken in parallel.
 From the page cache it costs ~16 ms per 4096-token chunk (65K rows × 2560 B).
+The `WILLNEED` hints still help in front of it: without them the CPU gather
+was 3-8% slower (101K: 2008-2081 tok/s against 2114-2137), the threads taking
+every fault themselves instead of finding pages already being read.
 
 A sketch for `Qwen4ExpPinnedHostEmbedding.gather` with the file backend, where
 `self.weight` is the file-backed host tensor holding this rank's vocabulary
