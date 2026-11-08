@@ -275,6 +275,16 @@ MAMBA_SSM_DTYPE="${MAMBA_SSM_DTYPE:-}"
 MEM_FRACTION="${MEM_FRACTION:-0.85}"
 
 CHUNKED_PREFILL="${CHUNKED_PREFILL:-4096}"
+# Decode rounds between the chunks of a long prompt (--prefill-decode-interval).
+# SGLang runs a ready prefill batch before decode and, with MTP, never mixes
+# the two: with 0 the chunks of a 32K prompt run back to back and every stream
+# already generating stops for the whole prefill (perf.py section 5: longest
+# pause 12.5-25 s). N runs N decode rounds (one MTP step each, ~60 ms at one
+# stream) after every prefill chunk: the pause becomes about one chunk
+# (4096 tokens, ~1.9 s), the long prompt's TTFT grows by ~N steps a chunk.
+# On the 27B profile 1 (with 2048-token chunks) cut the pause to 1.3-2.1 s.
+# 0 = SGLang's default. Not measured on this model yet.
+PREFILL_DECODE_INTERVAL="${PREFILL_DECODE_INTERVAL:-0}"
 PAGE_SIZE="${PAGE_SIZE:-64}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-262144}"
 
@@ -388,6 +398,7 @@ model_args() {
     --page-size "$PAGE_SIZE"
     --chunked-prefill-size "$CHUNKED_PREFILL"
     --max-running-requests "$MAX_RUNNING"
+    --prefill-decode-interval "$PREFILL_DECODE_INTERVAL"
     --max-mamba-cache-size "$MAMBA_CACHE"
     --mamba-radix-cache-strategy "$MAMBA_STRATEGY"
     --ple-offload-embedding
