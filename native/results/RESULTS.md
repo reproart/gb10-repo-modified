@@ -1531,6 +1531,15 @@ sample), 222.9 tok/s at 8 streams, TTFT 128 ms; a 32K prompt prefilled at
 gather): 2K / 8K / 32K / 101K 1458 / 1648 / 1661 / 1499 -> ~2200 / 2290 /
 2285 / 2125, +40-50%. `PLE_GATHER=cpu` is the default.
 
+**Are the hints still needed with the CPU gather? Yes.** 2026-11-08, server
+restarted with `SGLANG_QWEN4_PLE_FILE_PREFETCH=0` (no page-cache hints), three
+`--only prefill` runs: 2K 2016 / 2183 / 2200, 8K 2037 / 2179 / 2240, 32K 2108 /
+2207 / 2244, 101K 2008 / 2062 / 2081 tok/s, with 300-500K major faults a 101K
+prompt (the threads now take every miss themselves). With the hints (above)
+2151-2312 and 2114-2137 at 101K: 3-8% faster, so the ~47 ms a chunk they cost
+is paid back. They stay on (the default); hints first for async I/O at a high
+queue depth, then the threads.
+
 ### Looked at, postponed: local-inference-lab/Qwen3.8-Flash-Next-NVFP4 (QAD)
 
 A quantization-aware-distilled checkpoint (124 GB on disk, 36 files).

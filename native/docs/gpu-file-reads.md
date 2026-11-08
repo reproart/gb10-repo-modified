@@ -169,7 +169,11 @@ thread while the GPU runs the layers before the PLE layer).
   (`workingset_refault_file` above).
 - Page-cache hints (`WILLNEED`) are cheap when batched (`process_madvise`), but
   were not enough on their own here. With the CPU gather they may be
-  redundant; that is still to be measured (`SGLANG_QWEN4_PLE_FILE_PREFETCH=0`).
+  redundant; measured, they are not: without them (`SGLANG_QWEN4_PLE_FILE_PREFETCH=0`)
+  the CPU gather ran 3-8% slower (101K 2008-2081 tok/s against 2114-2137), the
+  threads then taking every fault themselves (~300-500K a 101K prompt) instead of
+  finding pages already on their way. Keep both: hints first (async I/O at a
+  high queue depth), then the threads.
 
 ## Open questions
 
