@@ -697,7 +697,8 @@ layers (~19 ms) at the memory's bandwidth; what is left:
   threads, which take their faults in parallel, and hands the GPU a filled
   buffer: **2151-2312 tok/s at 2K-32K and 2114-2137 at 101K, the same in
   every run**, a few hundred major faults a prompt; +40-50% over September,
-  above vllm-flash-ar (1.7-2.1K).
+  above vllm-flash-ar (1.7-2.1K). The general lesson, for any integration
+  that lets a kernel read a file in place: [docs/gpu-file-reads.md](docs/gpu-file-reads.md).
 
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
 slot), 24 without; a 374K-token KV pool at 0.85 (the cookbook's cell: ~93K). `MAMBA_SSM_DTYPE=bfloat16`
@@ -1085,6 +1086,8 @@ results/       RESULTS.md: all measurements (Docker build)
                REPRODUCTION.md: an independent run
                runs/: saved benchmark output (gitignored)
 docs/          cache-transfer.md: move the weights to a new machine, offline
+               gpu-file-reads.md: a kernel reading a file in place (the PLE table): why prefill
+               varied, how to measure it, the CPU-gather fix, a checklist for new integrations
 ```
 
 The benchmarks read `GB10_BASE_URL` (API root including `/v1`, default
