@@ -697,7 +697,9 @@ layers (~19 ms) at the memory's bandwidth; what is left:
   threads, which take their faults in parallel, and hands the GPU a filled
   buffer: **2151-2312 tok/s at 2K-32K and 2114-2137 at 101K, the same in
   every run**, a few hundred major faults a prompt; +40-50% over September,
-  above vllm-flash-ar (1.7-2.1K). The general lesson, for any integration
+  above vllm-flash-ar (1.7-2.1K). With `PREFILL_DECODE_INTERVAL=1` (default
+  now) the streams already generating pause ~1.85 s at most while a 32K
+  prompt prefills, not the whole 12-25 s. The general lesson, for any integration
   that lets a kernel read a file in place: [docs/gpu-file-reads.md](docs/gpu-file-reads.md).
 
 **Memory.** 8 concurrent requests with MTP (5 fp32 GDN slots each, ~113 MB a
