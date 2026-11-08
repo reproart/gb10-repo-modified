@@ -9,6 +9,16 @@ gather kernel reads the rows it needs. It works, and it is correct. It is also
 slow in a way that comes and goes, and this note is about that: what it looks
 like, how to measure it, what was ruled out, and the design that fixed it.
 
+**Why it will come up again.** Lookup-table memories are new and spreading:
+DeepSeek's Engram (DeepSeek V4; in SGLang `layers/engram.py`) and the n-gram
+PLE table of Qwen3.8-Flash-Next (`models/qwen4_exp*.py`). They are large (tens
+of GiB) and touched sparsely (a few rows a token), so on a machine short of
+memory the obvious move is to leave them on storage and read them in place.
+SGLang's own file backend for the PLE table does exactly that with a GPU
+gather, and has this problem; SGLang's Engram tables are resident and
+registered today, but a file-backed mode for small machines would invite the
+same design. Whoever writes the next one should read this first.
+
 **In short:** do not let the GPU take page faults on file-backed memory on the
 prefill path. Read the rows on CPU threads into a pinned buffer and hand the GPU
 the buffer. On Flash-Next this took prefill from 1.2-2.0K tok/s (depending on
