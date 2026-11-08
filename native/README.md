@@ -716,6 +716,15 @@ or an absolute path. The served name follows (`qwen3.8-flash-next`,
 `WEIGHTS=abliterated ./serve.sh qwen3.8-flash-next`, as a profile the
 service can run.
 
+**Ablation at inference** instead of other weights: `ABLATE=1 ./serve.sh
+qwen3.8-flash-next` removes the refusal directions from the RadixArk weights'
+residual stream (patches/gb10_ablate.py), with the vectors at `ABLATE_VECTORS`
+(Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors, downloaded once; the
+profile prints the command if they are missing). `./serve.sh
+qwen3.8-flash-next-ablated` is the same as a profile of its own, served as
+`qwen3.8-flash-next-ablated`. `ABLATE=<path>` takes another file,
+`ABLATE_ALPHA` the strength.
+
 ### Ornith 1.5 35B-A3B
 
 [`models/ornith-1.5-35b.sh`](models/ornith-1.5-35b.sh): a Qwen3.5-35B-A3B
