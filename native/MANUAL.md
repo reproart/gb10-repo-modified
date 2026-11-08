@@ -41,6 +41,7 @@
 | `meerkat-triz` | Qwen3.8-27B + LoRA по ТРИЗ (слитая), FP8 при загрузке | ~54 ГБ | ~30 | измерена, HumanEval не хуже базы |
 | `qwen3.8-flash-next` | Qwen3.8-Flash-Next 176B MoE, NVFP4 | 126 ГиБ | **65.8** | измерена |
 | `qwen3.8-flash-next-abliterated` | то же, abliterated-веса Huihui | 126 ГиБ | | работает |
+| `qwen3.8-flash-next-ablated` | то же, веса RadixArk + абляция векторами отказа на лету | 126 ГиБ | | работает |
 | `ornith-1.5-35b` | Ornith 1.5 35B-A3B FP8 + драфт DFlash | ~35 ГБ + драфт | **97.6** | измерена |
 | `gemma4-31b` | Gemma 4 31B BF16 + MTP | ~62 ГБ | | не измерена |
 | `mimo-v2.6-flash` | MiMo-V2.6-Flash 309B MoE (MXFP4) + DFlash, **на двух Spark**, SGLang 0.5.21 | ~165 ГиБ на каждом | | не измерена |
@@ -328,16 +329,20 @@ $HF download edp1096/Huihui-RadixArk-Qwen3.8-Flash-Next-abliterated-NVFP4 \
 ./serve.sh qwen3.8-flash-next-abliterated
 ```
 
-**Абляция векторами на лету** (без отдельных весов, с регулируемой силой):
+**Абляция векторами на лету** (без отдельных весов, с регулируемой силой).
+Векторы скачиваются один раз; путь к ним — `ABLATE_VECTORS` в профиле
+(по умолчанию `refusal_directions-v4-late.npz` из этого каталога):
 
 ```bash
 $HF download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors \
   --local-dir /models/qwen3.8-flash-next-refusal-ablation-vectors
-ABLATE=/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz \
-  ./serve.sh qwen3.8-flash-next
+ABLATE=1 ./serve.sh qwen3.8-flash-next      # имя модели прежнее
+./serve.sh qwen3.8-flash-next-ablated       # то же отдельным профилем: своё имя
+                                            # модели, годится для systemd
 ```
 
-`ABLATE_ALPHA` (1.0 — по умолчанию карточки, 0 — стоковая модель, 1.5 —
+`ABLATE=0` или пусто — стоковая модель; `ABLATE=/путь/другой.npz` — другой
+файл векторов. `ABLATE_ALPHA` (1.0 — по умолчанию карточки, 0 — стоковая модель, 1.5 —
 сильнее), `ABLATE_AT=output|input`, `ABLATE_STREAMS=each|mean`. В логе:
 `GB10_ABLATE: 43 layers, alpha 1, ...`. Только для весов RadixArk; с
 abliterated-весами смысла не имеет. Содержимое файла векторов можно
@@ -1151,7 +1156,7 @@ patches/              патчи SGLang, включаются профилями
   gb10_fp8_prefill      FP8 W8A8 на префилле для слоёв на Marlin (FP8_SIDE_PREFILL=w8a8)
   bench_sglang_gb10_gpu GPU-бенчмарк смешивания HC и боковых слоёв (сервер остановлен)
   gb10_marlin_lean      перепаковка MoE в Marlin без лишней копии
-  gb10_ablate           абляция векторами (ABLATE=...)
+  gb10_ablate           абляция векторами (ABLATE=1)
   gb10_tool_fences      пример вызова инструмента в блоке кода остаётся текстом (TOOL_FENCES, вкл.)
   test_gb10_*.py        проверки на CPU: python3 patches/test_gb10_<имя>.py
 bench/                perf.py, longctx.py, profile_decode.py, answers.py, consistency.py

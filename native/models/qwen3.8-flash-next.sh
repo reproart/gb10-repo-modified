@@ -231,13 +231,17 @@ FP8_HC="${FP8_HC:-1}"
 
 # Directional ablation at inference (patches/gb10_ablate.py): per-layer unit
 # vectors from an .npz (keys = layer indices), e.g. the refusal directions
-# built for RadixArk/Qwen3.8-Flash-Next-NVFP4:
+# built for RadixArk/Qwen3.8-Flash-Next-NVFP4, once:
 #   hf download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors \
 #     --local-dir /models/qwen3.8-flash-next-refusal-ablation-vectors
-#   ABLATE=/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz ./serve.sh qwen3.8-flash-next
-# Each listed layer's residual stream loses ABLATE_ALPHA times its
-# component along the layer's vector: h - alpha d (d . h); no weight changes,
-# empty ABLATE = the stock model. ALPHA 1 is the vectors' validated default,
+# then
+#   ABLATE=1 ./serve.sh qwen3.8-flash-next          the vectors at ABLATE_VECTORS
+#   ./serve.sh qwen3.8-flash-next-ablated           the same, as a profile (and a
+#                                                   served name) of its own
+#   ABLATE=/path/other.npz ./serve.sh qwen3.8-flash-next   another file
+# ABLATE empty or 0 = the stock model. Each listed layer's residual stream
+# loses ABLATE_ALPHA times its component along the layer's vector:
+# h - alpha d (d . h); no weight changes. ALPHA 1 is the vectors' validated default,
 # 1.5 stronger (watch for incoherence). ABLATE_AT output|input (which side
 # of each layer; the boot log prints how alike neighbouring vectors are),
 # ABLATE_STREAMS each|mean (all 4 hyper-connection streams, or only their
@@ -245,6 +249,12 @@ FP8_HC="${FP8_HC:-1}"
 # vectors are model- and quantization-specific, and pointless on the
 # abliterated checkpoint (WEIGHTS=abliterated), whose weights already have it.
 ABLATE="${ABLATE:-}"
+ABLATE_VECTORS="${ABLATE_VECTORS:-/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz}"
+case "$ABLATE" in
+  ''|0) ABLATE_FILE="" ;;
+  1) ABLATE_FILE="$ABLATE_VECTORS" ;;
+  *) ABLATE_FILE="$ABLATE" ;;
+esac
 ABLATE_ALPHA="${ABLATE_ALPHA:-1.0}"
 ABLATE_AT="${ABLATE_AT:-output}"
 ABLATE_STREAMS="${ABLATE_STREAMS:-each}"
@@ -381,12 +391,17 @@ model_env() {
   else
     unset GB10_FP8_HC
   fi
-  if [ -n "$ABLATE" ]; then
-    if [ ! -f "$ABLATE" ]; then
-      echo "ABLATE=$ABLATE: no such file" >&2
+  if [ -n "$ABLATE_FILE" ]; then
+    if [ ! -f "$ABLATE_FILE" ]; then
+      if [ "$ABLATE" = 1 ]; then
+        echo "ABLATE=1: no vectors at ABLATE_VECTORS=$ABLATE_VECTORS - download them once:" >&2
+        echo "  hf download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors --local-dir $(dirname "$ABLATE_VECTORS")" >&2
+      else
+        echo "ABLATE=$ABLATE: no such file" >&2
+      fi
       exit 1
     fi
-    export GB10_ABLATE="$ABLATE" GB10_ABLATE_ALPHA="$ABLATE_ALPHA" \
+    export GB10_ABLATE="$ABLATE_FILE" GB10_ABLATE_ALPHA="$ABLATE_ALPHA" \
       GB10_ABLATE_AT="$ABLATE_AT" GB10_ABLATE_STREAMS="$ABLATE_STREAMS"
   else
     unset GB10_ABLATE GB10_ABLATE_ALPHA GB10_ABLATE_AT GB10_ABLATE_STREAMS
@@ -445,5 +460,5 @@ model_summary() {
   [ "$MTP" = 1 ] && heads="$heads, draft $([ "$FP8_DRAFT_HEAD" = 1 ] && echo FP8 || echo BF16)"
   local draft_experts=""
   [ "$MTP" = 1 ] && draft_experts="; draft experts $([ "$MTP_EXPERTS" = fp4 ] && echo "NVFP4 at load (Marlin W4A16)" || echo BF16)"
-  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin$([ "$FP8_SIDE_PREFILL" = w8a8 ] && echo "; W8A8 from $FP8_SIDE_PREFILL_ROWS rows"))" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab$draft_experts; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple$([ -n "$ABLATE" ] && echo "; ablation $(basename "$ABLATE") alpha $ABLATE_ALPHA at layer $ABLATE_AT, $ABLATE_STREAMS stream(s)")"
+  echo "NVFP4 ($QUANTIZATION), MoE ${MOE_RUNNER_BACKEND:-auto}, BF16 side layers $([ "$FP8_SIDE" = 1 ] && echo "-> FP8 (Marlin$([ "$FP8_SIDE_PREFILL" = w8a8 ] && echo "; W8A8 from $FP8_SIDE_PREFILL_ROWS rows"))" || echo "BF16 (${BLAS:-cublas})"); heads $heads; HC mix $([ "$FP8_HC" = 1 ] && echo FP8 || echo BF16); routers/indexer $([ "$SKINNY_BF16" = 1 ] && echo "Triton skinny GEMM" || echo cuBLAS); draft vocab $vocab$draft_experts; MTP $([ "$MTP" = 1 ] && echo "on ($MTP_STEPS/1/$MTP_DRAFT_TOKENS)" || echo off); cap $MAX_RUNNING (GDN pool $MAMBA_CACHE); PLE table $ple$([ -n "$ABLATE_FILE" ] && echo "; ablation $(basename "$ABLATE_FILE") alpha $ABLATE_ALPHA at layer $ABLATE_AT, $ABLATE_STREAMS stream(s)")"
 }
