@@ -46,6 +46,12 @@ server stopped (it needs ~3 GB and a few minutes):
    FlashInfer's buckets and with patches/gb10_fp8_tune.py (exact verify sizes):
    whether a size gets the same kernel every time, and the worst case per step.
        BENCH_SECTIONS=7 ~/spark/venv-sglang-0.5.21/bin/python patches/bench_sglang_gb10_gpu.py
+8. the 27B's GEMMs at a 2048-row prefill chunk, which run FlashInfer's default
+   tactic (SGLang skips its extend-size autotune with speculative decoding): the
+   NVFP4 MLPs (gate_up, down) on every CUTLASS tactic, autotuned, and on the b12x
+   and cudnn backends (also at 15 / 240 rows), the FP8 projections on every
+   cuBLASLt algorithm; what the best would save a chunk.
+       BENCH_SECTIONS=8 ~/spark/venv-sglang-0.5.21/bin/python patches/bench_sglang_gb10_gpu.py
 Run straight from the venv's python, the script sets up what serve.sh would: the
 venv's bin/ and CUDA's on PATH (FlashInfer's JIT runs a bare `ninja` and nvcc),
 MAX_JOBS=2, and SGLang's cache directories, so FlashInfer finds the kernels the
@@ -86,7 +92,7 @@ import gb10_fp8_hc as hcp  # noqa: E402
 import gb10_fp8_hc_kernel as hck  # noqa: E402
 from gb10_fp8_side import quantize_per_channel  # noqa: E402
 
-SECTIONS = {int(s) for s in os.environ.get("BENCH_SECTIONS", "1,2,3,4,5,6,7").split(",") if s}
+SECTIONS = {int(s) for s in os.environ.get("BENCH_SECTIONS", "1,2,3,4,5,6,7,8").split(",") if s}
 dev = torch.device("cpu" if DRY else "cuda")
 DT = torch.float16 if DRY else torch.bfloat16
 torch.manual_seed(0)
@@ -407,8 +413,8 @@ if 4 in SECTIONS and not DRY:
     print("  a 4096-token chunk, all side layers: "
           + ", ".join(f"{k} {v / 1e3:.0f} ms" for k, v in chunk.items() if v != 0))
 
-if SECTIONS & {5, 6, 7} and not DRY:
-    print("\n5-7. Qwen3.8-27B (models/qwen3.8-27b.sh) decode GEMMs")
+if SECTIONS & {5, 6, 7, 8} and not DRY:
+    print("\n5-8. Qwen3.8-27B (models/qwen3.8-27b.sh) GEMMs")
     import flashinfer
     import gb10_fp8_side as side
     from flashinfer.autotuner import AutoTuner, autotune
@@ -775,6 +781,151 @@ if 7 in SECTIONS and not DRY:
         torch.cuda.empty_cache()
     os.environ.pop("GB10_FP8_TUNE_ROWS", None)
     os.environ.pop("GB10_FP8_TUNE_MAX_BS", None)
+
+if 8 in SECTIONS and not DRY:
+    from flashinfer import SfLayout
+
+    print("\n8. Prefill-size GEMMs of the 27B: with DFlash2 SGLang skips its extend-size autotune, so a"
+          " 2048-row chunk runs FlashInfer's default tactic. Every tactic against that default"
+          " (NVFP4 MLPs on CUTLASS, also the b12x / cudnn backends; FP8 projections on cuBLASLt), and"
+          " at 15 / 240 rows for reference. GEMM time only: the activation quantization is the same"
+          " for every tactic. \"autotuned\" finds its tuning only at 2048 rows: FlashInfer looks 15 / 240"
+          " up at 16 / 256, so there it is the default")
+    cap = torch.cuda.get_device_capability()
+    fp4_runner = fgb.get_cutlass_fp4_gemm_module(*cap).cutlass_fp4_gemm_runner()
+    fp4_ws = fgb._get_cache_buf("mm_fp4_workspace", fgb.DEFAULT_WORKSPACE_SIZE, dev)
+    CHUNK_MS = 811   # GPU time of a 2048-token chunk at 2-16K context (profile_decode --prefill 16384)
+
+    def nvfp4(t):
+        gsf = ((448 * 6) / t.float().abs().amax().clamp_min(1e-12)).reshape(1)
+        q, sf = flashinfer.nvfp4_quantize(t, gsf, sfLayout=SfLayout.layout_128x4, do_shuffle=False)
+        return q, sf, gsf
+
+    saved = []   # (label, ms a 2048-row chunk, what)
+    for label, n, k, count in (("MLP gate_up", 34816, 5120, 64), ("MLP down", 5120, 17408, 64)):
+        copies = copies_for(n * k // 2 + n * k // 16)
+        w0 = (torch.randn(n, k, device=dev) * 0.02).to(torch.bfloat16)
+        wq = [nvfp4(w0)]
+        for _ in range(copies - 1):
+            wq.append(nvfp4((torch.randn(n, k, device=dev) * 0.02).to(torch.bfloat16)))
+        print(f"  {label} [{n} x {k}] NVFP4 x{count} layers ({copies} copies), "
+              f"{len(fp4_runner.get_valid_tactics([], None))} CUTLASS tactics:")
+        for rows in (15, 240, 2048):
+            x = torch.randn(rows, k, device=dev).to(torch.bfloat16)
+            a, a_sf, a_gsf = nvfp4(x)
+            alphas = [(1.0 / (a_gsf * g)).float() for _, _, g in wq]
+            out = torch.empty(rows, n, device=dev, dtype=torch.bfloat16)
+            ref = (x @ w0.T).float()
+            tflop = 2 * rows * n * k / 1e12
+
+            def mm(i, backend="cutlass", a=a, a_sf=a_sf, alphas=alphas, out=out):
+                q, sf, _ = wq[i % copies]
+                return flashinfer.mm_fp4(a, q.T, a_sf, sf.T, alphas[i % copies], torch.bfloat16, out,
+                                         backend=backend)
+
+            def tac(i, t, a=a, a_sf=a_sf, alphas=alphas, out=out):
+                q, sf, _ = wq[i % copies]
+                return fp4_runner([a, q.T, a_sf, sf.T, alphas[i % copies], torch.bfloat16, out, 16, True,
+                                   fp4_ws], tactic=t)
+
+            calls = copies * 2
+
+            def line(name, t, e, kern=""):
+                print(f"      {name:30s} {t:8.1f} us  {tflop / t * 1e6:6.1f} TFLOPS  rel {e:.0e}  {kern}")
+
+            print(f"    {rows} rows:")
+            AutoTuner.get().clear_cache()
+            t_def = graph_us(mm, calls)
+            ref_def = mm(0).float().clone()
+            e = rel(ref_def, ref)
+            if e > 0.3:
+                fails += 1
+                print(f"      FAIL: CUTLASS default rel {e:.1e} against BF16 (layout?)")
+            line("CUTLASS default (the server)", t_def, e, kernel_names(lambda: mm(0)))
+            best = ("CUTLASS default", t_def)
+            if rows != 15:
+                sweep = []
+                for t in fp4_runner.get_valid_tactics([], None):
+                    try:
+                        tt = graph_us(lambda i, t=t: tac(i, t), calls)
+                        et = rel(tac(0, t).float(), ref_def)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if et > 2e-2:
+                        print(f"      tactic #{t}: differs from the default by rel {et:.1e}, left out")
+                        continue
+                    sweep.append((tt, t))
+                sweep.sort()
+                if sweep:
+                    tt, t = sweep[0]
+                    line(f"CUTLASS best of {len(sweep)} (#{t})", tt, rel(tac(0, t).float(), ref),
+                         kernel_names(lambda t=t: tac(0, t)))
+                    print("      all tactics, fastest first: " + ", ".join(f"#{t} {tt:.0f}" for tt, t in sweep))
+                    best = min(best, (f"CUTLASS tactic #{t}", tt), key=lambda b: b[1])
+            AutoTuner.get().clear_cache()
+            with autotune(True):
+                mm(0)
+            torch.cuda.synchronize()
+            tt = graph_us(mm, calls)
+            line("CUTLASS autotuned here", tt, rel(mm(0).float(), ref), kernel_names(lambda: mm(0)))
+            for be in ("b12x", "cudnn"):
+                for tuned in (False, True):
+                    AutoTuner.get().clear_cache()
+                    try:
+                        if tuned:
+                            with autotune(True):
+                                mm(0, be)
+                            torch.cuda.synchronize()
+                        tt = graph_us(lambda i, be=be: mm(i, be), calls)
+                        e = rel(mm(0, be).float(), ref)
+                    except Exception as ex:  # noqa: BLE001
+                        print(f"      {be:6s}{' autotuned' if tuned else ''}: n/a ({type(ex).__name__}: {str(ex)[:90]})")
+                        break
+                    line(f"{be}{' autotuned' if tuned else ' default'}", tt, e, kernel_names(lambda be=be: mm(0, be)))
+                    if e < 0.3:
+                        best = min(best, (f"{be}{' autotuned' if tuned else ''}", tt), key=lambda b: b[1])
+            AutoTuner.get().clear_cache()
+            if rows == 2048:
+                saved.append((label, (t_def - best[1]) * count / 1e3, best[0]))
+            del x, a, a_sf, out, ref, ref_def
+        del wq, w0
+        torch.cuda.empty_cache()
+
+    for label, n, k, count in FP8_SHAPES_27B:
+        copies = copies_for(n * k)
+        qs, wt, wscale, wref = fp8_weights(n, k, copies)
+        x, xs, xq = fp8_input(2048, k)
+        a3 = xq.unsqueeze(0)
+        o3 = torch.empty(1, 2048, n, device=dev, dtype=torch.bfloat16)
+        ref = (x.float() @ wref.T)
+        tflop = 2 * 2048 * n * k / 1e12
+
+        def run8(i, t, a3=a3, o3=o3, xs=xs):
+            return runner([a3, wt[i % copies], xs, wscale, o3, wsbuf], tactic=t)
+
+        t_h = graph_us(lambda i: run8(i, -1), copies * 2)
+        k_h = kernel_names(lambda: run8(0, -1))
+        sweep = []
+        for t in runner.get_valid_tactics([a3, wt[0], xs, wscale, o3, wsbuf], None):
+            try:
+                sweep.append((graph_us(lambda i, t=t: run8(i, t), copies * 2), t))
+            except Exception:  # noqa: BLE001
+                continue
+        sweep.sort()
+        tb, tb_i = sweep[0] if sweep else (t_h, -1)
+        e = rel(run8(0, tb_i)[0].float(), ref)
+        print(f"  {label} [{n} x {k}] FP8 x{count}, 2048 rows: cuBLASLt heuristic (the server) {t_h:7.1f} us"
+              f" {tflop / t_h * 1e6:5.1f} TFLOPS {k_h}; best of {len(sweep)} #{tb_i} {tb:7.1f} us"
+              f" {tflop / tb * 1e6:5.1f} TFLOPS rel {e:.0e} {kernel_names(lambda: run8(0, tb_i))}")
+        saved.append((label, max(0.0, t_h - tb) * count / 1e3, f"cuBLASLt #{tb_i}"))
+        del qs, wt, x, xq, a3, o3, ref, wref
+        torch.cuda.empty_cache()
+
+    total = sum(ms for _, ms, _ in saved)
+    print(f"  a 2048-token chunk (~{CHUNK_MS} ms of GPU time at 2-16K context), best against what runs now:")
+    for label, ms, what in saved:
+        print(f"    {label:28s} {ms:6.1f} ms saved ({what})")
+    print(f"    total {total:.1f} ms = {100 * total / CHUNK_MS:.1f}% of a chunk")
 
 print("\nALL OK" if not fails else f"\n{fails} FAILED")
 sys.exit(fails)
