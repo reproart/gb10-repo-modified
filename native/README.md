@@ -186,6 +186,7 @@ settings as a local-only commit on top of them.
 | `HF_OFFLINE` | `serve.sh` | `1` | no Hub access while serving |
 | `CPUSET` | `serve.sh` | `5-9,15-19` | the Cortex-X5 cores; empty disables pinning |
 | `PORT`, `HOST` | `serve.sh` | `8888`, `0.0.0.0` | |
+| `SERVED_ALIASES` | `serve.sh` | `qwen` | more model ids for every SGLang profile, after its own name in `/v1/models` (`patches/gb10_served_aliases.py`): a client set up with `qwen` keeps its settings whichever profile serves; empty = the profile's name only |
 | `MODEL_DIR`, `DRAFT_DIR` | profile | `/models/RadixArk/Qwen3.8-27B-NVFP4`, `/models/Qwen3.8-27B-DFlash2` | step 3 |
 | `SGLANG_VERSION` | profile | `0.5.21` | `0.5.20` goes back; see "Trying a newer SGLang" |
 | `DRAFT_TOKENS` | profile | `15` | 11 if you mostly run 10-12 requests at once, 10 for cap 32 (step 8) |

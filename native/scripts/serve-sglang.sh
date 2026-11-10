@@ -89,6 +89,16 @@ if [ "${TOOL_FENCES:-1}" = 1 ]; then
 else
   unset GB10_TOOL_FENCES
 fi
+# More model ids (SERVED_ALIASES in ../serve.sh; patches/gb10_served_aliases.py).
+if [ -n "${SERVED_ALIASES:-}" ]; then
+  export GB10_SERVED_ALIASES="$SERVED_ALIASES"
+  case ":${PYTHONPATH:-}:" in
+    *":$ROOT/patches:"*) ;;
+    *) export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}" ;;
+  esac
+else
+  unset GB10_SERVED_ALIASES
+fi
 # The profile's own environment for the server (e.g. patches/ on PYTHONPATH).
 if declare -F model_env >/dev/null; then model_env; fi
 
@@ -143,7 +153,7 @@ echo "target  $MODEL_DIR (revision $(revision_of "$MODEL_DIR"))"
 if declare -F model_summary >/dev/null; then echo "model   $(model_summary)"; fi
 echo "sglang  $SGLANG_VERSION ($VENV), mem-fraction $MEM_FRACTION"
 echo "nvcc    $(command -v nvcc >/dev/null && nvcc --version | grep -oE 'release [0-9.]+' || echo 'not on PATH; set CUDA_HOME if kernel JIT fails')"
-echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\"   CPUs ${CPUSET:-all}"
+echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\"${GB10_SERVED_ALIASES:+ (also: $GB10_SERVED_ALIASES)}   CPUs ${CPUSET:-all}"
 [ -n "$swap_note" ] && echo "memory  $swap_note"
 [ -n "$mem_line" ] && echo "        ${mem_line#\[*\] }"
 echo

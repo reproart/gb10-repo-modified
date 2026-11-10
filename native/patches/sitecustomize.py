@@ -77,6 +77,13 @@ if os.environ.get("GB10_TOOL_FENCES") == "1":
 
     gb10_ple_mmap.install_import_hook(gb10_tool_fences.TARGET_MODULE, gb10_tool_fences.apply)
 
+if os.environ.get("GB10_SERVED_ALIASES"):
+    import gb10_ple_mmap
+    import gb10_served_aliases
+
+    gb10_ple_mmap.install_import_hook(gb10_served_aliases.TARGET_MODULE, gb10_served_aliases.apply_http)
+    gb10_ple_mmap.install_import_hook(gb10_served_aliases.RESPONSES_MODULE, gb10_served_aliases.apply_responses)
+
 if os.environ.get("GB10_FP8_TUNE_ROWS"):
     import gb10_fp8_tune
     import gb10_ple_mmap

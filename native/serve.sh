@@ -43,6 +43,13 @@ export JIT_JOBS=2
 export PORT=8888
 export HOST=0.0.0.0
 
+# More model ids, space-separated, for every SGLang profile: /v1/models lists
+# them after the profile's own name and the endpoints answer to them, so a
+# client set up with "qwen" keeps its settings whichever profile is served
+# (patches/gb10_served_aliases.py; vllm-flash-ar serves "qwen" the same way).
+# Empty = the profile's own name only.
+export SERVED_ALIASES="${SERVED_ALIASES-qwen}"
+
 # API key (Bearer token) for the OpenAI- and Anthropic-compatible endpoints:
 #   non-empty -> clients must send "Authorization: Bearer <key>" (--api-key)
 #   empty     -> no auth (closed network)
