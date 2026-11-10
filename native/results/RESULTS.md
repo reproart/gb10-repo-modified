@@ -1045,6 +1045,12 @@ restarts, `perf.py --only decode` after each: **94.0 / 94.0 / 93.8 tok/s**,
 the fast mode every time, against 89.2 on the stock boot of the same morning
 and roughly every other boot slow before. accept_len varies from run to run
 (9.22-10.75) at the same speed, as in the fast boots before.
+A full `perf.py` on the last of those boots, against the stock boot of the
+morning: single-stream 93.8 (89.2); sweep 1 / 2 / 4 / 8 / 16 / 24 streams
+71.6 / 127.2 / **233.7** / 321.9 / **430.2** / 401.6 (75.6 / 134.6 / 216.1 /
+316.9 / 421.8 / 394.3; 1-2 streams are short varied answers and move with
+accept_len); prefill 2,450 / 2,598 / 2,112 / 1,348 (2,468 / 2,607 / 2,127 /
+1,353: unchanged, as it should be); pause under a 32K prefill 1.28 / 1.31 s.
 
 **Prefill at 2-16K** (`profile_decode.py --prefill 16384`, 7 chunks of
 2048, ~811 ms of GPU time each = ~2,500 tok/s as without the profiler):
