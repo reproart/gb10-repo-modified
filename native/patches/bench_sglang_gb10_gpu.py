@@ -34,6 +34,11 @@ server stopped (it needs ~3 GB and a few minutes):
    same kernel?); the totals per decode step against the read roof. Needs ~1 GB:
    an idle server can stay up, a busy one skews the times. On the 27B alone:
        BENCH_SECTIONS=5 ~/spark/venv-sglang-0.5.21/bin/python patches/bench_sglang_gb10_gpu.py
+Run straight from the venv's python, the script sets up what serve.sh would: the
+venv's bin/ and CUDA's on PATH (FlashInfer's JIT runs a bare `ninja` and nvcc),
+MAX_JOBS=2, and SGLang's cache directories, so FlashInfer finds the kernels the
+server already compiled (~/.cache/sglang/.cache/flashinfer) instead of building
+them again.
 Exit code: the number of FAIL lines. BENCH_DRY=1: sections 1-3 on the CPU with
 Triton's interpreter and tiny sizes (a check of this script; times mean nothing).
 BENCH_SECTIONS=1,3: only those sections.
@@ -46,6 +51,20 @@ import time
 DRY = os.environ.get("BENCH_DRY") == "1"
 if DRY:
     os.environ["TRITON_INTERPRET"] = "1"
+else:
+    # What scripts/serve-sglang.sh and SGLang's redirect_third_party_caches() set,
+    # before anything imports FlashInfer (it reads its workspace at import time).
+    _paths = [os.path.dirname(sys.executable)]
+    _cuda = os.environ.get("CUDA_HOME") or ("/usr/local/cuda" if os.path.exists("/usr/local/cuda/bin/nvcc") else "")
+    if _cuda:
+        os.environ.setdefault("CUDA_HOME", _cuda)
+        _paths.append(os.path.join(_cuda, "bin"))
+    os.environ["PATH"] = os.pathsep.join(_paths + [os.environ.get("PATH", "")])
+    os.environ.setdefault("MAX_JOBS", "2")
+    _base = os.path.expanduser(os.environ.get("SGLANG_CACHE_DIR", "~/.cache/sglang"))
+    for _k, _v in (("FLASHINFER_WORKSPACE_BASE", _base), ("TRITON_CACHE_DIR", os.path.join(_base, "triton")),
+                   ("CUDA_CACHE_PATH", os.path.join(_base, "nv"))):
+        os.environ.setdefault(_k, _v)
 
 import torch  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
@@ -415,11 +434,16 @@ if 5 in SECTIONS and not DRY:
     def copies_for(nbytes):
         return max(2, -(-int(max(COPY_BYTES, 3 * L2)) // nbytes))
 
-    big = torch.empty(1 << 30, dtype=torch.uint8, device=dev)
-    t = eager_us(lambda: big.view(torch.int32).sum(dtype=torch.int64), reps=5)
-    roof = (1 << 30) / t / 1e3
-    del big
-    print(f"  read roof (a sum over 1 GiB): {roof:.0f} GB/s; L2 {L2 / 2**20:.0f} MiB")
+    big = torch.zeros(1 << 28, dtype=torch.float32, device=dev)   # 1 GiB
+    dst = torch.empty_like(big)
+    t_sum = eager_us(lambda: big.sum(), reps=5)
+    t_max = eager_us(lambda: big.view(torch.bfloat16).amax(), reps=5)
+    t_cp = eager_us(lambda: dst.copy_(big), reps=5)
+    roof = max((1 << 30) / t_sum, (1 << 30) / t_max) / 1e3
+    del big, dst
+    print(f"  read roof over 1 GiB: {(1 << 30) / t_sum / 1e3:.0f} GB/s (fp32 sum), "
+          f"{(1 << 30) / t_max / 1e3:.0f} GB/s (bf16 amax); copy {2 * (1 << 30) / t_cp / 1e3:.0f} GB/s "
+          f"(read + write); L2 {L2 / 2**20:.0f} MiB. Percentages below are of {roof:.0f} GB/s.")
 
     def gbs(nbytes, us):
         return nbytes / us / 1e3
