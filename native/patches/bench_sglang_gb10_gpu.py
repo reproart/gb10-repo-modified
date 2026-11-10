@@ -34,6 +34,13 @@ server stopped (it needs ~3 GB and a few minutes):
    same kernel?); the totals per decode step against the read roof. Needs ~1 GB:
    an idle server can stay up, a busy one skews the times. On the 27B alone:
        BENCH_SECTIONS=5 ~/spark/venv-sglang-0.5.21/bin/python patches/bench_sglang_gb10_gpu.py
+6. the server's own FlashInfer autotune cache (~/.cache/sglang/flashinfer/autotune):
+   for every cached FP8 tactic of those shapes, the cuBLASLt algorithm it becomes
+   at 15 / 60 / 120 / 240 rows (a tactic is an index into the list cuBLASLt
+   returns for the tuned bucket, 16 / 64 / 128 / 256 rows, taken at run time from
+   the list for the real row count) against the heuristic, every algorithm at 15
+   rows with its kernel, and bmm_fp8 with the file loaded as the server loads it.
+       BENCH_SECTIONS=6 ~/spark/venv-sglang-0.5.21/bin/python patches/bench_sglang_gb10_gpu.py
 Run straight from the venv's python, the script sets up what serve.sh would: the
 venv's bin/ and CUDA's on PATH (FlashInfer's JIT runs a bare `ninja` and nvcc),
 MAX_JOBS=2, and SGLang's cache directories, so FlashInfer finds the kernels the
@@ -74,7 +81,7 @@ import gb10_fp8_hc as hcp  # noqa: E402
 import gb10_fp8_hc_kernel as hck  # noqa: E402
 from gb10_fp8_side import quantize_per_channel  # noqa: E402
 
-SECTIONS = {int(s) for s in os.environ.get("BENCH_SECTIONS", "1,2,3,4,5").split(",") if s}
+SECTIONS = {int(s) for s in os.environ.get("BENCH_SECTIONS", "1,2,3,4,5,6").split(",") if s}
 dev = torch.device("cpu" if DRY else "cuda")
 DT = torch.float16 if DRY else torch.bfloat16
 torch.manual_seed(0)
@@ -395,9 +402,8 @@ if 4 in SECTIONS and not DRY:
     print("  a 4096-token chunk, all side layers: "
           + ", ".join(f"{k} {v / 1e3:.0f} ms" for k, v in chunk.items() if v != 0))
 
-if 5 in SECTIONS and not DRY:
-    print("\n5. Qwen3.8-27B decode GEMMs at verify sizes (DFlash2 draft 15: 15 / 60 / 120 / 240 rows ="
-          " 1 / 4 / 8 / 16 streams), us a call; weights cycled through copies, so they come from memory")
+if (5 in SECTIONS or 6 in SECTIONS) and not DRY:
+    print("\n5-6. Qwen3.8-27B (models/qwen3.8-27b.sh) decode GEMMs")
     import flashinfer
     import gb10_fp8_side as side
     from flashinfer.autotuner import AutoTuner, autotune
@@ -448,13 +454,31 @@ if 5 in SECTIONS and not DRY:
     def gbs(nbytes, us):
         return nbytes / us / 1e3
 
-    per_step = {}   # (layer label, variant) -> ms per decode step at 15 rows
     runner = fgb.get_gemm_module().cublas_fp8_gemm_runner()
     wsbuf = fgb._get_cache_buf("bmm_fp8_workspace", fgb.DEFAULT_WORKSPACE_SIZE, dev)
-    fp8_shapes = [("GDN out_proj + attn o_proj", 5120, 6144, 64),
-                  ("GDN in_proj_qkvz", 16384, 5120, 48),
-                  ("attn qkv_proj", 14336, 5120, 16)]
-    for label, n, k, count in fp8_shapes:
+    FP8_SHAPES_27B = [("GDN out_proj + attn o_proj", 5120, 6144, 64),
+                      ("GDN in_proj_qkvz", 16384, 5120, 48),
+                      ("attn qkv_proj", 14336, 5120, 16)]
+
+    def fp8_weights(n, k, copies):
+        """FP8 per-tensor weight copies [N, K], the [1, K, N] column-major views bmm_fp8
+        takes, the per-tensor scale and the dequantized reference."""
+        w = (torch.randn(n, k, device=dev) * 0.02).to(torch.bfloat16)
+        wscale = (w.abs().amax().float() / 448.0).reshape(1)
+        q = (w.float() / wscale).clamp(-448, 448).to(FP8)
+        qs = [q.clone() for _ in range(copies)]
+        return qs, [c.t().unsqueeze(0) for c in qs], wscale, q.float() * wscale
+
+    def fp8_input(rows, k):
+        x = torch.randn(rows, k, device=dev).to(torch.bfloat16)
+        xs = (x.abs().amax().float() / 448.0).reshape(1)
+        return x, xs, static_quant_fp8(x, xs)[0]
+
+if 5 in SECTIONS and not DRY:
+    print("\n5. Qwen3.8-27B decode GEMMs at verify sizes (DFlash2 draft 15: 15 / 60 / 120 / 240 rows ="
+          " 1 / 4 / 8 / 16 streams), us a call; weights cycled through copies, so they come from memory")
+    per_step = {}   # (layer label, variant) -> ms per decode step at 15 rows
+    for label, n, k, count in FP8_SHAPES_27B:
         nbytes = n * k
         copies = copies_for(nbytes)
         w = (torch.randn(n, k, device=dev) * 0.02).to(torch.bfloat16)
@@ -593,6 +617,103 @@ if 5 in SECTIONS and not DRY:
     print("  per decode step at 1 stream (15 rows), ms; the decode profile of 2026-11-10 had ~104 ms a step:")
     for (label, name), ms in per_step.items():
         print(f"    {label:28s} {name:28s} {ms:6.2f}")
+
+if 6 in SECTIONS and not DRY:
+    import glob
+    import json
+    import re
+
+    print("\n6. The server's own FlashInfer autotune cache: what a cached FP8 tactic runs at the verify"
+          " sizes. A tactic is an index into the list cuBLASLt returns for the tuned shape (bucket M:"
+          " 16 / 64 / 128 / 256); at run time the same index is taken from the list for the real M"
+          " (15 / 60 / 120 / 240)")
+    tune_dir = os.path.join(os.environ["FLASHINFER_WORKSPACE_BASE"], "flashinfer", "autotune")
+    files = sorted(glob.glob(os.path.join(tune_dir, "**", "*.json"), recursive=True), key=os.path.getmtime)
+    key_rx = re.compile(r"'fp8_gemm', '(\w+)', \(\(1, (\d+), (\d+)\), \(1, (\d+), (\d+)\)")
+    cached = []   # (file, {(k, n): {bucket: tactic}})
+
+    def tag(f):   # SGLang's cache key directory (a hash of model path, quantization, ...)
+        return os.path.basename(os.path.dirname(f))[:16]
+    for f in files:
+        try:
+            data = json.load(open(f))
+        except (OSError, ValueError) as ex:
+            print(f"  {f}: unreadable ({type(ex).__name__})")
+            continue
+        per_shape = {}
+        n_fp8 = n_all = 0
+        for key, val in data.items():
+            if key.startswith("_"):
+                continue
+            n_all += 1
+            m = key_rx.search(key)
+            if m and isinstance(val, list) and len(val) == 2 and isinstance(val[1], int):
+                n_fp8 += 1
+                per_shape.setdefault((int(m[3]), int(m[5])), {})[int(m[2])] = val[1]
+        stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(f)))
+        print(f"  {os.path.relpath(f, tune_dir)} ({stamp}): {n_all} entries, {n_fp8} fp8_gemm"
+              + (" for " + ", ".join(f"[K {k} x N {n}]" for k, n in sorted(per_shape)) if per_shape else ""))
+        if any((k, n) in per_shape for _, n, k, _ in FP8_SHAPES_27B):
+            cached.append((f, per_shape))
+    if not files:
+        print(f"  no cache files under {tune_dir}")
+    elif not cached:
+        print("  none of them has the 27B's FP8 shapes")
+    bucket_of = {15: 16, 60: 64, 120: 128, 240: 256}
+    for label, n, k, count in FP8_SHAPES_27B:
+        if not any((k, n) in ps for _, ps in cached):
+            continue
+        copies = copies_for(n * k)
+        qs, wt, wscale, _ = fp8_weights(n, k, copies)
+        print(f"  {label} [{n} x {k}] x{count}:")
+        for rows in ROWS27:
+            outs = {}
+            x, xs, xq = fp8_input(rows, k)
+            for m_ in sorted({rows, bucket_of[rows]}):
+                xq_m = xq if m_ == rows else fp8_input(m_, k)[2]
+                outs[m_] = (xq_m.unsqueeze(0), torch.empty(1, m_, n, device=dev, dtype=torch.bfloat16))
+
+            def run(i, tac, m_):
+                a3, o3 = outs[m_]
+                return runner([a3, wt[i % copies], xs, wscale, o3, wsbuf], tactic=tac)
+
+            def timed(tac, m_):
+                return graph_us(lambda i: run(i, tac, m_), copies * 3), kernel_names(lambda: run(0, tac, m_))
+
+            t_h, k_h = timed(-1, rows)
+            count_r = len(runner.get_valid_tactics([outs[rows][0], wt[0], xs, wscale, outs[rows][1], wsbuf], None))
+            print(f"    {rows:3d} rows: cuBLASLt heuristic {t_h:6.1f} us  {k_h}  ({count_r} algorithms at {rows} rows)")
+            if rows == 15:
+                lst = []
+                for tac in range(count_r):
+                    try:
+                        lst.append((tac, *timed(tac, rows)))
+                    except Exception:  # noqa: BLE001
+                        lst.append((tac, float("nan"), "failed"))
+                for tac, t, kern in lst:
+                    print(f"           #{tac}: {t:6.1f} us  {kern}")
+            for f, ps in cached:
+                tac = ps.get((k, n), {}).get(bucket_of[rows])
+                if tac is None:
+                    print(f"      {tag(f)}: no entry for bucket {bucket_of[rows]}")
+                    continue
+                t_r, k_r = timed(tac, rows)
+                t_b, k_b = timed(tac, bucket_of[rows])
+                AutoTuner.get().clear_cache()
+                loaded = AutoTuner.get().load_configs(f)
+                a3, o3 = outs[rows]
+                t_s = graph_us(lambda i, a3=a3, o3=o3: flashinfer.bmm_fp8(
+                    a3, wt[i % copies], xs, wscale, torch.bfloat16, out=o3, backend="cublas"), copies * 3)
+                k_s = kernel_names(lambda a3=a3, o3=o3: flashinfer.bmm_fp8(
+                    a3, wt[0], xs, wscale, torch.bfloat16, out=o3, backend="cublas"))
+                AutoTuner.get().clear_cache()
+                print(f"      {tag(f)}: cached tactic #{tac} (bucket {bucket_of[rows]})"
+                      f" -> at {rows} rows {t_r:6.1f} us {k_r}; at {bucket_of[rows]} rows {t_b:6.1f} us {k_b}")
+                print(f"        bmm_fp8 with this file loaded{'' if loaded else ' (FlashInfer refused the file)'}:"
+                      f" {t_s:6.1f} us {k_s}; against the heuristic {(t_s - t_h) * count / 1e3:+.2f} ms a step")
+            del x, xs, xq, outs
+        del qs, wt
+        torch.cuda.empty_cache()
 
 print("\nALL OK" if not fails else f"\n{fails} FAILED")
 sys.exit(fails)

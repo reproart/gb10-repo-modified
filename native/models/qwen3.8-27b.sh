@@ -176,7 +176,8 @@ FP8_SIDE="${FP8_SIDE:-0}"
 FP8_DRAFT="${FP8_DRAFT:-1}"
 
 # The dense NVFP4 GEMM kernel (--fp4-gemm-backend): empty = SGLang's auto
-# (CUTLASS here: ~339 us a call at 12 rows, ~40% of the weight-read speed).
+# (CUTLASS here: at the read roof, ~240 of 264 GB/s; results/RESULTS.md,
+# "Decode GEMMs of the 27B").
 # marlin (W4A16: BF16 activations, FP4 weights; SGLang's own default for
 # some models on SM120), flashinfer_cudnn, flashinfer_trtllm,
 # flashinfer_cutlass, flashinfer_cutedsl. flashinfer_cudnn: 74.9 tok/s, no

@@ -876,7 +876,8 @@ padded"; the BF16 small GEMMs above) and 27 vision-tower qkv; the rest of
 the vision tower stays BF16 and never runs in text decode. At most ~2%.
 What is left to try:
 
-- the MLPs' NVFP4 GEMM runs at ~40% of the weight-read speed (gate_up is
+- (wrong, see "Decode GEMMs of the 27B" below: gate_up is ~100 MB with its
+  scales, and the MLPs run at the read roof) the MLPs' NVFP4 GEMM runs at ~40% of the weight-read speed (gate_up is
   ~50 MB of FP4 plus scales, ~180 us at 273 GB/s, against 339 us for the
   average call): `FP4_GEMM_BACKEND=marlin` (W4A16) or another
   `--fp4-gemm-backend`;
@@ -937,6 +938,59 @@ step costs half, and 15 is +22% single-stream, even or ahead at 1-8
 streams and -14% at 12. The base profile moved to 15; 11 stays the choice
 when 10-12 requests at once are the norm. The 101K prefill reached 79 °C,
 not a limit (GB10's T.Limit margin is, "Thermals").
+
+### Decode GEMMs of the 27B at verify sizes (2026-11-10)
+
+The second Spark (gx10-230e), the profile's defaults (0.5.21, RadixArk NVFP4,
+DFlash2 draft 15, FP8 draft, cap 16, 0.85, chunk 2048, interval 1). `perf.py`
+as in the host-tuning A/B (prefill 2,468 / 2,607 / 2,127 / 1,353; pause under
+a 32K prefill 1.28 / 1.31 s; peak 421.8 at 16 streams), single-stream decode
+89.2 with accept_len 9.60 in all five runs: a slow boot, although 117.3 of
+118.1 GiB were free in 2 MiB+ blocks at its start, so fragmentation is not
+what picks the mode.
+
+`profile_decode.py` (39 steps, ~104 ms each), regrouped by the weights each
+kernel reads, against the read roof of 264 GB/s (bench section 5: an fp32
+sum / bf16 amax over 1 GiB; a copy reaches 238):
+
+| Part of a step | ms | Weights read | |
+|---|---:|---:|---|
+| MLPs, NVFP4 CUTLASS (128 GEMMs) | 40.2 | 9.6 GB | ~240 GB/s, at the roof |
+| GDN in_proj_qkvz + attention qkv_proj, FP8 (`192x48`) | 21.0 | 5.2 GB | ~245, at the roof |
+| GDN out_proj + attention o_proj, FP8 (`64x104`, 190 us) | 12.1 | 2.0 GB | ~166, **63%** |
+| lm_head x2 (verify + DFlash2's candidates), NVFP4 | 5.9 | 1.4 GB | ~240 |
+| DFlash2 draft (FP8 Marlin + BF16) | ~8.9 | ~2.1 GB | near the roof |
+| GDN kernels, norms, attention, the rest | ~9 | | |
+
+The MLPs were never at "~40%" (the 2026-09-30 note counted gate_up as 50 MB;
+with its block scales it is ~100 MB), so another FP4 GEMM backend has nothing
+to win there. GDN's BF16 in_proj_ba shows ~40 us a call in the trace but runs
+on SGLang's alternate stream beside in_proj_qkvz (`_gdn_use_alt_stream`), so
+it costs the step nothing.
+
+**Bench section 5** (`patches/bench_sglang_gb10_gpu.py`, weights cycled
+through copies so they come from memory), us a call:
+
+| Rows (streams) | 15 (1) | 60 (4) | 120 (8) | 240 (16) |
+|---|---:|---:|---:|---:|
+| out_proj [5120 x 6144]: cuBLASLt heuristic | **129** | 137 | 178 | 166 |
+| same, FlashInfer autotune | 130 | 140 | 147 | 176 |
+| same, FP8 Marlin W8A16 | 129 | 145 | 295 | 305 |
+| in_proj_qkvz [16384 x 5120]: heuristic / autotune | 346 / 346 | 363 / 343 | 391 / 374 | 415 / 431 |
+| same, Marlin | 342 | 371 | 742 | 777 |
+| qkv_proj [14336 x 5120]: heuristic / autotune | 308 / 305 | 315 / 318 | 342 / 325 | 381 / 387 |
+| in_proj_ba [96 x 5120] BF16: cuBLAS / skinny Triton | 8.0 / 11.2 | 8.2 / 11.8 | 8.4 / 11.8 | 10.6 / 18.3 |
+
+So on its own cuBLASLt reads out_proj at 92% of the roof at 15 rows, and
+three autotunes from scratch picked the same kernel (`64x64x128`). In the
+server the same GEMM ran on `64x104x128` at 190 us: ~61 us x 64 layers = ~3.9
+ms of a ~104 ms step. Neither the heuristic nor a fresh autotune picks that
+kernel at 15 rows, so the suspect is the tactic SGLang's autotune stored in
+its cache (`~/.cache/sglang/flashinfer/autotune/...`, reused at every boot):
+a tactic is an index into the algorithm list cuBLASLt returns for the tuned
+bucket (16 rows) and is applied to the list for the real 15. Bench section 6
+replays that cache. Marlin gains nothing at 15 rows and loses 2x from 120 rows
+on; gb10_skinny loses to cuBLAS on in_proj_ba. Neither is worth a patch.
 
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
