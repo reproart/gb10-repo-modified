@@ -1072,6 +1072,23 @@ tok/s). With speculative decoding SGLang skips its extend-size autotune
 so the 2048-row GEMMs run FlashInfer's default tactics: untuned, not
 necessarily slow.
 
+**Tactics at a 2048-row chunk** (bench section 8; with DFlash2 SGLang skips
+its extend-size autotune, so these GEMMs run FlashInfer's default), us a call:
+
+| | default (the server) | best CUTLASS tactic | CUTLASS autotuned | b12x | cudnn autotuned |
+|---|---:|---:|---:|---:|---:|
+| MLP gate_up, NVFP4 | 2,270 (322 TFLOPS) | 2,126 (#24 of 32) | **2,087** (350) | 2,181 | 2,238 |
+| MLP down, NVFP4 | 1,314 (278) | 1,257 (#22) | 1,267 | 1,604 | **1,155** (316) |
+| FP8 qkvz / qkv / out_proj | 1,834 / 1,613 / 703 (~185) | the heuristic's own pick is the best of 4-6 cuBLASLt algorithms | | | |
+
+The best of everything, mixing backends, would save 19 ms of a ~811 ms
+chunk (2.4%); CUTLASS tuned at 2048 alone ~15 ms (1.9%), and at 101K, where
+attention takes most of a chunk, under 1%. b12x is slower at every size; cudnn
+wins only on down at 2048 and loses at 240 rows. At 15 and 240 rows (decode)
+the default is at or near the best (down at 240: 271 against 238-244 us,
+~0.6% of a 16-stream step). Not worth a patch: the 27B's prefill is done
+short of new kernels (attention at long context).
+
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
 `RadixArk/Qwen3.8-Flash-Next-NVFP4`, `models/qwen3.8-flash-next.sh` as
