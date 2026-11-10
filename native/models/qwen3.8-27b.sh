@@ -207,11 +207,46 @@ FP4_GEMM_BACKEND="${FP4_GEMM_BACKEND:-}"
 #   stock      SGLang as shipped
 FP8_GEMM_TUNE="${FP8_GEMM_TUNE:-exact}"
 
+# Directional ablation at inference (patches/gb10_ablate.py), as on Flash-Next:
+# each listed layer's post-layer residual stream loses ABLATE_ALPHA times its
+# component along that layer's unit vector, h - alpha d (d . h); no weight
+# changes. The refusal directions msuiche derived on Qwen/Qwen3.8-27B (BF16) as
+# projective GGUF control vectors (glp.mode = project), once:
+#   hf download msuiche/Qwen3.8-27B-abliterated-cyber-GLP-49 \
+#     --revision 5f1be31cfde653f24fe74c71047433012b8ede9e \
+#     --local-dir /models/qwen3.8-27b-refusal-vectors
+# then
+#   ABLATE=1 ./serve.sh qwen3.8-27b         the vectors at ABLATE_VECTORS
+#   ./serve.sh qwen3.8-27b-ablated          the same, as a profile (and a served
+#                                           name) of its own
+#   ABLATE=/path/other.gguf ./serve.sh qwen3.8-27b   another file (.gguf or .npz)
+# ABLATE empty or 0 = the stock model. The download has two files:
+# GLP-49-L10-58 (a direction per layer, layers 10-58: the default) and
+# GLP-63-L1-63 (one direction pooled over layers 1-63, the same as the repo's
+# LoRA). Their card, on BF16: 81-84% delivery on its refusal suite against 3%
+# stock, harmless prompts 100%, capability 11-12 of 12. alpha 1 is the
+# validated value: 2 reflects the component (harmless prompts refused), 4
+# collapses the model; for less, use fewer layers, not a smaller alpha. RadixArk's
+# NVFP4 is that model quantized; the card expects the projection to survive it
+# (the weight error enters suppressed ~1/sqrt(5120)), not measured on NVFP4.
+# ABLATE_AT output|input (after layer l, as the files say, or before it). Cost:
+# a GEMV pair and a rank-1 update per listed layer per forward. The DFlash2
+# draft reads the ablated states; its accept_len may move a little.
+ABLATE="${ABLATE:-}"
+ABLATE_VECTORS="${ABLATE_VECTORS:-/models/qwen3.8-27b-refusal-vectors/Qwen3.8-27B-abliterated-cyber-GLP-49-L10-58-a1.gguf}"
+case "$ABLATE" in
+  ''|0) ABLATE_FILE="" ;;
+  1) ABLATE_FILE="$ABLATE_VECTORS" ;;
+  *) ABLATE_FILE="$ABLATE" ;;
+esac
+ABLATE_ALPHA="${ABLATE_ALPHA:-1.0}"
+ABLATE_AT="${ABLATE_AT:-output}"
+
 # Any other SGLang flags, appended last, so they override everything above.
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
-# The server environment for FP8_SIDE, FP8_DRAFT and FP4_GEMM_BACKEND;
-# variants that define their own model_env call this too.
+# The server environment for FP8_SIDE, FP8_DRAFT, FP4_GEMM_BACKEND,
+# FP8_GEMM_TUNE and ABLATE; variants that define their own model_env call this too.
 fp8_side_env() {
   if [ "$FP8_SIDE" = 1 ]; then
     local arch
@@ -238,7 +273,21 @@ fp8_side_env() {
     heuristic|stock) unset GB10_FP8_TUNE_ROWS GB10_FP8_TUNE_MAX_BS ;;
     *) echo "FP8_GEMM_TUNE must be exact, heuristic or stock, not '$FP8_GEMM_TUNE'" >&2; exit 1 ;;
   esac
-  if [ "$FP8_SIDE" = 1 ] || [ "$FP8_DRAFT" = 1 ] || [ "$FP8_GEMM_TUNE" = exact ]; then
+  if [ -n "$ABLATE_FILE" ]; then
+    if [ ! -f "$ABLATE_FILE" ]; then
+      if [ "$ABLATE" = 1 ]; then
+        echo "ABLATE=1: no vectors at ABLATE_VECTORS=$ABLATE_VECTORS - download them once:" >&2
+        echo "  hf download msuiche/Qwen3.8-27B-abliterated-cyber-GLP-49 --revision 5f1be31cfde653f24fe74c71047433012b8ede9e --local-dir $(dirname "$ABLATE_VECTORS")" >&2
+      else
+        echo "ABLATE=$ABLATE: no such file" >&2
+      fi
+      exit 1
+    fi
+    export GB10_ABLATE="$ABLATE_FILE" GB10_ABLATE_ALPHA="$ABLATE_ALPHA" GB10_ABLATE_AT="$ABLATE_AT"
+  else
+    unset GB10_ABLATE GB10_ABLATE_ALPHA GB10_ABLATE_AT
+  fi
+  if [ "$FP8_SIDE" = 1 ] || [ "$FP8_DRAFT" = 1 ] || [ "$FP8_GEMM_TUNE" = exact ] || [ -n "$ABLATE_FILE" ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -294,6 +343,7 @@ fp8_summary() {
   [ "$FP8_DRAFT" = 1 ] && [ "$SPEC" != mtp ] && printf '; draft -> FP8 (Marlin)'
   [ -n "$FP4_GEMM_BACKEND" ] && printf '; FP4 GEMM %s' "$FP4_GEMM_BACKEND"
   [ "$FP8_GEMM_TUNE" != stock ] && printf '; FP8 GEMM tactics %s' "$FP8_GEMM_TUNE"
+  [ -n "$ABLATE_FILE" ] && printf '; ablation %s alpha %s at layer %s' "$(basename "$ABLATE_FILE")" "$ABLATE_ALPHA" "$ABLATE_AT"
   return 0
 }
 
