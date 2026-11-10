@@ -455,7 +455,7 @@ def apply_qwen3_5(mod) -> None:
     settings()
     for name in found:
         _wrap_load_weights_stream(getattr(mod, name))
-    logger.info("GB10_ABLATE: %s will be ablated after loading", " / ".join(found))
+    logger.info("GB10_ABLATE: armed on %s (acts only if this model loads)", " / ".join(found))
 
 
 def apply_target(mod) -> None:
@@ -465,4 +465,4 @@ def apply_target(mod) -> None:
                            "(written for SGLang 0.5.20); unset GB10_ABLATE.")
     settings()  # fail on a bad setting before the weights load
     _wrap_load_weights(cls)
-    logger.info("GB10_ABLATE: %s will be ablated after loading", TARGET_CLASS)
+    logger.info("GB10_ABLATE: armed on %s (acts only if this model loads)", TARGET_CLASS)
