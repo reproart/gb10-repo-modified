@@ -756,7 +756,8 @@ analogous case and would be the one to A/B.) What the tuning does give the
 SGLang profiles is earlyoom at 1 GiB, so 0.85 holds (the 27B profiles now
 default to it when the tuning is applied), and a server that cannot swap.
 
-**Single-stream decode has two modes per boot,** 88-89.5 or 93.8-94.2
+**Single-stream decode has two modes per boot** (cause found and fixed on
+2026-11-10: FlashInfer's FP8 tactics, see "Decode GEMMs of the 27B"), 88-89.5 or 93.8-94.2
 tok/s, and keeps its mode for the whole boot: 89.5 before this reboot and
 94.1 after, but 88.3 in the three runs with the tuning applied earlier the
 same morning, and 93.8 against 88.8 on the other Spark for 0.85 against
@@ -1036,6 +1037,14 @@ and qkv_proj: the same kernel or near-ties both ways (one exact tune took
 256x64 for qkvz, 354 us against 346 in the quiet section 6 run; the 400 us
 reading beside it is the booting server). So the patch removes the index
 mismatch; ties within ~2% remain the tuner's call.
+
+**On the server** (gx10-230e, `FP8_GEMM_TUNE=exact`, the boot log has
+"GB10_FP8_TUNE: FlashInfer's FP8 GEMM tuned at exact verify sizes 15, 30,
+..., 225 rows besides its buckets"; 240 is a bucket of its own): three
+restarts, `perf.py --only decode` after each: **94.0 / 94.0 / 93.8 tok/s**,
+the fast mode every time, against 89.2 on the stock boot of the same morning
+and roughly every other boot slow before. accept_len varies from run to run
+(9.22-10.75) at the same speed, as in the fast boots before.
 
 **Prefill at 2-16K** (`profile_decode.py --prefill 16384`, 7 chunks of
 2048, ~811 ms of GPU time each = ~2,500 tok/s as without the profiler):
