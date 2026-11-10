@@ -1026,6 +1026,17 @@ stock against exact. Deleting the two refused cache directories
 `~/.cache/sglang/flashinfer/autotune/0.6.18/sm121/`) lets SGLang store its
 tactics again.
 
+**Section 7** (the server was booting alongside, so the times scatter by a
+few %): tuned as the server tunes, three times from scratch. out_proj at 15
+rows, stock: three tunes, three kernels (128x72 132 us, 64x64 135, **64x104
+162**), the lottery in one process; exact: 64x64 every time (two variants,
+132-135 us). Worst of three for the 64 layers at 15 rows: 10.36 -> 8.61 ms a
+step. 60 / 120 / 240 rows: the same kernels or ties either way. in_proj_qkvz
+and qkv_proj: the same kernel or near-ties both ways (one exact tune took
+256x64 for qkvz, 354 us against 346 in the quiet section 6 run; the 400 us
+reading beside it is the booting server). So the patch removes the index
+mismatch; ties within ~2% remain the tuner's call.
+
 **Prefill at 2-16K** (`profile_decode.py --prefill 16384`, 7 chunks of
 2048, ~811 ms of GPU time each = ~2,500 tok/s as without the profiler):
 
