@@ -187,6 +187,26 @@ FP8_DRAFT="${FP8_DRAFT:-1}"
 # Expected a value of type 'Tensor' ... found type 'tuple'"); set below.
 FP4_GEMM_BACKEND="${FP4_GEMM_BACKEND:-}"
 
+# How the checkpoint's FP8 GEMMs (GDN / attention projections, cuBLASLt through
+# FlashInfer) get their kernels. SGLang autotunes them at boot at 1, 2, 4, ...,
+# 256 rows; a DFlash2 verify runs DRAFT_TOKENS (15) rows a request. A tactic is
+# an index into cuBLASLt's algorithm list for the tuned size, applied to the
+# list for the real one: tuned at 16, used at 15, it can be another, slower
+# kernel (GDN out_proj 166-190 us instead of 129: up to ~4 ms of a ~104 ms
+# step). At 16 rows several kernels tie, so each boot's timing noise picks, and
+# the tuning cache that would keep a pick was refused (written under an older
+# cuDNN frontend): the two single-stream modes, 88-89.5 or 93.8-94.2 tok/s
+# (results/RESULTS.md, "Decode GEMMs of the 27B"; bench sections 5-7).
+#   exact      also tune at the verify sizes themselves (DRAFT_TOKENS x 1 ..
+#              CUDA_GRAPH_BS) and look those sizes up there
+#              (patches/gb10_fp8_tune.py); other sizes as before
+#   heuristic  no autotune for the FP8 GEMMs (--flashinfer-autotune-skip-ops
+#              fp8_gemm): cuBLASLt's own pick, the same every boot; in the bench
+#              as fast at 15 / 60 / 240 rows, slower at 120 (out_proj 170-178 us
+#              against 146)
+#   stock      SGLang as shipped
+FP8_GEMM_TUNE="${FP8_GEMM_TUNE:-exact}"
+
 # Any other SGLang flags, appended last, so they override everything above.
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -209,7 +229,16 @@ fp8_side_env() {
   if [ "$FP4_GEMM_BACKEND" = marlin ]; then
     export SGLANG_DISABLE_SILU_FP4_QUANT_FUSION=1
   fi
-  if [ "$FP8_SIDE" = 1 ] || [ "$FP8_DRAFT" = 1 ]; then
+  case "$FP8_GEMM_TUNE" in
+    exact)
+      # rows one request adds to a verify, and the most requests in a decode graph
+      GB10_FP8_TUNE_ROWS="$DRAFT_TOKENS"
+      [ "$SPEC" = mtp ] && GB10_FP8_TUNE_ROWS="$MTP_DRAFT_TOKENS"
+      export GB10_FP8_TUNE_ROWS GB10_FP8_TUNE_MAX_BS="$CUDA_GRAPH_BS" ;;
+    heuristic|stock) unset GB10_FP8_TUNE_ROWS GB10_FP8_TUNE_MAX_BS ;;
+    *) echo "FP8_GEMM_TUNE must be exact, heuristic or stock, not '$FP8_GEMM_TUNE'" >&2; exit 1 ;;
+  esac
+  if [ "$FP8_SIDE" = 1 ] || [ "$FP8_DRAFT" = 1 ] || [ "$FP8_GEMM_TUNE" = exact ]; then
     export PYTHONPATH="$ROOT/patches${PYTHONPATH:+:$PYTHONPATH}"
   fi
 }
@@ -236,6 +265,7 @@ model_args() {
   )
   [ "$PREFILL_CUDA_GRAPH" = 1 ] || args+=(--disable-prefill-cuda-graph)
   [ -n "$FP4_GEMM_BACKEND" ] && args+=(--fp4-gemm-backend "$FP4_GEMM_BACKEND")
+  [ "$FP8_GEMM_TUNE" = heuristic ] && args+=(--flashinfer-autotune-skip-ops fp8_gemm)
   return 0
 }
 
@@ -263,6 +293,7 @@ fp8_summary() {
   [ "$FP8_SIDE" = 1 ] && printf '; BF16 layers -> FP8 (Marlin)'
   [ "$FP8_DRAFT" = 1 ] && [ "$SPEC" != mtp ] && printf '; draft -> FP8 (Marlin)'
   [ -n "$FP4_GEMM_BACKEND" ] && printf '; FP4 GEMM %s' "$FP4_GEMM_BACKEND"
+  [ "$FP8_GEMM_TUNE" != stock ] && printf '; FP8 GEMM tactics %s' "$FP8_GEMM_TUNE"
   return 0
 }
 
