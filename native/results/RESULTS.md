@@ -992,6 +992,60 @@ bucket (16 rows) and is applied to the list for the real 15. Bench section 6
 replays that cache. Marlin gains nothing at 15 rows and loses 2x from 120 rows
 on; gb10_skinny loses to cuBLAS on in_proj_ba. Neither is worth a patch.
 
+**Section 6: the cause of the two modes per boot.** Two of the server's
+cache files hold the 27B's FP8 tactics (written 2026-09-30 and 2026-10-01).
+FlashInfer refuses both now (`cudnn_frontend_version: saved=1.30.0 vs
+current=1.31.0`, a "hard" mismatch: "Results will not be saved to this
+file"), so **every boot tunes again from scratch and never stores the
+result**. Replayed, their tactics show the mechanism: out_proj's bucket-16
+tactic is #3 in one file and #5 in the other; at 16 rows both are 64x64
+kernels (134 us), at 15 rows #3 is 64x64 (130 us) and **#5 is 64x104 (166
+us)**, the kernel of today's slow boot (190 us in the server). The 15-row
+list, every algorithm: #0 64x64 134, #1 128x72 135, #2 64x64 130, #3 64x64
+134, #4 64x96 149, #5 64x104 168, #6 64x112 178, #7 128x128 split-K 142 us.
+in_proj_qkvz's bucket-16 tactic #3 in both files is 96x128 at 15 rows
+(374-379 us against 346; today's boot had 192x48 at 348). Several kernels
+tie within ~1% at 16 rows, so the boot's timing noise decides which index
+wins, and the index decides which kernel 15 rows get: up to ~4 ms of a
+~104 ms step, the 88-89.5 / 93.8-94.2 tok/s split. FlashInfer's own buckets
+show it too: tuned at 15 / 60 / 120 / 240 rows, the run-time lookup goes to
+16 / 64 / 128 / 256 (`map_to_hybrid_bucket_uncapped`), never to the size
+that was measured.
+
+**Fix: `FP8_GEMM_TUNE=exact`** (`patches/gb10_fp8_tune.py`, the default
+now): the FP8 GEMM's tuning config also tunes at the verify sizes
+(DRAFT_TOKENS x 1 .. CUDA_GRAPH_BS: 15, 30, ..., 240) and maps exactly those
+sizes to themselves, so a tactic is measured and used on the same list;
+every other size keeps FlashInfer's buckets. Checked against FlashInfer
+0.6.18's own AutoTuner (profile generation and lookup, CPU). Alternatives in
+the profile: `heuristic` (`--flashinfer-autotune-skip-ops fp8_gemm`,
+cuBLASLt's own pick: as fast at 15 / 60 / 240 rows, slower at 120) and
+`stock`. Bench section 7 tunes as the server does, three times from scratch,
+stock against exact. Deleting the two refused cache directories
+(`c4afa65a7279723f`, `13f1a2acbddd23b7` under
+`~/.cache/sglang/flashinfer/autotune/0.6.18/sm121/`) lets SGLang store its
+tactics again.
+
+**Prefill at 2-16K** (`profile_decode.py --prefill 16384`, 7 chunks of
+2048, ~811 ms of GPU time each = ~2,500 tok/s as without the profiler):
+
+| Part of a 2048-token chunk | ms | |
+|---|---:|---|
+| MLPs, NVFP4 (gate_up 2.43 ms, down 1.39 ms a layer) | 246 | ~300 / 263 TFLOPS |
+| FP8 projections (qkvz 1.73 ms, out_proj 0.72, qkv 1.54) | 153 | ~180-200 TFLOPS |
+| Norms and elementwise (fused add + RMSNorm 42, GDN copies 18, gated norm 15, SiLU-mul 14) | 124 | mostly at the read roof |
+| GDN chunked delta rule (+ short conv) | ~108 | |
+| Attention, 16 layers (6.6 ms a call at ~9K context) | 106 | ~70 TFLOPS |
+| Activation quantization (FP8 static 17, FP4 34) and the rest | ~60 | |
+| DFlash2 draft's context projections, BF16 | ~9 | |
+
+GEMMs are half of a chunk and run near their compute rate; attention grows
+with the context (16 layers, ~5x at 101K, where prefill falls to ~1,350
+tok/s). With speculative decoding SGLang skips its extend-size autotune
+(`SGLANG_FLASHINFER_AUTOTUNE_EXTEND` returns early for speculative runners),
+so the 2048-row GEMMs run FlashInfer's default tactics: untuned, not
+necessarily slow.
+
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
 `RadixArk/Qwen3.8-Flash-Next-NVFP4`, `models/qwen3.8-flash-next.sh` as

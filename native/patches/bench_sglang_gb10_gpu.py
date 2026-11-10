@@ -41,6 +41,11 @@ server stopped (it needs ~3 GB and a few minutes):
    the list for the real row count) against the heuristic, every algorithm at 15
    rows with its kernel, and bmm_fp8 with the file loaded as the server loads it.
        BENCH_SECTIONS=6 ~/spark/venv-sglang-0.5.21/bin/python patches/bench_sglang_gb10_gpu.py
+7. the FP8 tactics tuned as the server tunes them (one pass at 240 and 256 rows,
+   then the verify sizes run on what it stored), three times from scratch, with
+   FlashInfer's buckets and with patches/gb10_fp8_tune.py (exact verify sizes):
+   whether a size gets the same kernel every time, and the worst case per step.
+       BENCH_SECTIONS=7 ~/spark/venv-sglang-0.5.21/bin/python patches/bench_sglang_gb10_gpu.py
 Run straight from the venv's python, the script sets up what serve.sh would: the
 venv's bin/ and CUDA's on PATH (FlashInfer's JIT runs a bare `ninja` and nvcc),
 MAX_JOBS=2, and SGLang's cache directories, so FlashInfer finds the kernels the
@@ -81,7 +86,7 @@ import gb10_fp8_hc as hcp  # noqa: E402
 import gb10_fp8_hc_kernel as hck  # noqa: E402
 from gb10_fp8_side import quantize_per_channel  # noqa: E402
 
-SECTIONS = {int(s) for s in os.environ.get("BENCH_SECTIONS", "1,2,3,4,5,6").split(",") if s}
+SECTIONS = {int(s) for s in os.environ.get("BENCH_SECTIONS", "1,2,3,4,5,6,7").split(",") if s}
 dev = torch.device("cpu" if DRY else "cuda")
 DT = torch.float16 if DRY else torch.bfloat16
 torch.manual_seed(0)
@@ -402,8 +407,8 @@ if 4 in SECTIONS and not DRY:
     print("  a 4096-token chunk, all side layers: "
           + ", ".join(f"{k} {v / 1e3:.0f} ms" for k, v in chunk.items() if v != 0))
 
-if (5 in SECTIONS or 6 in SECTIONS) and not DRY:
-    print("\n5-6. Qwen3.8-27B (models/qwen3.8-27b.sh) decode GEMMs")
+if SECTIONS & {5, 6, 7} and not DRY:
+    print("\n5-7. Qwen3.8-27B (models/qwen3.8-27b.sh) decode GEMMs")
     import flashinfer
     import gb10_fp8_side as side
     from flashinfer.autotuner import AutoTuner, autotune
@@ -714,6 +719,62 @@ if 6 in SECTIONS and not DRY:
             del x, xs, xq, outs
         del qs, wt
         torch.cuda.empty_cache()
+
+if 7 in SECTIONS and not DRY:
+    import gb10_fp8_tune as fp8_tune
+
+    print("\n7. FP8 tactics tuned as the server tunes them (one pass at 240 and 256 rows inside"
+          " autotune, then the verify sizes run on whatever it stored), three times from scratch:"
+          " FlashInfer's buckets (stock) against patches/gb10_fp8_tune.py (exact verify sizes,"
+          " FP8_GEMM_TUNE=exact)")
+    orig_cfg = getattr(fgb, fp8_tune.CONFIG_NAME)
+
+    def tune_mode(mode):
+        setattr(fgb, fp8_tune.CONFIG_NAME, orig_cfg)
+        for attr in (fp8_tune._MARK, "_gb10_fp8_tune_orig"):
+            if hasattr(fgb, attr):
+                delattr(fgb, attr)
+        if mode == "exact":
+            os.environ["GB10_FP8_TUNE_ROWS"], os.environ["GB10_FP8_TUNE_MAX_BS"] = "15", "16"
+            fp8_tune.apply(fgb)
+
+    for label, n, k, count in FP8_SHAPES_27B:
+        copies = copies_for(n * k)
+        qs, wt, wscale, _ = fp8_weights(n, k, copies)
+        ins = {r: fp8_input(r, k) for r in ROWS27 + (256,)}
+        outs = {r: torch.empty(1, r, n, device=dev, dtype=torch.bfloat16) for r in ins}
+
+        def bmm7(i, r):
+            _, xs_r, xq_r = ins[r]
+            return flashinfer.bmm_fp8(xq_r.unsqueeze(0), wt[i % copies], xs_r, wscale, torch.bfloat16,
+                                      out=outs[r], backend="cublas")
+
+        print(f"  {label} [{n} x {k}] x{count}:")
+        step = {}
+        for mode in ("stock", "exact"):
+            tune_mode(mode)
+            res = {r: [] for r in ROWS27}
+            for _ in range(3):
+                AutoTuner.get().clear_cache()
+                with autotune(True):
+                    bmm7(0, 240)
+                    bmm7(0, 256)
+                torch.cuda.synchronize()
+                for r in ROWS27:
+                    res[r].append((graph_us(lambda i, r=r: bmm7(i, r), copies * 3), kernel_names(lambda r=r: bmm7(0, r))))
+            for r in ROWS27:
+                kerns = sorted({kn for _, kn in res[r]})
+                print(f"    {r:3d} rows, {mode:5s}: " + " / ".join(f"{t:6.1f}" for t, _ in res[r]) + " us  "
+                      + (kerns[0] if len(kerns) == 1 else f"{len(kerns)} different kernels: " + " | ".join(kerns)))
+                step[(mode, r)] = max(t for t, _ in res[r]) * count / 1e3
+        AutoTuner.get().clear_cache()
+        tune_mode("stock")
+        print("    worst of three, ms a verify step for these layers: " + ", ".join(
+            f"{r} rows {step[('stock', r)]:.2f} -> {step[('exact', r)]:.2f}" for r in ROWS27))
+        del qs, wt, ins, outs
+        torch.cuda.empty_cache()
+    os.environ.pop("GB10_FP8_TUNE_ROWS", None)
+    os.environ.pop("GB10_FP8_TUNE_MAX_BS", None)
 
 print("\nALL OK" if not fails else f"\n{fails} FAILED")
 sys.exit(fails)
