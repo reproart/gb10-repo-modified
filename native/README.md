@@ -729,10 +729,11 @@ qwen3.8-flash-next-ablated` is the same as a profile of its own, served as
 
 The 27B has the same: `ABLATE=1 ./serve.sh qwen3.8-27b` or `./serve.sh
 qwen3.8-27b-ablated`, with msuiche's projective GGUF control vectors for
-Qwen3.8-27B (msuiche/Qwen3.8-27B-abliterated-cyber-GLP-49: a direction per
-layer on layers 10-58 by default, or one pooled direction on 1-63), applied to
+Qwen3.8-27B (msuiche/Qwen3.8-27B-abliterated-cyber-GLP-49: one pooled direction on
+layers 1-63 by default, or a direction per layer on 10-58), applied to
 the post-layer residual stream over RadixArk's NVFP4 (`models/qwen3.8-27b.sh`
-has the download and the caveats).
+has the download and the caveats): 83.6 tok/s single-stream against 93.8,
+as stock at 8-16 streams.
 
 ### Ornith 1.5 35B-A3B
 
