@@ -95,3 +95,4 @@ if os.environ.get("GB10_ABLATE"):
     import gb10_ple_mmap
 
     gb10_ple_mmap.install_import_hook(gb10_ablate.TARGET_MODULE, gb10_ablate.apply_target)
+    gb10_ple_mmap.install_import_hook(gb10_ablate.QWEN3_5_MODULE, gb10_ablate.apply_qwen3_5)

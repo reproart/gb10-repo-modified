@@ -727,6 +727,13 @@ qwen3.8-flash-next-ablated` is the same as a profile of its own, served as
 `qwen3.8-flash-next-ablated`. `ABLATE=<path>` takes another file,
 `ABLATE_ALPHA` the strength.
 
+The 27B has the same: `ABLATE=1 ./serve.sh qwen3.8-27b` or `./serve.sh
+qwen3.8-27b-ablated`, with msuiche's projective GGUF control vectors for
+Qwen3.8-27B (msuiche/Qwen3.8-27B-abliterated-cyber-GLP-49: a direction per
+layer on layers 10-58 by default, or one pooled direction on 1-63), applied to
+the post-layer residual stream over RadixArk's NVFP4 (`models/qwen3.8-27b.sh`
+has the download and the caveats).
+
 ### Ornith 1.5 35B-A3B
 
 [`models/ornith-1.5-35b.sh`](models/ornith-1.5-35b.sh): a Qwen3.5-35B-A3B
