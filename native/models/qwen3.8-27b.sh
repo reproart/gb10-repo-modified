@@ -221,25 +221,27 @@ FP8_GEMM_TUNE="${FP8_GEMM_TUNE:-exact}"
 #                                           name) of its own
 #   ABLATE=/path/other.gguf ./serve.sh qwen3.8-27b   another file (.gguf or .npz)
 # ABLATE empty or 0 = the stock model. The download has two files:
-# GLP-49-L10-58 (a direction per layer, layers 10-58: the default) and
 # GLP-63-L1-63 (one direction pooled over layers 1-63, the same as the repo's
-# LoRA). Their card, on BF16: 81-84% delivery on its refusal suite against 3%
-# stock, harmless prompts 100%, capability 11-12 of 12. alpha 1 is the
-# validated value: 2 reflects the component (harmless prompts refused), 4
-# collapses the model; for less, use fewer layers, not a smaller alpha. RadixArk's
-# NVFP4 is that model quantized; the card expects the projection to survive it
-# (the weight error enters suppressed ~1/sqrt(5120)), not measured on NVFP4.
+# LoRA: the default) and GLP-49-L10-58 (a direction per layer, layers 10-58).
+# Their card, on BF16: 81-84% delivery on its refusal suite against 3% stock,
+# harmless prompts 100%, capability 11-12 of 12. alpha 1 is the validated
+# value: 2 reflects the component (harmless prompts refused), 4 collapses the
+# model; for less, use fewer layers, not a smaller alpha. RadixArk's NVFP4 is
+# that model quantized; the card expects the projection to survive it (the
+# weight error enters suppressed ~1/sqrt(5120)).
 # ABLATE_AT output|input (after layer l, as the files say, or before it).
-# Measured with GLP-49 (2026-11-10): single-stream 75.2 tok/s against 93.8,
-# accept_len 7.8-9.2 against 9.3-10.0 (the DFlash2 draft reads the ablated
-# states, which it was not trained on) and a ~12% longer step (~50 us of small
-# kernels per ablated layer); 8 / 16 streams -16% / -13%, prefill -3-5%. For
-# the occasional question it is for; serve the plain profile otherwise. A
-# refusal can still come back late in a long answer (msuiche saw the vector hold
-# the first paragraph on another model) or follow an earlier one in the chat:
-# start a new chat, or try the GLP-63 file.
+# Measured (2026-11-10), single-stream decode against 93.8 tok/s stock: GLP-63
+# 83.6 (-11%), GLP-49 75.2 (-20%); with GLP-63, 8 / 16 streams as stock (319 /
+# 422 against 322 / 430), prefill -2-5%. The hooks cost next to nothing inside
+# the CUDA graph (GLP-63 has more of them); what is lost is the DFlash2 draft's
+# acceptance: it reads the ablated states, which it was not trained on. A
+# question GLP-49 refused mid-answer got its answer with GLP-63. For the
+# occasional question it is for; serve the plain profile otherwise. A refusal
+# can still come back late in a long answer (msuiche saw the vector hold the
+# first paragraph on another model) or follow an earlier one in the chat: start
+# a new chat, or try the other file.
 ABLATE="${ABLATE:-}"
-ABLATE_VECTORS="${ABLATE_VECTORS:-/models/qwen3.8-27b-refusal-vectors/Qwen3.8-27B-abliterated-cyber-GLP-49-L10-58-a1.gguf}"
+ABLATE_VECTORS="${ABLATE_VECTORS:-/models/qwen3.8-27b-refusal-vectors/Qwen3.8-27B-abliterated-cyber-GLP-63-L1-63-a1.gguf}"
 case "$ABLATE" in
   ''|0) ABLATE_FILE="" ;;
   1) ABLATE_FILE="$ABLATE_VECTORS" ;;

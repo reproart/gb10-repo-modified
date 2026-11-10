@@ -1091,29 +1091,40 @@ short of new kernels (attention at long context).
 
 ### Refusal-direction ablation on the 27B (2026-11-10)
 
-`ABLATE=1` (msuiche's GLP-49 GGUF, a direction per layer on 10-58, alpha 1,
-the post-layer residual stream over RadixArk's NVFP4; `patches/gb10_ablate.py`),
-one full `perf.py`, against the `FP8_GEMM_TUNE=exact` run above:
+msuiche's two GGUF files (alpha 1, the post-layer residual stream over
+RadixArk's NVFP4; `patches/gb10_ablate.py`), one full `perf.py` each, against
+the `FP8_GEMM_TUNE=exact` run above. GLP-49: a direction per layer on 10-58
+(adjacent cosine 0.77-0.89); GLP-63: one pooled direction on 1-63, now
+`ABLATE=1`'s file.
 
-| | stock | ablated |
-|---|---:|---:|
-| Single-stream decode | 93.8 | **75.2** |
-| accept_len there | 9.30-9.97 | 7.83-9.20 |
-| Sweep, 2 / 4 / 8 / 16 streams | 127.2 / 233.7 / 321.9 / 430.2 | 110.4 / 214.6 / 271.0 / 374.2 |
-| Prefill 8K / 32K / 101K | 2,598 / 2,112 / 1,348 | 2,472 / 2,034 / 1,313 |
-| Pause under a 32K prefill | 1.28 / 1.31 s | 1.32 / 1.36 s |
+| | stock | GLP-49 | GLP-63 |
+|---|---:|---:|---:|
+| Single-stream decode | 93.8 | 75.2 | **83.6** |
+| accept_len there | 9.30-9.97 | 7.83-9.20 | 8.05-9.50 |
+| Sweep, 2 / 4 / 8 / 16 streams | 127.2 / 233.7 / 321.9 / 430.2 | 110.4 / 214.6 / 271.0 / 374.2 | 143.3 / 211.3 / 319.4 / **422.4** |
+| Prefill 8K / 32K / 101K | 2,598 / 2,112 / 1,348 | 2,472 / 2,034 / 1,313 | 2,475 / 2,030 / 1,315 |
+| Pause under a 32K prefill | 1.28 / 1.31 s | 1.32 / 1.36 s | 1.32 / 1.36 s |
 
--20% single-stream: accept_len -10% and the step ~12% longer (~114 against
-~102 ms: the GEMV pair and rank-1 update of 49 layers, ~50 us of small
-kernels a layer). msuiche's DFlash2 measurement (GLM, vLLM) lost no
-acceptance because the drafter's taps sat before their injection point; here
-the draft captures the stream after the projection, which it was not trained
-on, the likely cause of the accept_len drop. A fused kernel (one per layer)
-would take most of the step cost back; not done, as the ablation is for the
-odd question and the plain profile stays the default. One refusal seen in
-use ("... I will not give"), mid-answer: msuiche reports the vector holding
-the first paragraph and the refusal leaking back later in long answers (on
-another model), and GLP-49's transfer from BF16 to NVFP4 "within noise".
+GLP-63 hooks more layers (63 against 49) with the same work per layer (two
+GEMVs and a rank-1 update) and loses half as much: the hooks are not the cost.
+In the decode CUDA graph they are ~190 kernels of a few us, under 1% of a
+~100 ms step; in prefill they run eagerly over 2048-row chunks, the -2-5%
+there. This withdraws the GLP-49 reading first written here ("the step ~12%
+longer, ~50 us of small kernels a layer", from accept_len and tok/s): accept_len
+as `perf.py` prints it moves 8.05-9.50 between runs at the same 83.3-83.9
+tok/s, too loose to split a speed into acceptance and step, and a fused kernel
+would buy under 1%. What is lost is the DFlash2 draft's acceptance: it captures
+the stream after the projection, which it was not trained on (msuiche's DFlash2
+measurement, GLM on vLLM, lost none because their taps sat before the injection
+point). GLP-49 removes a different direction at each of 49 layers, together a
+subspace over the depth; GLP-63 removes one. That is the likely reason it moves
+the draft's inputs less; GLP-49 was not re-measured on another boot. Under load
+GLP-63 is at stock (8 / 16 streams within 1-2%).
+
+In use: GLP-49 refused once mid-answer ("... I will not give"); the same
+question got its answer with GLP-63. msuiche reports the vector holding the
+first paragraph and the refusal leaking back later in long answers (on another
+model), and GLP-49's transfer from BF16 to NVFP4 "within noise".
 
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
