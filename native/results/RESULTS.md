@@ -1089,6 +1089,32 @@ the default is at or near the best (down at 240: 271 against 238-244 us,
 ~0.6% of a 16-stream step). Not worth a patch: the 27B's prefill is done
 short of new kernels (attention at long context).
 
+### Refusal-direction ablation on the 27B (2026-11-10)
+
+`ABLATE=1` (msuiche's GLP-49 GGUF, a direction per layer on 10-58, alpha 1,
+the post-layer residual stream over RadixArk's NVFP4; `patches/gb10_ablate.py`),
+one full `perf.py`, against the `FP8_GEMM_TUNE=exact` run above:
+
+| | stock | ablated |
+|---|---:|---:|
+| Single-stream decode | 93.8 | **75.2** |
+| accept_len there | 9.30-9.97 | 7.83-9.20 |
+| Sweep, 2 / 4 / 8 / 16 streams | 127.2 / 233.7 / 321.9 / 430.2 | 110.4 / 214.6 / 271.0 / 374.2 |
+| Prefill 8K / 32K / 101K | 2,598 / 2,112 / 1,348 | 2,472 / 2,034 / 1,313 |
+| Pause under a 32K prefill | 1.28 / 1.31 s | 1.32 / 1.36 s |
+
+-20% single-stream: accept_len -10% and the step ~12% longer (~114 against
+~102 ms: the GEMV pair and rank-1 update of 49 layers, ~50 us of small
+kernels a layer). msuiche's DFlash2 measurement (GLM, vLLM) lost no
+acceptance because the drafter's taps sat before their injection point; here
+the draft captures the stream after the projection, which it was not trained
+on, the likely cause of the accept_len drop. A fused kernel (one per layer)
+would take most of the step cost back; not done, as the ablation is for the
+odd question and the plain profile stays the default. One refusal seen in
+use ("... I will not give"), mid-answer: msuiche reports the vector holding
+the first paragraph and the refusal leaking back later in long answers (on
+another model), and GLP-49's transfer from BF16 to NVFP4 "within noise".
+
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
 `RadixArk/Qwen3.8-Flash-Next-NVFP4`, `models/qwen3.8-flash-next.sh` as

@@ -229,9 +229,15 @@ FP8_GEMM_TUNE="${FP8_GEMM_TUNE:-exact}"
 # collapses the model; for less, use fewer layers, not a smaller alpha. RadixArk's
 # NVFP4 is that model quantized; the card expects the projection to survive it
 # (the weight error enters suppressed ~1/sqrt(5120)), not measured on NVFP4.
-# ABLATE_AT output|input (after layer l, as the files say, or before it). Cost:
-# a GEMV pair and a rank-1 update per listed layer per forward. The DFlash2
-# draft reads the ablated states; its accept_len may move a little.
+# ABLATE_AT output|input (after layer l, as the files say, or before it).
+# Measured with GLP-49 (2026-11-10): single-stream 75.2 tok/s against 93.8,
+# accept_len 7.8-9.2 against 9.3-10.0 (the DFlash2 draft reads the ablated
+# states, which it was not trained on) and a ~12% longer step (~50 us of small
+# kernels per ablated layer); 8 / 16 streams -16% / -13%, prefill -3-5%. For
+# the occasional question it is for; serve the plain profile otherwise. A
+# refusal can still come back late in a long answer (msuiche saw the vector hold
+# the first paragraph on another model) or follow an earlier one in the chat:
+# start a new chat, or try the GLP-63 file.
 ABLATE="${ABLATE:-}"
 ABLATE_VECTORS="${ABLATE_VECTORS:-/models/qwen3.8-27b-refusal-vectors/Qwen3.8-27B-abliterated-cyber-GLP-49-L10-58-a1.gguf}"
 case "$ABLATE" in
