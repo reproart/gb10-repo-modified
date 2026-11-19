@@ -393,7 +393,7 @@ draft 10, with the difference in the KV pool (~995K fp8 tokens at 0.80).
 | `qwen3.8-27b-throughput` | many short requests | 32 / 10 | 597.8 tok/s peak (RadixArk NVFP4) |
 | `qwen3.8-27b-dspark` | A/B against DFlash2 | 12 / DSpark gamma 7 (verify 8) | RadixArk's DSpark draft instead of DFlash2; unmeasured here |
 | `zen6` | 1M-token context | 12 / 15 | zenlm/zen6: RadixArk's NVFP4 with YaRN x4 in its config and the DFlash2 draft in `dflash2/`; context from the checkpoint's YaRN; 80.0 tok/s single-stream, 408 at 12 (draft 11), as RadixArk |
-| `daisyrose-27b` | RadixArk's RL finetune | 16 / 15 | RadixArk/DaisyRose-27B-NVFP4: Qwen3.8-27B after RL only, in RadixArk's NVFP4 layout; everything from the base profile, DFlash2 by default, `SPEC=dspark` for the draft the card recommends; unmeasured |
+| `daisyrose-27b` | RadixArk's RL finetune | 16 / 15 | RadixArk/DaisyRose-27B-NVFP4: Qwen3.8-27B after RL only, in RadixArk's NVFP4 layout; everything from the base profile, DFlash2 by default, `SPEC=dspark` for the draft the card recommends; 90.6 tok/s single-stream, 430 at 16 (DSpark: ~50 single-stream) |
 | `meerkat-triz` | TRIZ fine-tune | 12 / 15 | Meerkat-AI's LoRA merged into Qwen/Qwen3.8-27B with `scripts/merge-lora.py`, then block FP8 like Qwen's own with `scripts/fp8-like-reference.py` (or FP8 at load); compare answers with `bench/answers.py`; unmeasured |
 
 ### Long sessions: how many 262K contexts fit
@@ -569,7 +569,10 @@ defaults; its config.json, written by a newer transformers, parses on SGLang
 weights and the served name (`daisyrose-27b`, and the `qwen` alias as every
 profile). Both drafts were trained on the base model, not on this one:
 DFlash2 is the default, `SPEC=dspark ./serve.sh daisyrose-27b` takes RadixArk's
-DSpark, which the card recommends. Unmeasured on the Spark.
+DSpark, which the card recommends. On the GX10: **90.6 tok/s** single-stream
+with DFlash2 against 93.8 for the base, 343 / 430 tok/s at 8 / 16 streams (the
+base 322 / 430), prefill the same; DSpark ~50 tok/s single-stream
+([RESULTS](results/RESULTS.md)).
 
 ### Gemma 4 31B
 
