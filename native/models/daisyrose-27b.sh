@@ -30,13 +30,14 @@
 # draft, FP8_GEMM_TUNE=exact, cap 16, fp8 KV, parsers, ABLATE (whose vectors
 # were found on Qwen3.8-27B: unvalidated on this model).
 #
-# The draft. Neither was trained on DaisyRose: z-lab's DFlash2 (the default
-# here, 94 tok/s single-stream on the base) and RadixArk's DSpark, which the
-# card recommends, are both drafts for Qwen3.8-27B. RL moves the output
-# distribution less than SFT does, but acceptance on this model is unmeasured:
-# expect somewhat less than the base's speed. SPEC=dspark takes the card's draft
-# (qwen3.8-27b-dspark.sh: download and gamma there), SPEC=mtp the checkpoint's
-# MTP head (the base's, not retrained with the trunk).
+# The draft. Neither was trained on DaisyRose: z-lab's DFlash2 (the default)
+# and RadixArk's DSpark, which the card recommends, are both drafts for
+# Qwen3.8-27B. Measured on the GX10 (2026-11-19, results/RESULTS.md "DaisyRose-27B"):
+# DFlash2 at 15 draft tokens 90.6 tok/s single-stream (the base 93.8), 343 /
+# 430 tok/s at 8 / 16 streams (the base 322 / 430), prefill as the base; DSpark
+# at gamma 7 ~50 tok/s single-stream. So DFlash2 stays. SPEC=dspark takes the
+# card's draft (qwen3.8-27b-dspark.sh: download and gamma there), SPEC=mtp the
+# checkpoint's MTP head (the base's, not retrained with the trunk).
 #
 # The card's flags not taken: --mamba-ssm-dtype float32 (bfloat16 here, as
 # measured for the base; EXTRA_ARGS="--mamba-ssm-dtype float32" for theirs),

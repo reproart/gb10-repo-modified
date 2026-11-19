@@ -1126,6 +1126,29 @@ question got its answer with GLP-63. msuiche reports the vector holding the
 first paragraph and the refusal leaking back later in long answers (on another
 model), and GLP-49's transfer from BF16 to NVFP4 "within noise".
 
+### DaisyRose-27B on the 27B recipe (2026-11-19)
+
+RadixArk/DaisyRose-27B-NVFP4 (Qwen3.8-27B after RL only, the same NVFP4 /
+FP8 layout as RadixArk/Qwen3.8-27B-NVFP4; `models/daisyrose-27b.sh`: the base
+profile with other weights), with the base model's z-lab DFlash2 at 15 draft
+tokens, one full `perf.py` (`results/runs/20261119T143339Z-perf-daisyrose-27b.txt`),
+against the base's `FP8_GEMM_TUNE=exact` run above:
+
+| | Qwen3.8-27B | DaisyRose-27B |
+|---|---:|---:|
+| Single-stream decode | 93.8 | **90.6** (90.5-91.0) |
+| accept_len there | 9.30-9.97 | 9.78-10.35 |
+| Sweep, 1 / 2 / 4 / 8 / 16 / 24 streams | 71.6 / 127.2 / 233.7 / 321.9 / 430.2 / 401.6 | 89.0 / 132.9 / 217.8 / 343.0 / **429.6** / 384.9 |
+| Prefill 2K / 8K / 32K / 101K | 2,450 / 2,598 / 2,112 / 1,348 | 2,419 / 2,577 / 2,091 / 1,328 |
+| Pause under a 32K prefill (1 / 4 streams) | 1.28 / 1.31 s | 1.29 / 1.32 s |
+
+-3% single-stream, the same under load and in prefill: RL moved the output
+little enough that the base's draft still fits (accept_len as `perf.py`
+prints it is too loose to say more; see the ablation section). RadixArk's
+DSpark draft, which DaisyRose's card recommends (`SPEC=dspark`, gamma 7,
+verify 8): **~50 tok/s** single-stream (one run, the owner's report), so the
+profile keeps DFlash2.
+
 ## Qwen3.8-Flash-Next, one Spark (2026-09-27)
 
 `RadixArk/Qwen3.8-Flash-Next-NVFP4`, `models/qwen3.8-flash-next.sh` as

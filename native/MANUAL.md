@@ -38,7 +38,7 @@
 | `qwen3.8-27b-longctx` | то же, 6 сессий по 262K | | | не проверялась целиком |
 | `qwen3.8-27b-dspark` | то же с драфтом DSpark | +3.7 ГБ | | не измерена |
 | `qwen3.8-27b-ablated` | то же, абляция векторами отказа на лету (msuiche, GGUF) | +1 МБ | 83.6 (GLP-63) | измерена |
-| `daisyrose-27b` | DaisyRose-27B: 27B после RL от RadixArk, NVFP4 + DFlash2 | ~22 ГБ | | не измерена |
+| `daisyrose-27b` | DaisyRose-27B: 27B после RL от RadixArk, NVFP4 + DFlash2 | ~22 ГБ | 90.6 | измерена |
 | `zen6` | Zen 6 (те же веса RadixArk + YaRN ×4, контекст 1M) | ~25 ГБ | 80.0 (драфт 11) | измерена, качество = базовой |
 | `meerkat-triz` | Qwen3.8-27B + LoRA по ТРИЗ (слитая), FP8 при загрузке | ~54 ГБ | ~30 | измерена, HumanEval не хуже базы |
 | `qwen3.8-flash-next` | Qwen3.8-Flash-Next 176B MoE, NVFP4 | 126 ГиБ | **65.8** | измерена |
@@ -288,8 +288,10 @@ $HF download RadixArk/DaisyRose-27B-NVFP4 --revision c4d85c5dfad123426555c22f4e2
 - Оба драфта обучены на базовой Qwen3.8-27B, не на DaisyRose. По умолчанию
   DFlash2; `SPEC=dspark ./serve.sh daisyrose-27b` — драфт DSpark, который
   советует карточка (скачать: `$HF download RadixArk/Qwen3.8-27B-DSpark
-  --local-dir /models/Qwen3.8-27B-DSpark`). На Spark ни тот ни другой ещё не
-  измерены; ждите чуть меньше 94 ток/с базы.
+  --local-dir /models/Qwen3.8-27B-DSpark`). Замер на GX10 (2026-11-19): с
+  DFlash2 90.6 ток/с на одном потоке против 93.8 у базы, на 8 и 16 потоках
+  343 и 430 ток/с (как база), префилл как у базы; с DSpark ~50 ток/с на одном
+  потоке. Так что DFlash2.
 - Из рецепта карточки не взяты `--mamba-ssm-dtype float32` (здесь bfloat16,
   как измерено на базе; их вариант — `EXTRA_ARGS="--mamba-ssm-dtype
   float32"`) и настройки памяти под 4 GPU.
