@@ -199,3 +199,14 @@ COPY src/gb10_fp8_rowwise.py ${SP}/gb10_fp8_rowwise.py
 COPY src/patch_hc_fp8.py /tmp/patch_hc_fp8.py
 RUN python3 /tmp/patch_hc_fp8.py ${SP}/vllm/models/qwen3_8_flash_next/nvidia/hyperconnection.py \
  && python3 -c "import gb10_fp8_rowwise" && rm /tmp/patch_hc_fp8.py
+
+# Refusal-direction ablation at inference (no-op unless VLLM_ABLATE is set at runtime; ABLATE=1
+# in config.sh): a projection after every writer of the hyper-connection streams in model.py
+# (embedding, PLE, attention / GDN and MLP outputs, deepstack) and after the MTP draft's fused
+# input in mtp.py, each behind a per-module flag that stays False without the variable.
+# src/gb10_abliterate.py has the math and the knobs; src/test_abliterate_cpu.py checks it on CPU
+# against this image's model.py / mtp.py as the steps above leave them (src/testdata/).
+COPY src/gb10_abliterate.py ${SP}/gb10_abliterate.py
+COPY src/patch_abliterate.py /tmp/patch_abliterate.py
+RUN python3 /tmp/patch_abliterate.py ${MODEL_PY} ${MTP_PY} && rm /tmp/patch_abliterate.py \
+ && python3 -c "import gb10_abliterate" && echo "ablation hook OK"

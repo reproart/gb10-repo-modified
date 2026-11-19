@@ -110,6 +110,36 @@ export DET_MOE_ALIGN_MIN_TOKENS="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
 # PASS, prefill within the run-to-run spread. On by default since 2026-11-03. Lossy: answers
 # differ a little from BF16's (deterministically). 0 = BF16 as shipped (README patch 16).
 export HC_FP8="${HC_FP8:-1}"
+
+# Refusal-direction ablation at inference (src/patch_abliterate.py, README patch 17), off by
+# default, the same knob as the SGLang Flash-Next profile (../models/qwen3.8-flash-next.sh):
+#   ABLATE=1 ./serve.sh                    the vectors at ABLATE_VECTORS
+#   ABLATE=/path/other.npz ./serve.sh      another file (.npz, .npy or .pt)
+# A direction is projected out of everything that writes the model's four residual streams
+# (embedding, PLE, each attention / GDN and MLP output, the MTP draft's input): the same as
+# orthogonalizing those weights against it, on the fly, no weight changes. The vectors, once:
+#   hf download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors \
+#     --revision 7b009deb2d3f21c5bb199366cb39e3ed129b4207 \
+#     --local-dir /models/qwen3.8-flash-next-refusal-ablation-vectors
+# That file has one vector per layer (4-46) for SGLang, which projects the stream after each
+# layer with its own; this vLLM model never holds the stream between layers (the combine is
+# delayed into the next layer's kernel), so here one basis covers every writer:
+#   ABLATE_SOURCE  mean (default): the normalized mean of the 43 vectors (covers 37-89% of
+#                  each layer's own, mean 71%); top2 / top3: their 2 / 3 principal directions
+#                  (85% / 91% mean), a rank-2 / 3 projection, the next step if refusals stay;
+#                  <n>: layer n's vector alone.
+#   ABLATE_ALPHA   1 removes the component; above 1 overshoots (msuiche's 27B card: 2 refuses
+#                  harmless prompts, 4 breaks the model); for less, fewer layers.
+#   ABLATE_LAYERS  all, or e.g. 20-47: whose writers are projected (the embedding with layer 0).
+#   ABLATE_MTP     1: the MTP draft layer projects its writers too; 0: the draft as shipped.
+#                  Answers never depend on it, only the draft's acceptance.
+# The boot log says "ABLATION ON ..." with what it projects. Unmeasured on the GX10 yet.
+export ABLATE="${ABLATE:-0}"
+export ABLATE_VECTORS="${ABLATE_VECTORS:-/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz}"
+export ABLATE_SOURCE="${ABLATE_SOURCE:-mean}"
+export ABLATE_ALPHA="${ABLATE_ALPHA:-1}"
+export ABLATE_LAYERS="${ABLATE_LAYERS:-all}"
+export ABLATE_MTP="${ABLATE_MTP:-1}"
 # docker --cpuset-cpus; empty = all cores (as the recipe measured). 5-9,15-19 are
 # GB10's Cortex-X925 cores (blazux's concurrent profile pins to them).
 export CPUSET="${CPUSET:-}"

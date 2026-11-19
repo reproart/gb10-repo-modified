@@ -201,6 +201,31 @@ for d in "$MODEL_DIR" "$TABLE_DIR"; do
   [ -d "$d" ] || { echo "ERROR: $d is not a directory — check MODEL_DIR/TABLE_DIR." >&2; exit 1; }
 done
 
+# Refusal-direction ablation (image patch src/patch_abliterate.py; ABLATE* in config.sh):
+# 0 = off, 1 = the vectors at ABLATE_VECTORS, a path = that file. Its directory is mounted
+# read-only at /ablate. Asked for but not possible (no file here, or an image without the
+# patch, checked below) stops the start: the server would answer as the stock model.
+ABLATE="${ABLATE:-0}"
+ABL_FILE=""
+case "$ABLATE" in
+  0|"") ;;
+  1) ABL_FILE="${ABLATE_VECTORS:-/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz}" ;;
+  *) ABL_FILE="$ABLATE" ;;
+esac
+ABL_MOUNT=() ABL_ENVS=()
+if [ -n "$ABL_FILE" ]; then
+  if [ ! -f "$ABL_FILE" ]; then
+    echo "ERROR: ABLATE=$ABLATE: no vectors at $ABL_FILE" >&2
+    [ "$ABLATE" = 1 ] && echo "  download them once: hf download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors" \
+      "--revision 7b009deb2d3f21c5bb199366cb39e3ed129b4207 --local-dir $(dirname "$ABL_FILE")" >&2
+    exit 1
+  fi
+  ABL_MOUNT=(-v "$(cd "$(dirname "$ABL_FILE")" && pwd):/ablate:ro")
+  ABL_ENVS=("VLLM_ABLATE=/ablate/$(basename "$ABL_FILE")" "VLLM_ABLATE_SOURCE=${ABLATE_SOURCE:-mean}"
+            "VLLM_ABLATE_ALPHA=${ABLATE_ALPHA:-1}" "VLLM_ABLATE_LAYERS=${ABLATE_LAYERS:-all}"
+            "VLLM_ABLATE_MTP=${ABLATE_MTP:-1}")
+fi
+
 # Image pre-flight, before the running container is touched. Two knobs depend
 # on image-side patches that older images lack, and vLLM ignores the env vars
 # silently, so probe the image once and say so loudly instead. Serving stays
@@ -211,7 +236,7 @@ done
 #   metrics — the vllm_custom_metrics module: the engine-side metrics sidecar.
 #             Without it PLE stats are neither served nor logged unless
 #             PLE_STATS_SEC brings the log lines back (handled below).
-IMAGE_OK=1 DRAFT_OK=0 DRAFT8_OK=0 HCFP8_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0 FENCES_OK=0 DETALIGN_OK=0 IDLE_OK=0
+IMAGE_OK=1 DRAFT_OK=0 DRAFT8_OK=0 HCFP8_OK=0 ABL_OK=0 METRICS_OK=0 DET_OK=0 EXACT_OK=0 ITER_OK=0 FENCES_OK=0 DETALIGN_OK=0 IDLE_OK=0
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   IMAGE_OK=0  # the main `docker run` fails loudly on its own; don't add noise
 else
@@ -242,6 +267,8 @@ if spec is not None:
     print("detalign", int(has(os.path.join(pkg, "model_executor/layers/fused_moe/moe_align_block_size.py"), "_deterministic_align")))
     print("draft8", int(has(os.path.join(pkg, "models/qwen3_8_flash_next/nvidia/mtp.py"), "the target head\x27s own rows")))
     print("hcfp8", int(has(os.path.join(pkg, "models/qwen3_8_flash_next/nvidia/hyperconnection.py"), "VLLM_HC_FP8")))
+    print("ablate", int(has(os.path.join(pkg, "models/qwen3_8_flash_next/nvidia/model.py"), "refusal-direction ablation")
+                        and u.find_spec("gb10_abliterate") is not None))
 ' 2>/dev/null) || probe=""
   case "$probe" in *"draft 1"*) DRAFT_OK=1 ;; esac
   case "$probe" in *"metrics 1"*) METRICS_OK=1 ;; esac
@@ -253,6 +280,7 @@ if spec is not None:
   case "$probe" in *"idlerelease 1"*) IDLE_OK=1 ;; esac
   case "$probe" in *"draft8 1"*) DRAFT8_OK=1 ;; esac
   case "$probe" in *"hcfp8 1"*) HCFP8_OK=1 ;; esac
+  case "$probe" in *"ablate 1"*) ABL_OK=1 ;; esac
   if [ -z "$probe" ]; then
     IMAGE_OK=0
     echo "WARNING: could not probe '$IMAGE' (python3/entrypoint missing?) — skipping patch checks." >&2
@@ -275,6 +303,11 @@ fi
 if [ "$IMAGE_OK" = 1 ] && [ "${HC_FP8:-0}" = 1 ] && [ "$HCFP8_OK" = 0 ]; then
   echo "WARNING: HC_FP8=1 will be IGNORED: image '$IMAGE' predates the FP8 hyper-connection patch." >&2
   echo "  Rebuild: ./build.sh" >&2
+fi
+if [ "$IMAGE_OK" = 1 ] && [ -n "$ABL_FILE" ] && [ "$ABL_OK" = 0 ]; then
+  echo "ERROR: ABLATE=$ABLATE, but image '$IMAGE' predates the ablation patch: it would serve the stock" >&2
+  echo "  model. Rebuild: ./build.sh  (or ABLATE=0)." >&2
+  exit 1
 fi
 if [ "$IMAGE_OK" = 1 ] && [ "$DET_TOPK" = 1 ] && [ "$DET_OK" = 0 ] && [ "$EXACT_TOPK" = 0 ]; then
   echo "WARNING: DET_TOPK=1 will be IGNORED: image '$IMAGE' has no deterministic QSA top-k kernel" >&2
@@ -377,6 +410,7 @@ ENVS+=(
   "VLLM_FP8_HYBRID=${FP8_HYBRID:-1}" VLLM_USE_DEEP_GEMM=0
   VLLM_USE_FLASHINFER_SAMPLER=1 "VLLM_ALLOW_LONG_MAX_MODEL_LEN=$ALLOW_LONG" "CUDA_LAUNCH_BLOCKING=${CUDA_LAUNCH_BLOCKING:-0}"
 )
+ENVS+=(${ABL_ENVS[@]+"${ABL_ENVS[@]}"})
 # shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list, split on purpose
 EXTRA_ENVS=(${EXTRA_ENV:-})
 for e in ${EXTRA_ENVS[@]+"${EXTRA_ENVS[@]}"}; do
@@ -401,7 +435,7 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
   --log-opt max-size="$LOG_MAX_SIZE" --log-opt max-file="$LOG_MAX_FILE" \
   --health-cmd "$HEALTH_CMD" --health-start-period=10m \
   --health-interval=60s --health-timeout=15s --health-retries=10 \
-  -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" ${PROF_MOUNT[@]+"${PROF_MOUNT[@]}"} \
+  -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" ${PROF_MOUNT[@]+"${PROF_MOUNT[@]}"} ${ABL_MOUNT[@]+"${ABL_MOUNT[@]}"} \
   "${ENV_ARGS[@]}" \
   "$IMAGE" \
   /model --served-model-name "${SERVED_NAMES[@]}" \
@@ -426,5 +460,10 @@ if [ "${NOSWAP:-0}" = 1 ]; then
     echo "WARNING: NOSWAP=1, but the container's memory.swap.max is '${swapmax:-unreadable}', not 0:" >&2
     echo "  the kernel or Docker does not limit swap here (cgroup v1 without swap accounting?)." >&2
   fi
+fi
+if [ -n "$ABL_FILE" ]; then
+  echo ">> ABLATION ON: refusal direction from $ABL_FILE (source ${ABLATE_SOURCE:-mean}, alpha ${ABLATE_ALPHA:-1}," \
+    "layers ${ABLATE_LAYERS:-all}, MTP draft ${ABLATE_MTP:-1}): answers are not the stock model's." \
+    "The boot log's \"ABLATION ON\" line says what is projected."
 fi
 echo ">> follow with: docker logs -f $NAME"
