@@ -461,8 +461,8 @@ one confirmation per step: `ple_layer.py patched OK`, `fla shmem gate patched`,
 `patch_hit_debug.py applied OK`, `patch_mamba_align_split.py applied OK`,
 `qsa.py: top-k variants (1|fill) added OK`, `qsadet INSTALLED`, `qsadet wired OK`,
 `patch_step_profile.py applied OK`, `loggers.py: per-step prefill metrics added
-OK`, `draft-head hook INSTALLED` and `FP8 HC hook INSTALLED`. A missing line means
-that step did not run.
+OK`, `draft-head hook INSTALLED`, `FP8 HC hook INSTALLED` and `ablation hook OK`
+(after two `ablation hook INSTALLED`). A missing line means that step did not run.
 
 ### 1. PLE mmap upgrades (`src/vllm_ple_mmap.py`, extends upstream's patch)
 
@@ -1002,6 +1002,69 @@ a sweep of its tile settings:
 docker run --rm --gpus all --entrypoint python3 -v "$PWD/src:/w:ro" qwen38-flash-dgx /w/bench_fp8_rowwise_gpu.py
 ```
 
+### 17. Refusal-direction ablation (`src/patch_abliterate.py` + `src/gb10_abliterate.py`, `ABLATE=1`)
+
+Off by default; `ABLATE=1 ./serve.sh` turns it on, the same knob as the SGLang
+Flash-Next profile (`../models/qwen3.8-flash-next.sh`) with the same vectors
+([Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors](https://huggingface.co/Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors),
+`refusal_directions-v4-late.npz`, sha256 `bb311e37…`; the download is in
+`config.sh`). No weight changes: a direction is projected out of the residual
+streams at inference.
+
+**Where.** This model keeps four residual streams per token, `[T, 4 × 2560]`,
+and no layer writes them directly. Each block (attention or GDN, then the MLP /
+MoE) returns one `[T, 2560]` output, which `GatedResidual`'s combine adds to
+every stream with one scalar weight per stream and token
+(`2·sigmoid(injection / 4)`, `hc_combine` in `ops/hc.py`); the MLP's output is
+combined one layer later, inside the next layer's fused combine + RMSNorm
+kernel, so the stream is never materialized between layers. The elementwise
+gate along the hidden dimension sits on the read side only (the mix: a
+per-element norm weight and a sigmoid gate, then the mean over the streams).
+So projecting a direction r out of every writer, `x − (x·r) r`, keeps r out of
+all four streams for good, the same as orthogonalizing those weights against r
+(abliteration, Arditi et al. 2024), done on the fly. The writers: the token
+embedding before it is repeated into the streams, the PLE addition, each
+attention / GDN output, each MLP / MoE output, deepstack embeddings (images),
+and in the MTP draft its fused input (`fc_embedding` + `fc_hidden`) and its own
+blocks (`ABLATE_MTP=1`, the default; 0 leaves the draft as shipped; answers
+never depend on it, only acceptance). Two small GEMVs a layer, inside the
+compiled graph and the CUDA graphs.
+
+**Which direction.** SGLang's model hands one materialized stream from layer to
+layer, so the SGLang patch projects the stream after each of layers 4-46 with
+that layer's own vector. Here one basis serves every writer, taken from the
+same file: `ABLATE_SOURCE=mean` (default) is the normalized mean of the 43
+unit vectors (it covers 37-89% of each layer's own, mean 71%; adjacent layers'
+vectors agree at cosine 0.91-0.99); `top2` / `top3` are their principal
+directions, a rank-2 / 3 projection (85% / 91% mean coverage), the next step if
+refusals stay; `<n>` is layer n's vector alone. `ABLATE_ALPHA` 1 removes the
+component (stored in the buffer as `√alpha·r`, so no Python float is baked into
+the compiled graph); above 1 overshoots. `ABLATE_LAYERS` limits the layers
+whose writers are projected (the embedding goes with layer 0).
+
+**Safety rails.** Without `VLLM_ABLATE` the inserted lines are
+`if self._gb10_abl_on:` on a class attribute that is False, which
+torch.compile specializes away. With it, the boot log says
+`ABLATION ON (VLLM_ABLATE): refusal direction … projected out of the writers of
+48 of 48 layers (0-47), the embedding` and `MTP draft layer 48 projects its
+writers too`; the launcher prints `>> ABLATION ON`, and refuses to start when
+the vectors are missing or the image predates the patch (it would answer as the
+stock model). Each container start compiles from scratch, so a compiled graph
+of the other setting is never reused; the prefix cache lives in the container
+too.
+
+**Checks.** `src/test_abliterate_cpu.py` (torch, numpy; no GPU, no vLLM) patches
+this image's own `model.py` / `mtp.py` (`src/testdata/`, as the Dockerfile
+leaves them before this step), execs the decoder layer, the model and the MTP
+predictor with small CPU stand-ins (the hyper-connection math as vLLM's
+reference implementation computes it), and checks: every stream of the final
+state, and the draft layer's input, has no component left along the basis;
+with layers left out it has; without `VLLM_ABLATE` the outputs equal the
+unpatched files' bit for bit; `torch.compile(fullgraph=True)` traces the
+patched forward in one graph. Unmeasured on the GX10 so far: speed (the MTP
+draft's acceptance is the likely cost, as on the 27B) and how many refusals it
+removes.
+
 ## Speculative decoding and TTFT
 
 MTP's draft layer is a stateful autoregressive transformer: vLLM's v1 engine
@@ -1059,6 +1122,9 @@ src/gb10_fp8_rowwise.py       FP8 per-row weights + Triton GEMM for the hyper-co
 src/patch_hc_fp8.py           its hook in hyperconnection.py
 src/test_hc_fp8_cpu.py        CPU test of both (kernel in Triton's interpreter when triton is installed)
 src/bench_fp8_rowwise_gpu.py  GPU check and timing of the kernel against cuBLAS, in the image
+src/gb10_abliterate.py        refusal-direction ablation at inference: vectors, basis, projection (ABLATE=1)
+src/patch_abliterate.py       its insertion points in model.py / mtp.py
+src/test_abliterate_cpu.py    CPU test of both on the image's own files (src/testdata/; no GPU, no vLLM)
 src/draft_vocab_65536.npy     the default 65,536-token draft id set (from blazux)
 tools/build_draft_vocab.py    rebuild the draft id set (from blazux)
 tools/quantize_mtp_experts_int4.py  int4 RTN the MTP draft experts -> -MTP_int4RTN checkpoint
@@ -1087,7 +1153,7 @@ docs/HOW-IT-WORKS.md          upstream's mmap-PLE story (NVFP4-era numbers)
 ruff.toml                     lint config (ruff check .: syntax + pyflakes); shellcheck *.sh scripts/*.sh
                               CPU tests (torch, numpy, safetensors, prometheus_client): src/test_ple_mmap_cpu.py,
                               src/test_custom_metrics_cpu.py, tools/test_tools_cpu.py, src/test_qsa_exact_topk_cpu.py,
-                              src/test_det_moe_align_cpu.py
+                              src/test_det_moe_align_cpu.py, src/test_abliterate_cpu.py
 ```
 
 ## Credits

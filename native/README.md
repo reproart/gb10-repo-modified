@@ -927,6 +927,9 @@ prefill chunk, Marlin's atomic adds, CPU pinning, `EXTRA_ENV`), a
 `prepare.sh` that takes relative paths and pinned source revisions, and this
 project's guards; `build.sh`, `download.sh`, `serve.sh`, `stop.sh`,
 `status.sh`. Its README lists every change.
+`ABLATE=1 ./serve.sh` there projects a refusal direction out of every writer of
+the model's four residual streams at inference, from the same Mambavtt vectors
+as the SGLang profile's `ABLATE=1` (its README, patch 17; unmeasured).
 
 ## DeepSeek-V4.1-Flash on two Sparks: `tensorfold-dsv41/`
 
