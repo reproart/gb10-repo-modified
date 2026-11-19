@@ -94,7 +94,7 @@ export MARLIN_ATOMIC_ADD="${MARLIN_ATOMIC_ADD:-1}"
 # On by default since 2026-11-01; 0 = vLLM's kernel. ./build.sh checks it against the
 # image's CUDA kernel on the GPU; an image built before it warns and runs the kernel.
 export DET_MOE_ALIGN="${DET_MOE_ALIGN:-1}"
-# The steps it applies to: from this many tokens up. auto = SEQS x (1 + MTP) + 1 (33 as
+# The steps it applies to: from this many tokens up. auto = SEQS x (1 + MTP) + 1 (41 as
 # set here), one more than the largest decode-only step: prefill and steps that carry a
 # prefill chunk take it, decode keeps the kernel. Decode loses nothing by that: one
 # stream (1 + MTP tokens) fits one block, where the kernel's order is harmless, and a
@@ -133,7 +133,8 @@ export HC_FP8="${HC_FP8:-1}"
 #   ABLATE_LAYERS  all, or e.g. 20-47: whose writers are projected (the embedding with layer 0).
 #   ABLATE_MTP     1: the MTP draft layer projects its writers too; 0: the draft as shipped.
 #                  Answers never depend on it, only the draft's acceptance.
-# The boot log says "ABLATION ON ..." with what it projects. Unmeasured on the GX10 yet.
+# The boot log says "ABLATION ON ..." with what it projects. Measured 2026-11-19 (MTP=4):
+# a refused request answered; decode 79.3 tok/s, 4.26 tokens a step, 82% (README patch 17).
 export ABLATE="${ABLATE:-0}"
 export ABLATE_VECTORS="${ABLATE_VECTORS:-/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz}"
 export ABLATE_SOURCE="${ABLATE_SOURCE:-mean}"

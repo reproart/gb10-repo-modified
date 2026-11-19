@@ -240,13 +240,13 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | Var | `config.sh` default | Notes |
 |---|---|---|
 | `MODEL_DIR` / `TABLE_DIR` | `/models/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN` / `/models/ple-table-fp8` — edit to your paths | Prepared checkpoint / fp8 PLE table dirs (must exist; checked before the running container is touched) |
-| `PORT` | `8888` | API port, as every server in this project (the recipe's earlier default: `8000`; bare script: `18300`) |
+| `PORT` | `8000` | API port (the owner's setting since 2026-11, the recipe's earlier default, for existing clients; the project's other servers use `8888`; bare script: `18300`) |
 | `CTX` | `262144` | Max context |
 | `YARN` | `0` | `1` = Qwen's YaRN rope scaling (factor 4) past the native 262144 — set `CTX` too (500k was upstream's validated ceiling). Also forces the MTP draft's `max_model_len`, which `--hf-overrides` alone doesn't reach |
 | `SEQS` | `8` | Max concurrent sequences (don't benchmark with 1–2, see below) |
 | `GPU_MEM` | `0.01` | Near-zero pool fraction, paired with `KV_BYTES`: deterministic sizing, so the driver never oversubscribes the unified pool (`NV_ERR_NO_MEMORY` / Xid 31 freezes). Bare script: a `0.85` fraction — avoid on unified-memory boxes. |
 | `KV_BYTES` | `30g` | Explicit KV pool size, passed as `--kv-cache-memory-bytes` (bare script: unset). vLLM reads `g` as 10⁹ bytes: `30g` = 27.9 GiB, measured to hold ~4 concurrent 127k contexts. When to raise it to `35g`/`40g`: see [Sizing the KV pool](#sizing-the-kv-pool-30g-35g-or-40g) |
-| `MTP` | `3` | Speculative tokens from the MTP head (`0` = off; bare script: `2`) |
+| `MTP` | `4` | Speculative tokens from the MTP head (`0` = off; bare script: `2`). `4` is the owner's setting since 2026-11; the measurements in this README before patch 17's are at `3` |
 | `PREFIX_CACHE` | `1` | Prefix caching — fixed and recommended on this fork (bare script: `0`) |
 | `DET_TOPK` | `1` | Deterministic QSA top-k **kernel** (patch 9; @jschmied, vllm#55122): identical output at T=0 at full prefill speed. `0` = stock kernel (non-deterministic, may drop attention candidates) |
 | `EXACT_TOPK` | `0` | `1` = exact `torch.topk` fallback (patch 9; deterministic, −20–40% on long prefill). Wins over `DET_TOPK` when set |
@@ -271,15 +271,16 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `ITER_DETAILS` | `0` | `1` = per-step prefill metrics: `vllm:scheduled_ctx_tokens_total` updates every engine step (stock `prompt_tokens_total` only moves when a prefill finishes). Live view: `bench/ppwatch.sh` |
 | `FLASHINFER_AUTOTUNE` | `0` | `1` — enable flashinfer kernel autotuning (longer warmup, possibly faster kernels) |
 | `CUDA_LAUNCH_BLOCKING` | `0` | `1` — synchronous CUDA errors, for debugging Xid 31 (much slower; not for production) |
-| `RESTART` | `no` | Container restart policy. `unless-stopped` (the recipe's earlier default; bare script too) survives reboots and crashes — only where this is the machine's one server, else two servers start at boot. The next `./serve.sh` re-creates the container with this value |
+| `RESTART` | `unless-stopped` | Container restart policy (the owner's setting since 2026-11; `no` before). `unless-stopped` (the recipe's default; bare script too) survives reboots and crashes — only where this is the machine's one server, else two servers start at boot. The next `./serve.sh` re-creates the container with this value |
 | `BATCHED_TOKENS` | `8192` | Prefill chunk (`--max-num-batched-tokens`). Smaller keeps other streams decoding during a long prefill, at a prefill cost (blazux's table, NVFP4 base: a decoding client at 0.2 / 0.4–0.6 / 1.0 / 1.6 tok/s during a big prefill at 8192 / 2048 / 1024 / 512, long prefill −17–36% at 1024). `../bench/perf.py --only interference` measures it here |
 | `MARLIN_ATOMIC_ADD` | `1` | `VLLM_MARLIN_USE_ATOMIC_ADD`: Marlin's split-K reduction by atomic adds, for speed, in the dense Marlin GEMMs; the MoE kernel never uses it (`marlin_moe.py`: `use_atomic_add=False`). `0` changed nothing in `consistency.py` here; see patch 15 |
 | `DET_MOE_ALIGN` | `1` | deterministic MoE token alignment (patch 15): the same prompt gives the same logprobs every run, cold or from the cache (measured), no measurable decode cost. `0` = vLLM's kernel |
-| `DET_MOE_ALIGN_MIN_TOKENS` | `auto` | the steps it applies to, from this many tokens up; `auto` = `SEQS` × (1 + `MTP`) + 1 (33), one more than the largest decode-only step: prefill takes it, decode keeps the kernel. `9` = every step where an expert can fill more than one block |
+| `DET_MOE_ALIGN_MIN_TOKENS` | `auto` | the steps it applies to, from this many tokens up; `auto` = `SEQS` × (1 + `MTP`) + 1 (41 at `SEQS=8 MTP=4`), one more than the largest decode-only step: prefill takes it, decode keeps the kernel. `9` = every step where an expert can fill more than one block |
 | `CPUSET` | empty | `docker --cpuset-cpus`; `5-9,15-19` = GB10's Cortex-X925 cores (blazux's concurrent profile pins to them). Not measured on this recipe |
 | `EXTRA_ENV` | | `NAME=value` pairs for the container; one with a name the launcher already sets replaces it |
 | `IDLE_RELEASE_SEC` | `60` | after this many seconds without a request the engine calls `torch.cuda.empty_cache()`: torch's freed GPU blocks (host memory on GB10, kept at the last large request's peak; 8 GiB after a long-context run here) go back to the system, CUDA graph pools stay; once per rise; a line in `docker logs`. Once per idle period also `malloc_trim(0)`: the engine's freed heap back to the system instead of to swap later (a line when it gave back ≥ 64 MiB; `EXTRA_ENV=VLLM_IDLE_MALLOC_TRIM=0` turns it off). `0` = keep them |
 | `NOSWAP` | `0` | `1` = the container may not use swap: `--memory` / `--memory-swap` at the host's RAM (no limit, `memory.swap.max` = 0, checked after the start), as the SGLang servers here run. Under a long prefill's pressure the kernel then drops page cache (the PLE table's clean pages) instead of writing the engine's memory to swap on the disk the table is read from. Measured 2026-11-03: no gain (swap hardly moves; the limit is available memory), see "Long prefill and the host's memory" |
+| `ABLATE` | `0` | Refusal-direction ablation at inference (patch 17): `1` = the vectors at `ABLATE_VECTORS`, a path = that file; `ABLATE_SOURCE` / `ABLATE_ALPHA` / `ABLATE_LAYERS` / `ABLATE_MTP` choose what and where (`config.sh`) |
 | `HC_FP8` | `1` | The hyper-connection projections (`input_mix_weight_down` + block_inject, `input_mix_weight_up`; ~13.5 MB of BF16 a mix, ~98 mixes a decode step) in FP8 with a scale per row, on a Triton GEMM for decode inputs (patch 16): decode 74.5 tok/s against 69.7, HumanEval 96.3% either way, prefill within run-to-run spread. On since 2026-11-03. Lossy (answers differ a little from BF16's, deterministically); `0` = BF16 as shipped |
 | `WATCHDOG` | `0` | `1` = `./serve.sh` starts `./watchdog.sh` in the background (`./stop.sh` stops it): it restarts the server when available memory is under `WATCHDOG_MIN_AVAIL_MB` (`2048`) **and** no request has run or waited for `WATCHDOG_IDLE_MIN` (`5`) minutes (vLLM's `/metrics`, read again just before the stop), at most once per `WATCHDOG_COOLDOWN_MIN` (`60`), checking every `WATCHDOG_INTERVAL` (`60`) s; never starts a stopped server, stops itself if a restart fails. Costs the prefix cache and ~5 min. Log: `~/.cache/gb10/vllm-flash-ar-watchdog.log` |
 | `PROFILE` / `PROFILE_DIR` | `0` / `/tmp/gb10-profile` | `1` = vLLM's torch profiler endpoints, traces to `PROFILE_DIR` (mounted at the same path): `python3 ../bench/profile_decode.py` then shows where a decode step's GPU time goes, per kernel group. Costs nothing until a profile is started. `PROFILE_SHAPES=1` adds op input shapes and runs eagerly (no CUDA graphs), so each top kernel names its weight and a second table gives the time per layer and the rate it reads its weight at (GB/s): for finding layers and how far each is from the memory's bandwidth. Kernel times hold; the gaps between them are eager-mode ones |
@@ -1061,9 +1062,21 @@ reference implementation computes it), and checks: every stream of the final
 state, and the draft layer's input, has no component left along the basis;
 with layers left out it has; without `VLLM_ABLATE` the outputs equal the
 unpatched files' bit for bit; `torch.compile(fullgraph=True)` traces the
-patched forward in one graph. Unmeasured on the GX10 so far: speed (the MTP
-draft's acceptance is the likely cost, as on the 27B) and how many refusals it
-removes.
+patched forward in one graph.
+
+**Measured** (2026-11-19, GX10, the owner's settings: `MTP=4`, `SEQS=8`, one
+boot, `ABLATE=1` with the defaults: the mean direction, all layers, the MTP
+draft too): a real request the stock model refused got its answer.
+`../bench/perf.py`: decode **79.3 tok/s** (73.6 on the first of five runs, then
+79.0-79.4; 4.26 tokens a step, 82% of drafts accepted), 64.0 / 106.9 / 163.5 /
+256.6 tok/s at 1 / 2 / 4 / 8 streams, TTFT 124 ms, prefill 1,838 / 2,009 /
+1,810 / 1,913 tok/s at 2K / 8K / 32K / 101K (inside the spread of the stock
+runs in patch 16, which the host's memory sets: this 32K prompt ran with
+kswapd reclaiming). The stock model at `MTP=4` has not been run the same way
+yet, so the cost is still open; at `MTP=3` it was 74.5 tok/s (3.56 a step,
+85%) and 68.5 / 109.9 / 170.3 / 259.6. With four drafts the average acceptance
+is lower than with three anyway (the fourth is the hardest), so 82% need not
+be the ablation's.
 
 ## Speculative decoding and TTFT
 
