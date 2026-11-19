@@ -161,6 +161,7 @@ model profile (`models/qwen3.8-27b.sh`), and never touches the Hub (`HF_OFFLINE=
 | `RadixArk/Qwen3.8-27B-NVFP4` (default target) | `554ebba9b5f1b79dc11246341960360e6ef05ef4` | ~22 GB |
 | `Qwen/Qwen3.8-27B-FP8` | `017b9c7af6b5689d5dd426a76e0bc077eb5ca20a` | ~29 GB |
 | `z-lab/Qwen3.8-27B-DFlash2` (draft) | `50307d4c4cde6860d4eee73e2547cd786fe8e8a4` | ~3 GB |
+| `RadixArk/DaisyRose-27B-NVFP4` (`daisyrose-27b`) | `c4d85c5dfad123426555c22f4e24bb15381f0bdb` | ~22 GB |
 
 At startup the server prints each directory with the revision it holds (the
 snapshot name, or the metadata `hf download --local-dir` leaves in
@@ -392,6 +393,7 @@ draft 10, with the difference in the KV pool (~995K fp8 tokens at 0.80).
 | `qwen3.8-27b-throughput` | many short requests | 32 / 10 | 597.8 tok/s peak (RadixArk NVFP4) |
 | `qwen3.8-27b-dspark` | A/B against DFlash2 | 12 / DSpark gamma 7 (verify 8) | RadixArk's DSpark draft instead of DFlash2; unmeasured here |
 | `zen6` | 1M-token context | 12 / 15 | zenlm/zen6: RadixArk's NVFP4 with YaRN x4 in its config and the DFlash2 draft in `dflash2/`; context from the checkpoint's YaRN; 80.0 tok/s single-stream, 408 at 12 (draft 11), as RadixArk |
+| `daisyrose-27b` | RadixArk's RL finetune | 16 / 15 | RadixArk/DaisyRose-27B-NVFP4: Qwen3.8-27B after RL only, in RadixArk's NVFP4 layout; everything from the base profile, DFlash2 by default, `SPEC=dspark` for the draft the card recommends; unmeasured |
 | `meerkat-triz` | TRIZ fine-tune | 12 / 15 | Meerkat-AI's LoRA merged into Qwen/Qwen3.8-27B with `scripts/merge-lora.py`, then block FP8 like Qwen's own with `scripts/fp8-like-reference.py` (or FP8 at load); compare answers with `bench/answers.py`; unmeasured |
 
 ### Long sessions: how many 262K contexts fit
@@ -544,7 +546,7 @@ flags only that model takes. Everything else (checks, environment, the flags
 all models share, the service, the manifest) is common.
 
 ```bash
-ls models/                        # gemma4-31b  ling-3.0-flash(-vl)  meerkat-triz  mimo-v2.6-flash  ornith-1.5-35b  qwen3.8-27b(-single,-longctx,-throughput,-dspark)  qwen3.8-flash-next(-abliterated)  zen6
+ls models/                        # daisyrose-27b  gemma4-31b  ling-3.0-flash(-vl)  meerkat-triz  mimo-v2.6-flash  ornith-1.5-35b  qwen3.8-27b(-single,-longctx,-throughput,-dspark,-ablated)  qwen3.8-flash-next(-abliterated,-ablated)  zen6
 ./serve.sh gemma4-31b             # serve it
 ./serve.sh gemma4-31b install     # its SGLang version, if it differs
 ./serve.sh gemma4-31b manifest
@@ -554,6 +556,20 @@ One model at a time: a second server on the same port refuses to start, and
 the service runs one profile. Profiles on the same SGLang version share a
 venv. To add a model, copy the profile closest to it and change the weights,
 `SERVED_MODEL_NAME` and `model_args`.
+
+### DaisyRose-27B
+
+[`models/daisyrose-27b.sh`](models/daisyrose-27b.sh): RadixArk/DaisyRose-27B-NVFP4,
+Qwen3.8-27B trained further by reinforcement learning only (RadixArk's card:
+Terminal Bench 4.1 5.6 -> 12.0, small gains elsewhere), a drop-in for the base.
+Read against RadixArk/Qwen3.8-27B-NVFP4 file by file: the same tensors and
+NVFP4 / FP8 layout, byte-identical tokenizer, chat template and sampling
+defaults; its config.json, written by a newer transformers, parses on SGLang
+0.5.21. So the profile takes everything from `qwen3.8-27b.sh` and changes the
+weights and the served name (`daisyrose-27b`, and the `qwen` alias as every
+profile). Both drafts were trained on the base model, not on this one:
+DFlash2 is the default, `SPEC=dspark ./serve.sh daisyrose-27b` takes RadixArk's
+DSpark, which the card recommends. Unmeasured on the Spark.
 
 ### Gemma 4 31B
 
