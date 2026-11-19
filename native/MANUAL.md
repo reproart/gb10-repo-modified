@@ -38,6 +38,7 @@
 | `qwen3.8-27b-longctx` | то же, 6 сессий по 262K | | | не проверялась целиком |
 | `qwen3.8-27b-dspark` | то же с драфтом DSpark | +3.7 ГБ | | не измерена |
 | `qwen3.8-27b-ablated` | то же, абляция векторами отказа на лету (msuiche, GGUF) | +1 МБ | 83.6 (GLP-63) | измерена |
+| `daisyrose-27b` | DaisyRose-27B: 27B после RL от RadixArk, NVFP4 + DFlash2 | ~22 ГБ | | не измерена |
 | `zen6` | Zen 6 (те же веса RadixArk + YaRN ×4, контекст 1M) | ~25 ГБ | 80.0 (драфт 11) | измерена, качество = базовой |
 | `meerkat-triz` | Qwen3.8-27B + LoRA по ТРИЗ (слитая), FP8 при загрузке | ~54 ГБ | ~30 | измерена, HumanEval не хуже базы |
 | `qwen3.8-flash-next` | Qwen3.8-Flash-Next 176B MoE, NVFP4 | 126 ГиБ | **65.8** | измерена |
@@ -185,7 +186,7 @@ MODEL_DIR=/models/Qwen3.8-27B-FP8 ./serve.sh qwen3.8-27b # цель FP8 Qwen
 
 Чтобы целью всегда была FP8 — поменяйте `MODEL_DIR` в
 `models/qwen3.8-27b.sh`; варианты `-single`, `-throughput`, `-longctx`,
-`-dspark`, а также `zen6` берут остальное оттуда же.
+`-dspark`, а также `zen6` и `daisyrose-27b` берут остальное оттуда же.
 
 **Варианты под нагрузку:**
 
@@ -262,7 +263,40 @@ $HF download zenlm/zen6 --local-dir /models/zenlm/zen6     # драфт внут
   нормы; важен запас до собственного предела GPU (T.Limit), perf.py его
   показывает.
 
-### 4.3. Meerkat-TRIZ — 27B, дообученная на ТРИЗ
+### 4.3. DaisyRose-27B — 27B после RL от RadixArk
+
+`RadixArk/DaisyRose-27B-NVFP4` — Qwen3.8-27B, дообученная только
+обучением с подкреплением на длинных агентных задачах (по карточке Terminal
+Bench 4.1: 5.6 → 12.0, на остальных тестах немного лучше базы). Замена базы
+один в один.
+
+```bash
+$HF download RadixArk/DaisyRose-27B-NVFP4 --revision c4d85c5dfad123426555c22f4e24bb15381f0bdb \
+    --local-dir /models/RadixArk/DaisyRose-27B-NVFP4      # ~22 ГБ, драфт DFlash2 тот же, что у 27B
+./serve.sh daisyrose-27b
+```
+
+- Сверено с `RadixArk/Qwen3.8-27B-NVFP4` по файлам: те же 2194 тензора и
+  то же квантование (MLP в NVFP4, проекции GDN и внимания в FP8), токенизатор,
+  шаблон чата и параметры сэмплирования совпадают байт в байт. `config.json`
+  записан более новым transformers (5.19); SGLang 0.5.21 его читает
+  (проверено). В логе может быть `Missing validation function ... 'axial'` —
+  безвредно.
+- Всё остальное — из `qwen3.8-27b.sh`: DFlash2 на 15 токенов, FP8-драфт,
+  `FP8_GEMM_TUNE=exact`, до 16 запросов. Имя модели `daisyrose-27b`, плюс
+  алиас `qwen`, как у всех профилей.
+- Оба драфта обучены на базовой Qwen3.8-27B, не на DaisyRose. По умолчанию
+  DFlash2; `SPEC=dspark ./serve.sh daisyrose-27b` — драфт DSpark, который
+  советует карточка (скачать: `$HF download RadixArk/Qwen3.8-27B-DSpark
+  --local-dir /models/Qwen3.8-27B-DSpark`). На Spark ни тот ни другой ещё не
+  измерены; ждите чуть меньше 94 ток/с базы.
+- Из рецепта карточки не взяты `--mamba-ssm-dtype float32` (здесь bfloat16,
+  как измерено на базе; их вариант — `EXTRA_ARGS="--mamba-ssm-dtype
+  float32"`) и настройки памяти под 4 GPU.
+- Модель думает по умолчанию на максимальном усилии; на сложных задачах
+  размышление идёт десятки тысяч токенов, `max_tokens` не ограничивайте.
+
+### 4.4. Meerkat-TRIZ — 27B, дообученная на ТРИЗ
 
 LoRA-адаптер, слитый с исходной BF16-моделью; при загрузке переводится в
 FP8. Владеет методологией ТРИЗ заметно лучше базы, HumanEval не хуже.
@@ -295,7 +329,7 @@ $HF download Meerkat-AI/Meerkat-TRIZ-v1-Qwen3.8-27B --local-dir /models/Meerkat-
 - Первый старт дольше: SGLang читает 54 ГБ BF16 и квантует в FP8.
 - Сравнить с исходной моделью на одних и тех же вопросах — раздел 6.
 
-### 4.4. Qwen3.8-Flash-Next — 176B MoE на одном Spark
+### 4.5. Qwen3.8-Flash-Next — 176B MoE на одном Spark
 
 MoE на 125B + таблица n-грамм 51B, 6B активных параметров, NVFP4, свой MTP-
 драфт. Помещается в 121.6 ГиБ только потому, что таблица на 47.7 ГиБ
@@ -379,7 +413,7 @@ abliterated-весами смысла не имеет. Содержимое фа
 ~/spark/venv-sglang-0.5.21/bin/python3 -c "import numpy as np; z=np.load('/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz'); print({k: z[k].shape for k in z.files})"
 ```
 
-### 4.5. Ornith 1.5 35B-A3B — быстрая MoE с размышлением
+### 4.6. Ornith 1.5 35B-A3B — быстрая MoE с размышлением
 
 Дообученная Qwen3.5-35B-A3B (256 экспертов, ~3B активных), FP8-чекпойнт
 Ornith AI с их драфтом DFlash.
@@ -397,7 +431,7 @@ medium. `SPEC=off` — без драфта (39.8), `SPEC=mtp` — встроен
 0.5.20 выдаёт мусор — не используйте. Настройка ядер MoE под эту машину
 (`MOE_TUNED=1`) описана в README; выигрыша не дала.
 
-### 4.6. Gemma 4 31B — не измерена
+### 4.7. Gemma 4 31B — не измерена
 
 ```bash
 $HF download google/gemma-4-31B-it --local-dir /models/gemma-4-31B-it
@@ -409,7 +443,7 @@ BF16, ~62 ГБ: ожидайте низкую скорость. Репозито
 лицензией (ошибка 401/403 → принять лицензию на странице модели и
 `hf auth login`). Размышление по умолчанию выключено.
 
-### 4.7. GLM-5.3-Flash 320B на llama.cpp
+### 4.8. GLM-5.3-Flash 320B на llama.cpp
 
 Отдельный стек в `llamacpp/` (подробно — [`llamacpp/README.md`](llamacpp/README.md)).
 Сервер SGLang перед этим остановите. Порт — 8889.
@@ -442,7 +476,7 @@ WORKER=10.10.10.2 ./serve-dual.sh      # на первой (там же лежа
 килобайты, важна задержка. Два Spark дают память, а не скорость:
 `SPLIT_MODE=tensor` — эксперимент, который может ускорить декод.
 
-### 4.8. MiMo-V2.6-Flash 309B — на двух Spark (SGLang)
+### 4.9. MiMo-V2.6-Flash 309B — на двух Spark (SGLang)
 
 Xiaomi MiMo-V2.6-Flash: MoE 309B / 15B активных, эксперты в MXFP4,
 остальное в блочном FP8, роутеры в BF16, драфт DFlash в `dflash/`. Чекпойнт
@@ -488,7 +522,7 @@ GLM на llama.cpp (QSFP-кабель, адреса из `llamacpp/README.md`). 
 Для службы systemd задайте `NODE_RANK` и `HEAD_ADDR` через `export` в
 `serve.sh` на каждой машине.
 
-### 4.9. Ling-3.0-flash 124B (текст, MTP) и Ling-3.0-flash-VL (картинки и видео)
+### 4.10. Ling-3.0-flash 124B (текст, MTP) и Ling-3.0-flash-VL (картинки и видео)
 
 **Текстовая Ling-3.0-flash** — та же основа (MoE 124B / 5.1B активных,
 KDA + MLA), но со встроенным слоем MTP: черновая модель бесплатно, без
@@ -561,7 +595,7 @@ scripts/mem-prep.sh idle && $HF download inclusionAI/Ling-3.0-flash-VL-fp4 --loc
 Картинки — `image_url`, видео — `video_url` в сообщении (формат OpenAI).
 Аудио модель не принимает.
 
-### 4.10. Qwen3.8-Flash-Next-FP4-Local на vLLM (Docker)
+### 4.11. Qwen3.8-Flash-Next-FP4-Local на vLLM (Docker)
 
 Версия Flash-Next от NVIDIA, квантованная с дообучением (QAD): по карточке
 почти без потерь (GPQA 91.5 против 92.2 у BF16). SGLang её не загружает
@@ -598,7 +632,7 @@ YaRN строится из настроек RoPE самого чекпойнта
 сборку — `rm image.lock && ./pull.sh`.
 
 
-### 4.11. DeepSeek-V4.1-Flash-1017 на двух Spark (TensorFold)
+### 4.12. DeepSeek-V4.1-Flash-1017 на двух Spark (TensorFold)
 
 Большая модель DeepSeek в квантовании EXL3 2.9 бит: 196 ГиБ весов плюс
 189 ГиБ Engram-таблиц, которые читаются с NVMe. Работает сразу на **обеих**
@@ -667,7 +701,7 @@ SGLang-профилей, пока не сделать `--undo`. У earlyoom по
 
 ---
 
-### 4.12. DeepSeek-V4.1-Flash-1017 на двух Spark (настроенный vLLM)
+### 4.13. DeepSeek-V4.1-Flash-1017 на двух Spark (настроенный vLLM)
 
 Та же модель и те же две папки весов, что в 4.11, но другой движок: vLLM от
 sudoingX (22 патча и плагин для EXL3) с доработкой styles01 под выпуск 1017,
@@ -710,7 +744,7 @@ DEPTH_PROBE=1 ./serve.sh && python3 depth-sweep.py   # печатает ROUND_MS
 
 ---
 
-### 4.13. GLM-5.3-Flash на двух Spark (TensorFold)
+### 4.14. GLM-5.3-Flash на двух Spark (TensorFold)
 
 Рецепт MiaAI-Lab (TensorFold 0.6.0 и 123 патча, Apache-2.0): эксперты в EXL3
 4 бита, остальное BF16, черновик DFlash2, контекст 1M, картинки. Мы не
@@ -751,7 +785,7 @@ rsync -a /models/huggingface/hub/models--Mia-AiLab--GLM-5.3-Flash-EXL3-4bpw-Tens
 
 ---
 
-### 4.14. Qwen3.8-Flash-Next в int4 AutoRound на vLLM (Docker)
+### 4.15. Qwen3.8-Flash-Next в int4 AutoRound на vLLM (Docker)
 
 Рецепт, который вы долго использовали (blazux → Saren-Arterius → ваша копия,
 Apache-2.0), теперь в `vllm-flash-ar/` и запускается как остальные серверы

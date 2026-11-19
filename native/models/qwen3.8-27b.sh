@@ -13,8 +13,9 @@
 # SGLang version. 0.5.21 since 2026-10-17: decode and prefill the same as
 # 0.5.20 or better, HumanEval unchanged (results/RESULTS.md, "Cap 16 on
 # 0.5.21"); this profile's variants (-single, -throughput, -longctx, -dspark,
-# zen6, meerkat-triz) follow. SGLANG_VERSION=0.5.20 goes back: the recipe was
-# built against it and its lock is in requirements/. To try a newer one: set
+# -ablated, zen6, daisyrose-27b, meerkat-triz) follow. SGLANG_VERSION=0.5.20
+# goes back: the recipe was built against it and its lock is in requirements/.
+# To try a newer one: set
 # it, ./serve.sh install, ./serve.sh. Its own venv leaves the working one
 # untouched, so rolling back is setting this back. A version with no lock yet
 # is resolved on install and its lock written to requirements/; commit it once
