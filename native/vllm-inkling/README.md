@@ -163,11 +163,30 @@ still thinks: 734 tokens a problem on average, against ~200 for the 27B
 with thinking off (93.9% NVFP4, 97.6% FP8), so per answer it costs about
 3.7x the tokens.
 
-Reading: slower than the 27B at decode and aggregate, faster at prefill
-from 8K up (1.9x at 101K) and gentler on streams during a long prefill;
-more accurate on HumanEval, at several times the tokens. Not yet measured:
-`perf.py` at effort `none`, the SGLang twin, `MAX_BATCHED_TOKENS` above
-2048, `DRAFT_SAMPLE_METHOD` empty at temperature 0.
+`perf.py` again at effort `none`
+(`GB10_TEMPLATE_KWARGS='{"reasoning_effort": "none"}'`, 14:45 UTC, same
+server): the code answer drafts worse than the reasoning text did.
+
+| | effort 0.9 (above) | effort `none` |
+|---|---:|---:|
+| Single-stream decode, 700 tokens | 79.6 tok/s, 4.74 tokens a step, 53% accepted | **57.1** (55.3-57.4), 3.48 a step, 35% |
+| TTFT, short prompt | 184 ms | 202 ms |
+| Aggregate at 8 / 16 / 32 streams | 173.2 / 253.7 / 404.2 | 167.4 / 246.1 / 374.8 |
+| Prefill 2K / 8K / 32K / 101K | 2,245 / 2,847 / 2,503 / 2,300 | 2,568 / 1,969 / 2,445 / 2,254 |
+| Decode during a 32K prefill, 1 / 4 streams | 4.6 / 19.9, pause 0.79 / 0.91 s | 3.4 / 14.4, pause 0.84 / 1.60 s |
+
+The long-context rows still flag "the answer looks wrong": at `none` the
+model still opens with reasoning, and 8 tokens hold only its start. Host
+memory during the run: 2.9 GiB free (page cache aside) with the server and
+a desktop session up.
+
+Reading: slower than the 27B at decode (57 against 94 tok/s on the same
+code prompt) and aggregate (375-404 against 598), faster at prefill from
+32K up (2.0x at 101K, 1.3x at 32K) and gentler on streams during a long
+prefill; more accurate on HumanEval, at several times the tokens. Next:
+`DRAFT_SAMPLE_METHOD=` (greedy drafting; the probabilistic method may cost
+acceptance at temperature 0), the SGLang twin (FA4), `MAX_BATCHED_TOKENS`
+above 2048.
 
 Notes: the container runs as root, so
 `~/.cache/gb10-vllm-inkling` (compile caches, kept between runs) ends up
