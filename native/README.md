@@ -311,7 +311,7 @@ a model server's CUDA allocations, in nobody's RSS) and the process list who.
 run lost its engine to earlyoom with 1015 MiB available and 6 GiB of swap in
 use; nothing else was running that anyone knew of.
 
-Every server here (`./serve.sh`, `vllm-b12x/`, `vllm-flash-ar/`, `tensorfold-dsv41/`,
+Every server here (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-flash-ar/`, `tensorfold-dsv41/`,
 `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`) now runs `mem-prep.sh prep`
 before it starts, on both nodes for the pairs: with the GPU idle, it drops
 the page cache and compacts free memory, and prints a line with how much is
@@ -330,7 +330,7 @@ on it. It is a one-off before a start: `vm.compaction_proactiveness=0`
 (background compaction while serving) stays.
 
 The downloads, image pulls and copies (`tensorfold-dsv41/download.sh` and
-`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`,
+`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`, `sglang-inkling/pull.sh`, `vllm-inkling/pull.sh`,
 `vllm-flash-ar/build.sh`, `download.sh` and `prepare.sh`,
 `tensorfold-glm53/setup.sh`, `./serve.sh install`, `llamacpp/build.sh`)
 refuse while anything runs on a GPU of a node they touch: their Spark
@@ -910,6 +910,28 @@ SGLang cannot load, in the card's community vLLM container
 (`eugr/spark-vllm-b12x`, pinned by digest in `image.lock`) with the card's
 DGX Spark flags as knobs, on :8888 so `bench/` works unchanged. For an A/B on
 answers against the RadixArk build. Unmeasured.
+
+## Inkling-2-Mini on SGLang's own container: `sglang-inkling/`
+
+[`sglang-inkling/`](sglang-inkling/README.md) serves
+`thinkingmachines/Inkling-2-Mini` (26.4B looped MoE, 3.4B active, 5.4B
+effective with three loop passes, text and images, ~18 GiB with its bundled
+DSpark draft) in LMSYS's `lmsysorg/sglang:inkling-2-mini` image, pinned by
+digest in `image.lock`: support is still an open SGLang PR (#51926), so no
+release venv loads it. The SGLang cookbook's two DGX Spark recipes (DSpark
+with 8 draft tokens, the default, or plain decode) as knobs, on :8888.
+Unmeasured here; once a release carries the model it becomes a `models/`
+profile.
+
+## Inkling-2-Mini on vLLM's container: `vllm-inkling/`
+
+[`vllm-inkling/`](vllm-inkling/README.md) is its vLLM twin: the same
+weights, port and model id, in `vllm/vllm-openai:inkling-2-mini` (vLLM >=
+0.35.0 is not released yet), pinned in `image.lock`, with the vLLM recipe's
+`dgx_spark_gb10` command (DSpark with 7 proposals and probabilistic draft
+sampling, context 262144) as knobs, at `--gpu-memory-utilization 0.8`
+instead of vLLM's default 0.9. For an engine A/B on one model; its README
+puts the two recipes side by side. Unmeasured.
 
 ## Flash-Next as Intel's AutoRound int4 on vLLM: `vllm-flash-ar/`
 

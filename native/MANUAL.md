@@ -21,6 +21,11 @@
 - **llama.cpp** (отдельная сборка в `llamacpp/`) — только GLM-5.3-Flash в
   GGUF, которую SGLang не обслуживает.
 - **vLLM в Docker** (`vllm-b12x/`) — Flash-Next FP4-Local от NVIDIA.
+- **SGLang в Docker** (`sglang-inkling/`) — Inkling-2-Mini от Thinking
+  Machines: её поддержка пока только в открытом PR SGLang, поэтому образ
+  LMSYS, а не наш venv.
+- **vLLM в Docker** (`vllm-inkling/`) — та же Inkling-2-Mini на vLLM, для
+  сравнения движков.
 - **vLLM в Docker** (`vllm-flash-ar/`) — Flash-Next в int4 AutoRound от Intel
   (рецепт blazux → Saren-Arterius, ваша копия).
 - **TensorFold в Docker** (`tensorfold-dsv41/`) — DeepSeek-V4.1-Flash на двух
@@ -50,6 +55,8 @@
 | `ling-3.0-flash` | Ling-3.0-flash 124B MoE (5.1B акт.), текст, FP8-голова, SGLang 0.5.21 | ~66 ГиБ | 44 у NVIDIA без MTP, 54–103 с MTP (на их ветке SGLang) | не измерена: ответы — мусор (NaN), ищем причину |
 | `ling-3.0-flash-vl` | Ling-3.0-flash-VL 125B MoE (5.1B акт.), картинки и видео, SGLang 0.5.21 | ~70 ГБ (оценка) | ~33 по рецепту SGLang (FP4) | рецепт проверен на Spark, у нас не измерена |
 | `vllm-b12x/` | Qwen3.8-Flash-Next-FP4-Local (QAD от NVIDIA), vLLM в Docker | ~96 ГиБ | 61.0 (MTP 3) | измерена, качество не сравнивали |
+| `sglang-inkling/` | Inkling-2-Mini 26B MoE (3.4B акт., 5.4B с петлёй), картинки, драфт DSpark внутри, SGLang в Docker | ~18 ГиБ | | не измерена (рецепт SGLang проверен на Spark: gsm8k 93.9%) |
+| `vllm-inkling/` | та же Inkling-2-Mini, те же веса, vLLM в Docker (для сравнения движков) | те же ~18 ГиБ | | не измерена |
 | `vllm-flash-ar/` | Qwen3.8-Flash-Next, int4 AutoRound (Intel) + int8 голова + FP8, vLLM в Docker | ~67 + ~49 ГиБ (таблица) | 65.8 (MTP 3), 259 суммарно на 8 | измерена в рецепте, долго в работе |
 | `tensorfold-dsv41/` | DeepSeek-V4.1-Flash-1017, EXL3 2.9 бит, контекст 1M, TensorFold в Docker, **на двух Spark** (TP=2) | 196 + 189 ГиБ на каждом | 92 код / 57 текст (по рецепту) | у нас не измерена |
 | `vllm-dsv41/` | та же DeepSeek, те же веса, настроенный vLLM (sudoingX + styles01) в Docker, **на двух Spark**, 262K, картинки | те же папки + дерево из жёстких ссылок | 94 код / 52 текст (по рецепту) | у нас не измерена |
@@ -633,6 +640,63 @@ YaRN строится из настроек RoPE самого чекпойнта
 сборку, даже если `:latest` на Docker Hub обновится. Перейти на новую
 сборку — `rm image.lock && ./pull.sh`.
 
+### 4.11a. Inkling-2-Mini на SGLang (Docker)
+
+Модель Thinking Machines: MoE на 26.4B параметров, из них 3.4B активных
+(5.4B «эффективных» с учётом трёх проходов петли, как считает карточка),
+принимает текст и картинки. Слои 6–17 проходятся трижды на каждый
+токен («петля»), драфт DSpark для спекулятивного декодирования встроен в
+чекпойнт. Веса ~18 ГиБ. Поддержка в SGLang пока только в открытом PR
+#51926, в релизе её нет, поэтому запуск — в образе LMSYS
+`lmsysorg/sglang:inkling-2-mini`, закреплённом по дайджесту в `image.lock`
+(подробно — [`sglang-inkling/README.md`](sglang-inkling/README.md)). Порт
+тот же, 8888. Сервер SGLang перед этим остановите.
+
+```bash
+cd sglang-inkling
+../scripts/mem-prep.sh idle && $HF download thinkingmachines/Inkling-2-Mini \
+  --revision ed40e7da625f594fc9c4990f5f66be24873c22d7 \
+  --local-dir /models/thinkingmachines/Inkling-2-Mini
+./pull.sh                       # образ (~15 ГБ), дайджест уже в image.lock
+./serve.sh                      # рецепт DSpark (8 черновых токенов); Ctrl-C останавливает
+STRATEGY=balanced ./serve.sh    # без спекулятивного декодирования
+MEM_FRACTION=0.7 ./serve.sh     # больше памяти под KV, чем 0.45 из рецепта
+```
+
+Флаги — ровно рецепт SGLang для DGX Spark (`MAX_JOBS=4`,
+`--mem-fraction-static 0.45`, FA4, `--page-size 128`, парсеры `inkling` и
+`inkling2`), добавлены только имя модели и `--enable-metrics`. 0.45 —
+единственное значение, проверенное SGLang на Spark, но для 18 ГиБ весов это
+мало: стоит замерить 0.6–0.85. Флаги петли (`--inkling2-loop-*`) к этому
+чекпойнту не применимы: в нём `is_varloop: false`, SGLang откажет при
+старте. Когда поддержка выйдет в релиз, модель станет обычным профилем
+`models/inkling-2-mini.sh`.
+
+### 4.11b. Inkling-2-Mini на vLLM (Docker)
+
+Та же модель и те же веса на другом движке, чтобы сравнить SGLang и vLLM на
+одной модели. Порт (8888) и имя модели (`inkling-2-mini`) те же, поэтому
+`bench/` сравнивает их без изменений. Поддержка нужна в vLLM ≥ 0.35.0,
+которая ещё не вышла, поэтому запуск — в образе `vllm/vllm-openai:inkling-2-mini`,
+закреплённом в `image.lock` (подробно и сравнение двух рецептов —
+[`vllm-inkling/README.md`](vllm-inkling/README.md)).
+
+```bash
+cd vllm-inkling
+# веса — те же, что для sglang-inkling (скачивать второй раз не нужно)
+./pull.sh                          # образ (~10.5 ГБ), дайджест уже в image.lock
+./serve.sh                         # DSpark, 7 токенов, probabilistic; Ctrl-C останавливает
+SPEC_TOKENS=0 ./serve.sh           # без спекулятивного декодирования
+GPU_UTIL=0.9 ./serve.sh            # ровно рецепт (умолчание vLLM)
+```
+
+Флаги — рецепт vLLM для `dgx_spark_gb10`: TP1, контекст 262144, DSpark с 7
+черновыми токенами и вероятностной выборкой черновика, парсеры `inkling`.
+Отличия: `--gpu-memory-utilization 0.8` вместо умолчания vLLM 0.9 (на
+единой памяти Spark безопаснее, как в `vllm-b12x/`), вызовы инструментов
+включены, как в SGLang-версии, и нет `--privileged`. Для честного сравнения
+запускайте оба с одинаковой долей памяти и контекстом.
+
 
 ### 4.12. DeepSeek-V4.1-Flash-1017 на двух Spark (TensorFold)
 
@@ -1064,7 +1128,7 @@ llama.cpp, пока не сделать `--undo`.
 страничный кэш, `other` — то, что держит драйвер GPU (выделения CUDA сервера
 не видны ни в чьём RSS). Список процессов в конце строки скажет, кто.
 
-**Перед каждым стартом.** Все наши серверы (`./serve.sh`, `vllm-b12x/`, `vllm-flash-ar/`,
+**Перед каждым стартом.** Все наши серверы (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-flash-ar/`,
 `tensorfold-dsv41/`, `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`), если
 GPU свободен, сбрасывают страничный кэш и уплотняют свободную память, у пар
 — на обеих машинах. В выводе при старте появляется строка: сколько памяти
@@ -1094,7 +1158,7 @@ GPU свободен, сбрасывают страничный кэш и упл
 **Не копировать рядом с сервером.** У sudoingX Spark наглухо зависал (ни ssh,
 ни ping) при копировании 25 ГБ рядом с задачей на GPU. Поэтому загрузки,
 скачивание образов и копирование (`tensorfold-dsv41/download.sh`,
-`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`,
+`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`, `sglang-inkling/pull.sh`, `vllm-inkling/pull.sh`,
 `vllm-flash-ar/build.sh`, `download.sh`, `prepare.sh`,
 `tensorfold-glm53/setup.sh`, `./serve.sh install`, `llamacpp/build.sh`)
 отказываются работать, пока на GPU любой из затронутых машин что-то
@@ -1247,6 +1311,8 @@ bench/                perf.py, longctx.py, profile_decode.py, answers.py, consis
 moe-configs/          настроенные под GB10 конфиги ядер MoE (Ornith)
 llamacpp/             сборка и запуск GLM-5.3-Flash на llama.cpp (1 или 2 Spark)
 vllm-b12x/            Flash-Next FP4-Local от NVIDIA на vLLM (Docker)
+sglang-inkling/       Inkling-2-Mini на SGLang в образе LMSYS (Docker), пока поддержки нет в релизе
+vllm-inkling/         та же Inkling-2-Mini на vLLM (Docker), для сравнения движков
 tensorfold-dsv41/     DeepSeek-V4.1-Flash на двух Spark, TensorFold (Docker)
 vllm-dsv41/           та же DeepSeek на двух Spark, настроенный vLLM (Docker)
 tensorfold-glm53/     GLM-5.3-Flash на двух Spark, TensorFold по рецепту MiaAI-Lab (Docker)
