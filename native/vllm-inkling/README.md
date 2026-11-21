@@ -132,7 +132,44 @@ ready, nothing cached yet.
   (~32% of drafted tokens) on reasoning text; 44 tok/s end to end for 512
   tokens at `reasoning_effort` none, one stream.
 
-Not measured with `../bench/perf.py` yet. Notes: the container runs as root, so
+## First measurements
+
+2026-11-21, same build and defaults, the server restarted after a cache
+drop and compaction (111.7 GiB free at start). The 27B column is the best
+native NVFP4 + DFlash2 profile in `../results/RESULTS.md`.
+
+`../bench/perf.py` ran **without** `GB10_TEMPLATE_KWARGS`, so its "thinking
+off" rows are reasoning text at the template's default effort (0.9), and
+the long-context rows flag "the answer looks wrong": with 8 tokens allowed
+the model only begins its reasoning ("The user has provided a long..."),
+which is not a broken answer. Decode on a code answer at effort `none` is
+still to measure.
+
+| | Inkling-2-Mini, vLLM | Qwen3.8-27B NVFP4, SGLang |
+|---|---:|---:|
+| Single-stream decode, 700 tokens | 79.6 tok/s (reasoning text; 4.74 tokens a step, 53% accepted) | 94.2 (code) |
+| TTFT, short prompt | 184 ms | ~190 ms |
+| Aggregate at 32 streams, 300 tokens each | 404.2 tok/s | 597.8 |
+| Prefill 2K / 8K / 32K / 101K | 2,245 / 2,847 / 2,503 / 2,300 tok/s | 2,768 / 2,147 / 1,841 / 1,223 |
+| Decode during a 32K prefill, 1 / 4 streams | 4.6 / 19.9 tok/s, longest pause 0.79 / 0.91 s | 4.2-8.0 / 14.5-18.7, 1.28 / 1.31 s |
+
+HumanEval (`../scripts/run-humaneval.sh nothink` with
+`GB10_TEMPLATE_KWARGS='{"reasoning_effort": "none"}' GB10_MAX_TOKENS=4096`,
+4 streams, 923 s, 120,369 tokens): 96.3% (158/164), five of the six misses
+truncated at 4096. Those five re-run at 16384: three answered and passed,
+HumanEval/116 and /145 hit 16384 again (never closed their reasoning).
+**98.2% (161/164)**; the one wrong answer is HumanEval/118. Effort `none`
+still thinks: 734 tokens a problem on average, against ~200 for the 27B
+with thinking off (93.9% NVFP4, 97.6% FP8), so per answer it costs about
+3.7x the tokens.
+
+Reading: slower than the 27B at decode and aggregate, faster at prefill
+from 8K up (1.9x at 101K) and gentler on streams during a long prefill;
+more accurate on HumanEval, at several times the tokens. Not yet measured:
+`perf.py` at effort `none`, the SGLang twin, `MAX_BATCHED_TOKENS` above
+2048, `DRAFT_SAMPLE_METHOD` empty at temperature 0.
+
+Notes: the container runs as root, so
 `~/.cache/gb10-vllm-inkling` (compile caches, kept between runs) ends up
 root-owned; the weights are mounted read-only (`MODEL_RO=0` if the loader
 wants to write beside them).

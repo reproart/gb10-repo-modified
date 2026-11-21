@@ -29,6 +29,11 @@ Env:
                  (PLE counters of a patched vLLM; default 0 = off)
   GB10_METRICS_INTERVAL  the sidecar's refresh period (default 5 s); settled
                  reads wait one period + 1 s
+  GB10_TEMPLATE_KWARGS  JSON object merged into every request's
+                 chat_template_kwargs, over the scripts' own (default none).
+                 For templates that ignore enable_thinking: Inkling-2-Mini
+                 reads only reasoning_effort (default 0.9, "high"), so its
+                 "thinking off" is '{"reasoning_effort": "none"}'
 
 Everything goes through /v1/chat/completions — the path real clients use, so
 the chat template and the reasoning parser are part of the measurement.
@@ -58,6 +63,12 @@ CHAT_URL = f"{BASE_URL}/chat/completions"
 SERVER_ROOT = BASE_URL[:-3] if BASE_URL.endswith("/v1") else BASE_URL
 METRICS_URL = os.environ.get("GB10_METRICS_URL") or f"{SERVER_ROOT}/metrics"
 ENGINE_ROOT = METRICS_URL[:-len("/metrics")] if METRICS_URL.endswith("/metrics") else SERVER_ROOT
+try:
+    TEMPLATE_KWARGS = json.loads(os.environ.get("GB10_TEMPLATE_KWARGS") or "{}")
+except ValueError as e:
+    sys.exit(f"GB10_TEMPLATE_KWARGS is not JSON: {e}")
+if not isinstance(TEMPLATE_KWARGS, dict):
+    sys.exit("GB10_TEMPLATE_KWARGS must be a JSON object, e.g. '{\"reasoning_effort\": \"none\"}'")
 HEADERS = {"Content-Type": "application/json"}
 if API_KEY:
     HEADERS["Authorization"] = f"Bearer {API_KEY}"
@@ -171,6 +182,7 @@ def chat(prompt, max_tokens, thinking=False, stream=False, timeout=3600, effort=
     template_kwargs = {"enable_thinking": thinking}
     if effort:
         template_kwargs["reasoning_effort"] = effort
+    template_kwargs.update(TEMPLATE_KWARGS)  # GB10_TEMPLATE_KWARGS wins
     body = {
         "model": MODEL,
         "messages": [{"role": "user", "content": prompt}],
