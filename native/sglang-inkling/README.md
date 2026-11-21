@@ -96,5 +96,14 @@ same weights on the same port and model id, for an engine A/B; its README
 puts the two recipes side by side.
 
 Not measured here yet: first boot, decode, aggregate, HumanEval. Measure
-like the SGLang profiles: `python3 ../bench/perf.py`, HumanEval, and
-`DRAFT_TOKENS` / `MEM_FRACTION` sweeps.
+like the SGLang profiles, but with the template's own switch: Inkling's
+chat template ignores `enable_thinking` (what `../bench/` sends for
+"thinking off") and reads only `reasoning_effort` (default 0.9, "high";
+`none` still thinks briefly), so
+
+```bash
+GB10_TEMPLATE_KWARGS='{"reasoning_effort": "none"}' python3 ../bench/perf.py
+```
+
+plus HumanEval and `DRAFT_TOKENS` / `MEM_FRACTION` sweeps. Details and the
+vLLM twin's first boot: `../vllm-inkling/README.md`.

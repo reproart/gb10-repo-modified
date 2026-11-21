@@ -89,7 +89,50 @@ For a fair A/B, run both at the same memory share and context, and compare
 `../bench/perf.py` (decode, aggregate, TTFT) and HumanEval at temperature
 0, where draft sampling matters least.
 
-Not measured here yet. Notes: the container runs as root, so
+## Measuring: reasoning effort, not enable_thinking
+
+Inkling's chat template ignores `enable_thinking` (what `../bench/` sends
+for "thinking off") and reads only `reasoning_effort`: `none`, `minimal`,
+`low`, `medium`, `high` (the default, 0.9), `xhigh`, or a number in
+[0, 0.99]. Its card: the minimum "does not fully disable reasoning". On a
+palindrome prompt at temperature 0 the default thought 398 tokens and hit a
+400-token cap with no answer; `none` thought 133 and answered. So measure
+with the template key set, for both engines:
+
+```bash
+GB10_TEMPLATE_KWARGS='{"reasoning_effort": "none"}' python3 ../bench/perf.py
+```
+
+Requests that send no temperature get 1.0 (the checkpoint's
+`generation_config.json`, which vLLM applies); `../bench/` sends 0.
+
+## First boot here
+
+2026-11-21, image `c2dc759f5984...`, vLLM `0.1.dev25855+g7cb5dae22`, model
+revision `ed40e7da`, defaults (DSpark 7, GPU_UTIL 0.8): 5 min 13 s to
+ready, nothing cached yet.
+
+- Weights: 18.19 GiB in 102.5 s (~180 MiB/s, one shard read cold; vLLM
+  turns its prefetch off on ext4, `--safetensors-load-strategy=prefetch`
+  forces it). Weights and draft take 19.74 GiB.
+- Warmup: JIT 7 s, FlashInfer autotune 7 s, CUDA graphs 100 s (piecewise
+  up to 512 tokens, full up to 64 requests, plus the draft's), 2.83 GiB.
+- KV: 68.68 GiB, 1,342,548 tokens, 5.12 requests of 262,144. vLLM's
+  extensible KV cache says utilisation below 1.0 is only needed for memory
+  it does not see, "the CPU on a unified-memory device" among them: that
+  is this machine, so 0.8 stays. With the server up and a desktop session
+  beside it, `free -g` showed 11 GiB available.
+- Warnings worth knowing: the scheduler caps a step at 2048 tokens with 7
+  draft tokens (`MAX_BATCHED_TOKENS` raises it, untested); KV padding
+  layers "may waste at most" 12.5% / 12.5% / 350% in three cache groups;
+  the draft gets no image embeddings (text-only draft inputs on image
+  prompts, so expect lower acceptance there); the target's attention runs
+  FlashAttention 2 (SGLang's recipe: FA4).
+- First requests, temperature 0: DSpark accepted 3.1-3.2 tokens a step
+  (~32% of drafted tokens) on reasoning text; 44 tok/s end to end for 512
+  tokens at `reasoning_effort` none, one stream.
+
+Not measured with `../bench/perf.py` yet. Notes: the container runs as root, so
 `~/.cache/gb10-vllm-inkling` (compile caches, kept between runs) ends up
 root-owned; the weights are mounted read-only (`MODEL_RO=0` if the loader
 wants to write beside them).
