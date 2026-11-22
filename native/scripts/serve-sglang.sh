@@ -44,6 +44,16 @@ if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models
   echo "something already serves :$PORT (systemctl status gb10-sglang?)" >&2
   exit 1
 fi
+# The Docker servers of this project, whatever port they use (vllm-flash-ar and
+# vllm-flash-v034 answer on 8000 here): each wants most of the 128 GB.
+if command -v docker >/dev/null 2>&1; then
+  for c in qwen38-flash qwen38-flash-v034 gb10-vllm-inkling gb10-sglang-inkling gb10-vllm-b12x tfv41-r0 gb10-vllm-dsv41 glm53-flash-tf; do
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
+      echo "container $c runs: stop it first (one server at a time)" >&2
+      exit 1
+    fi
+  done
+fi
 
 # GB10 memory before the start (scripts/mem-prep.sh, MEM_PREP in ../serve.sh):
 # with the GPU idle, page cache dropped and free memory compacted; the line in

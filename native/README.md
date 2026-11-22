@@ -956,6 +956,12 @@ project's guards; `build.sh`, `download.sh`, `serve.sh`, `stop.sh`,
 the model's four residual streams at inference, from the same Mambavtt vectors
 as the SGLang profile's `ABLATE=1` (its README, patch 17; unmeasured).
 
+[`vllm-flash-v034/`](vllm-flash-v034/README.md) runs the same weights on stock
+vLLM 0.34.0 (pinned by digest) beside it, as a second engine: 0.34 reads the
+n-gram table from disk itself, and the folder adds the int4+fp8 hybrid dispatch,
+the int8 lm_head, a lean copy of the table and a checkpoint view (links, a merged
+index). Same port and model ids, one at a time; the first boot is still to come.
+
 ## DeepSeek-V4.1-Flash on two Sparks: `tensorfold-dsv41/`
 
 [`tensorfold-dsv41/`](tensorfold-dsv41/README.md) serves

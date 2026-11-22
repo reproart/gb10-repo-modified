@@ -1,0 +1,74 @@
+# shellcheck shell=bash disable=SC2034  # read by the scripts here
+# Qwen3.8-Flash-Next on stock vLLM 0.34 in Docker, one Spark: the same checkpoint as
+# ../vllm-flash-ar (Intel's AutoRound int4 experts + an int8 lm_head + fp8 side layers, the
+# fp8 n-gram table on NVMe), on vLLM's release instead of the pinned August dev image. A
+# second engine next to the first, not a replacement: the two share the weights and the port,
+# one runs at a time. Source it, don't run it; every value is "${VAR:-default}", so the shell
+# wins (MTP=3 ./serve.sh). This machine's own values go in config.local.sh (not committed).
+
+V034_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NATIVE_DIR="$(cd "$V034_ROOT/.." && pwd)"
+# shellcheck disable=SC1091
+[ -f "$V034_ROOT/config.local.sh" ] && . "$V034_ROOT/config.local.sh"
+
+# --- Weights: ../vllm-flash-ar's (download them there), plus a lean copy of the table.
+# vLLM 0.34 reads the n-gram rows from the checkpoint's files (--engram-config disk_offload)
+# and loads every tensor of every file it is given, and the table folder holds Qwen's FP8
+# shards whole (expert scales and dense weights of other layers next to the rows), so
+# ./prepare.sh copies just the rows (../vllm-flash-ar/tools/strip_ple_table.py, ~48 GB once)
+# and serve.sh shows vLLM the model and the lean table as one folder (src/make_model_view.py:
+# links, a merged index, config.json with the table's dtype; no weights copied).
+export MODEL_DIR="${MODEL_DIR:-/models/Qwen3.8-Flash-Next-W4A16-AutoRound-hybrid-MTP_int4RTN}"
+export TABLE_SRC_DIR="${TABLE_SRC_DIR:-/models/ple-table-fp8}"
+export TABLE_DIR="${TABLE_DIR:-/models/ple-table-fp8-lean}"
+export VIEW_DIR="${VIEW_DIR:-$HOME/.cache/gb10/vllm-flash-v034/model-view}"
+
+# --- The image: vllm/vllm-openai:v0.34.0 pinned by digest (image.lock, committed) plus two
+# build-time patches (./build.sh): the int4+fp8 hybrid dispatch and the int8 lm_head.
+export BASE_IMAGE="${BASE_IMAGE:-vllm/vllm-openai}"
+export BASE_TAG="${BASE_TAG:-v0.34.0}"
+BASE_DIGEST="$(cat "$V034_ROOT/image.lock" 2>/dev/null || true)"
+export BASE_DIGEST
+export IMAGE="${IMAGE:-qwen38-flash-v034}"
+export NAME="${NAME:-qwen38-flash-v034}"
+
+# --- The API: the same port and model ids as ../vllm-flash-ar as it runs here, so a client
+# does not see which engine answers.
+export PORT="${PORT:-8000}"
+export SERVED_NAME="${SERVED_NAME:-qwen3.8-flash-next qwen}"
+export TOOL_PARSER="${TOOL_PARSER:-qwen3_xml}"
+# API key: non-empty -> clients send "Authorization: Bearer <key>". Passed as VLLM_API_KEY,
+# so it is not in the command line vLLM logs.
+export API_KEY="${API_KEY:-}"
+export BIND_ADDR="${BIND_ADDR:-}"
+
+# --- Serving: ../vllm-flash-ar's values, for a like-for-like comparison.
+export SEQS="${SEQS:-8}"
+export MTP="${MTP:-4}"
+export CTX="${CTX:-262144}"
+export KV_BYTES="${KV_BYTES:-30g}"
+export BATCHED_TOKENS="${BATCHED_TOKENS:-8192}"
+export PREFIX_CACHE="${PREFIX_CACHE:-1}"
+# The GDN state's dtype (--mamba-ssm-cache-dtype); empty = the checkpoint's float32. Set it
+# the way ../vllm-flash-ar runs (bfloat16 there once its A/B says so).
+export MAMBA_SSM_DTYPE="${MAMBA_SSM_DTYPE:-}"
+# safetensors: the disk-offloaded table is read through the loader's mmap views, which
+# fastsafetensors (../vllm-flash-ar's loader) does not hand over.
+export LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"
+export RESTART="${RESTART:-no}"
+# Anything else: vLLM flags (appended) and NAME=value pairs for the container.
+export EXTRA="${EXTRA:-}"
+export EXTRA_ENV="${EXTRA_ENV:-}"
+
+# Before a start, with the GPU idle: drop the page cache and compact free memory
+# (../scripts/mem-prep.sh). The server waits until the API answers (WAIT_MIN minutes).
+export MEM_PREP="${MEM_PREP:-1}"
+export WAIT_MIN="${WAIT_MIN:-20}"
+
+log() { echo "[vllm-flash-v034 $(date -u +%H:%M:%SZ)] $*"; }
+need_docker() {
+  command -v docker >/dev/null || { echo "docker not found (DGX OS ships it)" >&2; exit 1; }
+  docker info >/dev/null 2>&1 || {
+    echo "docker is not usable by $(id -un): sudo usermod -aG docker $(id -un), then log in again" >&2; exit 1; }
+}
+base_ref() { echo "$BASE_IMAGE@${BASE_DIGEST:?no image.lock: the base image is pinned by digest}"; }

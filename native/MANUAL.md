@@ -28,6 +28,8 @@
   сравнения движков.
 - **vLLM в Docker** (`vllm-flash-ar/`) — Flash-Next в int4 AutoRound от Intel
   (рецепт blazux → Saren-Arterius, ваша копия).
+- **vLLM 0.34 в Docker** (`vllm-flash-v034/`) — та же модель и те же веса на
+  выпуске vLLM 0.34 вместо августовской сборки; второй движок рядом, испытание.
 - **TensorFold в Docker** (`tensorfold-dsv41/`) — DeepSeek-V4.1-Flash на двух
   Spark.
 - **Настроенный vLLM в Docker** (`vllm-dsv41/`) — та же DeepSeek на двух Spark,
@@ -58,6 +60,7 @@
 | `sglang-inkling/` | Inkling-2-Mini 26B MoE (3.4B акт., 5.4B с петлёй), картинки, драфт DSpark внутри, SGLang в Docker | ~18 ГиБ | | не измерена (рецепт SGLang проверен на Spark: gsm8k 93.9%) |
 | `vllm-inkling/` | та же Inkling-2-Mini, те же веса, vLLM в Docker (для сравнения движков) | те же ~18 ГиБ | | не измерена |
 | `vllm-flash-ar/` | Qwen3.8-Flash-Next, int4 AutoRound (Intel) + int8 голова + FP8, vLLM в Docker | ~67 + ~49 ГиБ (таблица) | 65.8 (MTP 3), 259 суммарно на 8 | измерена в рецепте, долго в работе |
+| `vllm-flash-v034/` | та же модель и веса на vLLM 0.34 (Docker), таблица PLE читается с диска средствами vLLM | те же + ~48 ГиБ (очищенная таблица) | | не измерена (этап 0: первый запуск) |
 | `tensorfold-dsv41/` | DeepSeek-V4.1-Flash-1017, EXL3 2.9 бит, контекст 1M, TensorFold в Docker, **на двух Spark** (TP=2) | 196 + 189 ГиБ на каждом | 92 код / 57 текст (по рецепту) | у нас не измерена |
 | `vllm-dsv41/` | та же DeepSeek, те же веса, настроенный vLLM (sudoingX + styles01) в Docker, **на двух Spark**, 262K, картинки | те же папки + дерево из жёстких ссылок | 94 код / 52 текст (по рецепту) | у нас не измерена |
 | `tensorfold-glm53/` | GLM-5.3-Flash 321B, EXL3 4 бит + DFlash2, контекст 1M, TensorFold в Docker, **на двух Spark** | ~205 ГБ на каждом | 114 коротко / 50 текст / 70 код (по замерам LimeChain) | у нас не измерена |
@@ -1000,6 +1003,24 @@ python3 ../bench/consistency.py
 Если настройки уже жили в старом `serve.sh` (пути, ключ, `PIN_PROMPT`),
 перенесите их в `config.local.sh` (`config.local.sh.example`).
 
+**Тот же Flash-Next на vLLM 0.34** (`vllm-flash-v034/`, испытание). У соседнего
+рецепта (другие веса) переход с этой же сборки на 0.34 дал префилл +30–55% и вдвое
+меньшую задержку хода агента. Папка запускает наши веса на выпуске 0.34 рядом с
+`vllm-flash-ar`, ничего в нём не меняя: тот же порт 8000 и те же имена модели, работает
+один из двух. Таблицу PLE 0.34 читает с диска сам; от нас — патч FP8-слоёв, int8-голова
+и очищенная копия таблицы (~48 ГБ, один раз).
+
+```bash
+cd vllm-flash-v034
+./build.sh && ./prepare.sh      # образ (~10 ГБ, закреплён по digest) и очищенная таблица
+../vllm-flash-ar/stop.sh && ./serve.sh
+python3 ../bench/perf.py --only decode decode-ru prefill
+```
+
+Пока без наших ускорений (русский словарь черновика, `HC_FP8`, абляция и др.):
+они переносятся по одному, после первого замера. Подробно —
+[`vllm-flash-v034/README.md`](vllm-flash-v034/README.md).
+
 ---
 
 ## 5. Как выжать максимум из машины
@@ -1138,7 +1159,7 @@ llama.cpp, пока не сделать `--undo`.
 страничный кэш, `other` — то, что держит драйвер GPU (выделения CUDA сервера
 не видны ни в чьём RSS). Список процессов в конце строки скажет, кто.
 
-**Перед каждым стартом.** Все наши серверы (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-flash-ar/`,
+**Перед каждым стартом.** Все наши серверы (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-flash-ar/`, `vllm-flash-v034/`,
 `tensorfold-dsv41/`, `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`), если
 GPU свободен, сбрасывают страничный кэш и уплотняют свободную память, у пар
 — на обеих машинах. В выводе при старте появляется строка: сколько памяти
