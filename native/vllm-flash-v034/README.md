@@ -261,9 +261,17 @@ Four items of `vllm-flash-ar` were not here yet. Checked against 0.34's source:
   Xid 31 shows up under load, that is the place.
 - **Never-evict pinning** (patch 6): not ported. Off by default there too (`PIN_PROMPT`
   empty); it patches the block pool and the scheduler. On request.
-- **A fused ablation projection**: not done. The ablation costs prefill 3-12% here (about a
-  hundred projections a forward, each a few separate kernels); one Triton kernel per
-  projection would cut most of it. On request.
+- **A fused ablation projection**: done (built, to measure). The ablation cost prefill 3-12%
+  and the sweep 0-5% here: about a hundred projections a forward, each a matrix-vector
+  product, an outer product and a subtraction, three passes over the [T, 2560] output plus
+  their launches. `gb10_abliterate.project` now runs one Triton kernel per projection on the
+  GPU (`gb10::abl_project`, a torch custom op: one compiled-graph node): each row read once,
+  its dot products and the subtraction in fp32, written once, no atomics. Built when the
+  ablation attaches (before any CUDA graph capture); a failure switches to the torch ops with
+  a warning. `ABLATE_FUSED=0` is the old path, for the A/B. `../vllm-flash-ar/src/
+  test_abliterate_cpu.py` checks it in Triton's interpreter against the torch ops (fp32 and
+  bf16, ranks 1-3, several streams, a strided view, the same bits twice) and runs both models'
+  ablation checks with it. The same module serves `../vllm-flash-ar` (rebuild there).
 
 ## Stage 3c: the deterministic top-k kernel (measured 2026-11-22)
 

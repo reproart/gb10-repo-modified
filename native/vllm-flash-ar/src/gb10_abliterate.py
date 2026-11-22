@@ -205,14 +205,107 @@ def basis(path: str, source: str, hidden: int):
 
 
 # --------------------------------------------------------------------------- the projection
-def project(x, u):
+FUSED = os.environ.get("VLLM_ABLATE_FUSED", "1") != "0"   # one Triton kernel per projection on the GPU
+_fused_state = {"bad": False, "logged": False}
+
+
+def project_torch(x, u):
     """x [..., s * H] (s streams, s >= 1), u [k, H] = sqrt(alpha) * orthonormal rows:
-    each H-wide stream loses alpha times its component in u's span."""
+    each H-wide stream loses alpha times its component in u's span. Plain torch: a
+    matrix-vector product, an outer product and a subtraction, each reading or writing x's
+    size again."""
     import torch
 
     u = u.to(x.dtype)
     xs = x.reshape(*x.shape[:-1], -1, u.shape[-1])             # [..., s, H]
     return (xs - torch.matmul(torch.matmul(xs, u.t()), u)).reshape(x.shape)
+
+
+def project(x, u):
+    """project_torch's result; on the GPU (VLLM_ABLATE_FUSED=1, the default) one fused Triton
+    kernel (gb10::abl_project): each H-wide row read once, its k dot products and the
+    subtraction in fp32, written once. Deterministic (no atomics, fixed reduction order)."""
+    if FUSED and x.is_cuda and not _fused_state["bad"]:
+        _register_op()
+        import torch
+
+        return torch.ops.gb10.abl_project(x, u)
+    return project_torch(x, u)
+
+
+_kernels = {}
+
+
+def _get_kernel():
+    if "k" in _kernels:
+        return _kernels["k"]
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def _abl_project_kernel(x_ptr, u_ptr, y_ptr, R, H, stride_x, stride_y,
+                            K: tl.constexpr, BLOCK_R: tl.constexpr, BLOCK_H: tl.constexpr):
+        rows = tl.program_id(0) * BLOCK_R + tl.arange(0, BLOCK_R)
+        cols = tl.arange(0, BLOCK_H)
+        cmask = cols < H
+        mask = (rows[:, None] < R) & cmask[None, :]
+        x = tl.load(x_ptr + rows[:, None] * stride_x + cols[None, :], mask=mask, other=0.0).to(tl.float32)
+        acc = x
+        for j in tl.static_range(K):
+            u = tl.load(u_ptr + j * H + cols, mask=cmask, other=0.0).to(tl.float32)
+            d = tl.sum(x * u[None, :], axis=1)            # the row's component along u_j
+            acc = acc - d[:, None] * u[None, :]
+        tl.store(y_ptr + rows[:, None] * stride_y + cols[None, :], acc.to(y_ptr.dtype.element_ty), mask=mask)
+
+    _kernels["k"] = (_abl_project_kernel, triton)
+    return _kernels["k"]
+
+
+def fused_project(x, u):
+    """The fused kernel on x's device (CUDA, or Triton's interpreter in the CPU tests)."""
+    import torch
+
+    kern, triton = _get_kernel()
+    k, h = u.shape
+    x2 = x.reshape(-1, h)
+    if x2.stride(-1) != 1:
+        x2 = x2.contiguous()
+    y = torch.empty((x2.shape[0], h), dtype=x.dtype, device=x.device)
+    if x2.shape[0]:
+        block_h = triton.next_power_of_2(h)
+        block_r = 1 if block_h >= 4096 else 2
+        kern[(triton.cdiv(x2.shape[0], block_r),)](
+            x2, u.contiguous(), y, x2.shape[0], h, x2.stride(0), y.stride(0),
+            K=k, BLOCK_R=block_r, BLOCK_H=block_h, num_warps=8 if block_h >= 2048 else 4)
+    return y.reshape(x.shape)
+
+
+def _register_op():
+    import torch
+
+    if hasattr(torch.ops, "gb10") and hasattr(torch.ops.gb10, "abl_project"):
+        return
+
+    # an explicit schema: this module's annotations are strings (from __future__ import annotations)
+    @torch.library.custom_op("gb10::abl_project", mutates_args=(), schema="(Tensor x, Tensor u) -> Tensor")
+    def abl_project(x, u):
+        if x.is_cuda and not _fused_state["bad"]:
+            try:
+                y = fused_project(x, u)
+                if not _fused_state["logged"]:
+                    _fused_state["logged"] = True
+                    logger.warning("ABLATION: projections on the fused kernel (gb10::abl_project; "
+                                   "VLLM_ABLATE_FUSED=0 for the torch ops)")
+                return y
+            except Exception as e:  # noqa: BLE001 - the torch ops, slower, give the same projection
+                _fused_state["bad"] = True
+                logger.warning("ABLATION: the fused projection kernel failed (%s: %s); torch ops from now on",
+                               type(e).__name__, e)
+        return project_torch(x, u)
+
+    @abl_project.register_fake
+    def _(x, u):
+        return torch.empty_like(x)
 
 
 # --------------------------------------------------------------------------- wiring
@@ -243,6 +336,23 @@ class Ablation:
             self.vectors[key] = u.to(device=device, dtype=dtype)
         return self.vectors[key]
 
+    def prewarm(self, u) -> None:
+        """Build the fused kernel now, at model build, not inside a CUDA graph capture; a
+        failure here switches to the torch ops, loudly. Once."""
+        if getattr(self, "_prewarmed", False) or not (FUSED and u.is_cuda):
+            return
+        self._prewarmed = True
+        try:
+            import torch
+
+            x = torch.zeros((2, u.shape[1]), dtype=u.dtype, device=u.device)
+            fused_project(x, u)
+            torch.cuda.synchronize(u.device)
+        except Exception as e:  # noqa: BLE001
+            _fused_state["bad"] = True
+            logger.warning("ABLATION: the fused projection kernel does not build here (%s: %s); torch ops",
+                           type(e).__name__, e)
+
     def wants(self, layer: int, n_layers: int) -> bool:
         if layer >= n_layers:
             return self.cfg["mtp"]
@@ -256,7 +366,9 @@ class Ablation:
         on = self.cfg["alpha"] != 0 and self.wants(layer, n_layers)
         module._gb10_abl_on = on
         if on:
-            module.register_buffer("_gb10_abl_u", self.vector(hidden), persistent=False)
+            u = self.vector(hidden)
+            module.register_buffer("_gb10_abl_u", u, persistent=False)
+            self.prewarm(u)
         if layer >= n_layers:
             logger.warning("ABLATION: MTP draft layer %d %s", layer,
                            "projects its writers too" if on else "left as is (VLLM_ABLATE_MTP=0)")
