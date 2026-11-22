@@ -7,7 +7,8 @@ one command shape measures any server:
 
 Env:
   GB10_BASE_URL  OpenAI-compatible API root INCLUDING /v1
-                 (default http://127.0.0.1:8888/v1, ./serve.sh)
+                 (default http://127.0.0.1:8888/v1, ./serve.sh; when nothing
+                 answers there, :8000, vllm-flash-ar's PORT as its owner sets it)
   GB10_MODEL     served model name; unset -> read from GB10_BASE_URL/models
                  ("default" if the server lists it, else the first entry)
   GB10_API_KEY   bearer token (default none; serve.sh's API_KEY if set)
@@ -53,7 +54,29 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlparse
 
-BASE_URL = os.environ.get("GB10_BASE_URL", "http://127.0.0.1:8888/v1").rstrip("/")
+# Local ports tried in order when GB10_BASE_URL is not set: 8888 (every server here)
+# and 8000 (vllm-flash-ar as its owner runs it, PORT=8000 for older clients).
+DEFAULT_PORTS = (8888, 8000)
+
+
+def _base_url():
+    if os.environ.get("GB10_BASE_URL"):
+        return os.environ["GB10_BASE_URL"].rstrip("/")
+    for port in DEFAULT_PORTS:
+        url = f"http://127.0.0.1:{port}/v1"
+        try:
+            urllib.request.urlopen(f"{url}/models", timeout=3).close()
+        except urllib.error.HTTPError:      # it answered (401 without the key): a server
+            pass
+        except OSError:                     # refused / unreachable: try the next port
+            continue
+        if port != DEFAULT_PORTS[0]:
+            print(f"(GB10_BASE_URL not set and nothing on :{DEFAULT_PORTS[0]}: using {url})", file=sys.stderr)
+        return url
+    return f"http://127.0.0.1:{DEFAULT_PORTS[0]}/v1"
+
+
+BASE_URL = _base_url()
 API_KEY = os.environ.get("GB10_API_KEY", "")
 
 CHAT_URL = f"{BASE_URL}/chat/completions"
