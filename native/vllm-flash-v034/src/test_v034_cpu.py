@@ -6,12 +6,16 @@
 1. patch_lm_head_quant.py on vLLM 0.34.0's own qwen4_exp/nvidia/model.py and mtp.py
    (src/testdata/*.v034, from the vllm-0.34.0 wheel): one quant_config line in each head,
    the same indentation, idempotent; a file without the head stops it.
-2. make_model_view.py: links to the container mounts, the table's tensors in the merged
+2. the Dockerfile's mtp.py steps in order: the lm_head patch, then ../vllm-flash-ar's
+   draft-head patch on Qwen4ExpMTP; the line the Dockerfile greps for is there.
+3. make_model_view.py: links to the container mounts, the table's tensors in the merged
    index, ple_embedding_dtype in config.json, a non-lean table refused, a rerun replaces the
    view, a foreign file in the view directory refused.
 """
+import ast
 import json
 import os
+import re
 import shutil
 import struct
 import sys
@@ -22,6 +26,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import make_model_view as mv
 import patch_lm_head_quant as lh
+
+sys.path.insert(0, os.path.join(HERE, "..", "..", "vllm-flash-ar", "src"))
+import patch_mtp_draft_vocab as dv
 
 
 def write_safetensors(path, tensors):
@@ -66,6 +73,22 @@ class LmHeadTest(Tmp):
             f.write("x = 1\n")
         with self.assertRaises(SystemExit):
             lh.patch(p)
+
+
+class DraftHeadStepTest(Tmp):
+    def test_dockerfile_mtp_steps(self):
+        p = os.path.join(self.d, "mtp.py")
+        shutil.copy(os.path.join(HERE, "testdata", "mtp.py.v034"), p)
+        self.assertEqual(lh.patch(p), "INSTALLED")
+        self.assertEqual(dv.patch(p), "INSTALLED on Qwen4ExpMTP")
+        with open(p) as f:
+            src = f.read()
+        ast.parse(src)
+        self.assertIn(lh.MARK, src)
+        with open(os.path.join(HERE, "..", "Dockerfile")) as f:
+            grep = re.search(r'grep -q "(\^    Qwen4ExpMTP[^"]+)" "\$Q/mtp.py"', f.read()).group(1)
+        self.assertTrue(re.search(grep, src, re.MULTILINE))
+        self.assertEqual(dv.patch(p), "already installed")
 
 
 class ViewTest(Tmp):
