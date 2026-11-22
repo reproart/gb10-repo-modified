@@ -36,3 +36,5 @@ RUN set -eu; \
     grep -q "^    Qwen4ExpMTP.compute_logits = _dv_compute_logits" "$Q/mtp.py"; \
     echo "mtp.py: private draft head hook OK"; \
     rm -rf /tmp/gb10
+# serve.sh checks it before it passes DRAFT_VOCAB / DRAFT_HEAD (an image built before has no hook)
+LABEL gb10.draft-head="1"
