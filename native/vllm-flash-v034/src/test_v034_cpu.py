@@ -38,7 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import make_model_view as mv
 import patch_lm_head_quant as lh
-import patch_qsa_exact_topk as pq
+import patch_qsa_topk as pq
 
 sys.path.insert(0, os.path.join(HERE, "..", "..", "vllm-flash-ar", "src"))
 import patch_abliterate as pa

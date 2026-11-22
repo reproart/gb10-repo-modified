@@ -84,11 +84,14 @@ export HC_FP8="${HC_FP8:-1}"
 #   SEQS x (1 + MTP) + 1: prefill and steps with a prefill chunk, not decode-only steps.
 export DET_MOE_ALIGN="${DET_MOE_ALIGN:-1}"
 export DET_MOE_ALIGN_MIN_TOKENS="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
-# QSA_EXACT_TOPK: 1 = the sparse attention's block top-k by an exact torch.topk instead of
-#   persistent_topk, which was non-deterministic on GB10 in the dev image's vLLM (vllm#51782);
-#   whether 0.34's kernel has the fix is not visible from outside, so it is off until
-#   consistency.py says it is needed (on the dev image the exact path cost 20-40% of long
-#   prefill).
+# The sparse attention's block top-k: 0.34's persistent_topk is non-deterministic on GB10
+# (vllm#51782): consistency.py forked from the first token with it and gave the same text with
+# the exact top-k (2026-11-22).
+# QSA_DET_TOPK: 1 (default) = @jschmied's deterministic kernel, built into the image (stock
+#   speed); if the image could not build it, the exact top-k runs and the boot log says so.
+# QSA_EXACT_TOPK: 1 = an exact torch.topk over the visible columns (wins when set; on the dev
+#   image it cost 20-40% of long prefill). Both 0 = the stock, non-deterministic kernel.
+export QSA_DET_TOPK="${QSA_DET_TOPK:-1}"
 export QSA_EXACT_TOPK="${QSA_EXACT_TOPK:-0}"
 # Refusal-direction ablation at inference (../vllm-flash-ar's patch 17, the same knobs), off by
 # default:

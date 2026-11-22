@@ -67,12 +67,18 @@ esac
 DET_MIN="$DET_MOE_ALIGN_MIN_TOKENS"
 [ "$DET_MIN" = auto ] && DET_MIN=$(( SEQS * (1 + MTP) + 1 ))
 case "$DET_MIN" in ''|*[!0-9]*) echo "DET_MOE_ALIGN_MIN_TOKENS=$DET_MIN: a number of tokens or auto" >&2; exit 1 ;; esac
-case "$DET_MOE_ALIGN$QSA_EXACT_TOPK" in
-  00) ;;
-  01|10|11) [ "$(image_label gb10.det)" = 1 ] || {
-      echo "image $IMAGE has no determinism patches (built before stage 3b): ./build.sh first," \
-        "or DET_MOE_ALIGN=0 QSA_EXACT_TOPK=0" >&2; exit 1; } ;;
-  *) echo "DET_MOE_ALIGN=$DET_MOE_ALIGN QSA_EXACT_TOPK=$QSA_EXACT_TOPK: each 0 or 1" >&2; exit 1 ;;
+case "$DET_MOE_ALIGN$QSA_DET_TOPK$QSA_EXACT_TOPK" in
+  000) ;;
+  *[!01]*|????*) echo "DET_MOE_ALIGN=$DET_MOE_ALIGN QSA_DET_TOPK=$QSA_DET_TOPK QSA_EXACT_TOPK=$QSA_EXACT_TOPK:" \
+      "each 0 or 1" >&2; exit 1 ;;
+  *) det_label="$(image_label gb10.det)"
+     if [ "$QSA_DET_TOPK" = 1 ] && [ "$det_label" != 2 ]; then
+       echo "image $IMAGE has no deterministic top-k kernel wiring (built before stage 3c): ./build.sh first," \
+         "or QSA_DET_TOPK=0" >&2; exit 1
+     fi
+     case "$det_label" in 1|2) ;; *)
+       echo "image $IMAGE has no determinism patches (built before stage 3b): ./build.sh first," \
+         "or DET_MOE_ALIGN=0 QSA_DET_TOPK=0 QSA_EXACT_TOPK=0" >&2; exit 1 ;; esac ;;
 esac
 [ "$(image_label gb10.tool-parser)" = 1 ] ||
   log "NOTE: image $IMAGE predates the tool-call parser fixes (stage 3a): a tool-call example in a reply" \
@@ -114,10 +120,13 @@ if [ "$PREFIX_CACHE" = 1 ]; then ARGS+=(--enable-prefix-caching); else ARGS+=(--
 # shellcheck disable=SC2206  # EXTRA is a flag list, split on purpose
 ARGS+=(${EXTRA:-})
 
+QSA_TOPK_DESC=stock
+[ "$QSA_DET_TOPK" = 1 ] && QSA_TOPK_DESC=deterministic
+[ "$QSA_EXACT_TOPK" = 1 ] && QSA_TOPK_DESC=exact
 ABL_DESC=off
 [ -n "$ABL_FILE" ] && ABL_DESC="$(basename "$ABL_FILE") (source $ABLATE_SOURCE, alpha $ABLATE_ALPHA, layers $ABLATE_LAYERS, mtp $ABLATE_MTP)"
 ENVS=(VLLM_FP8_HYBRID=1 "VLLM_HC_FP8=$HC_FP8" "VLLM_DET_MOE_ALIGN=$DET_MOE_ALIGN"
-  "VLLM_DET_MOE_ALIGN_MIN_TOKENS=$DET_MIN" "VLLM_QSA_EXACT_TOPK=$QSA_EXACT_TOPK" ${DRAFT_ENVS[@]+"${DRAFT_ENVS[@]}"} ${ABL_ENVS[@]+"${ABL_ENVS[@]}"})
+  "VLLM_DET_MOE_ALIGN_MIN_TOKENS=$DET_MIN" "VLLM_QSA_DET_TOPK=$QSA_DET_TOPK" "VLLM_QSA_EXACT_TOPK=$QSA_EXACT_TOPK" ${DRAFT_ENVS[@]+"${DRAFT_ENVS[@]}"} ${ABL_ENVS[@]+"${ABL_ENVS[@]}"})
 [ -n "$API_KEY" ] && ENVS+=("VLLM_API_KEY=$API_KEY")
 # shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list
 EXTRA_ENVS=(${EXTRA_ENV:-})
@@ -141,7 +150,7 @@ docker run -d --name "$NAME" --restart "$RESTART" \
 log "$NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (vLLM $BASE_TAG, ctx $CTX, mtp $MTP, seqs $SEQS," \
   "chunk $BATCHED_TOKENS, kv $KV_BYTES, prefix cache $PREFIX_CACHE, ssm ${MAMBA_SSM_DTYPE:-checkpoint}," \
   "draft vocab ${DRAFT_VOCAB:-0}, draft head $DRAFT_HEAD, hc fp8 $HC_FP8, det moe align $DET_MOE_ALIGN" \
-  "(from $DET_MIN tokens), exact qsa top-k $QSA_EXACT_TOPK, ablate $ABL_DESC, table from disk)"
+  "(from $DET_MIN tokens), qsa top-k $QSA_TOPK_DESC, ablate $ABL_DESC, table from disk)"
 
 [ "$WAIT_MIN" = 0 ] && exit 0
 log "waiting for http://127.0.0.1:$PORT/v1/models (the first boot of an image compiles kernels)"
@@ -171,6 +180,17 @@ for _ in $(seq 1 $((WAIT_MIN * 6))); do
       fi
       grep -q "TORCH PATH\|kernel failed" <<< "$boot_log" &&
         log "WARNING: an FP8 HC kernel fell back to torch (slower than BF16): docker logs $NAME 2>&1 | grep 'FP8 HC'"
+    fi
+    if [ "$QSA_TOPK_DESC" != stock ]; then
+      topk_line="$(grep "QSA top-k:" <<< "$boot_log" | tail -1 || true)"
+      if [ -n "$topk_line" ]; then
+        log "qsa top-k: ${topk_line##*QSA top-k: }"
+        grep -q "deterministic kernel did not load" <<< "$boot_log" &&
+          log "WARNING: the deterministic top-k kernel did not load: the exact top-k runs (deterministic, slower" \
+            "long prefill); docker logs $NAME 2>&1 | grep 'QSA top-k'"
+      else
+        log "WARNING: no 'QSA top-k:' line in the boot log; docker logs $NAME 2>&1 | grep -i 'top-k'"
+      fi
     fi
     if [ -n "$ABL_FILE" ]; then
       abl_line="$(grep "ABLATION ON" <<< "$boot_log" | head -1 || true)"
