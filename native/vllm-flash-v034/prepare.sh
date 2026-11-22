@@ -7,12 +7,14 @@
 # does, the original can go.
 #   ./prepare.sh
 set -euo pipefail
+trap 'echo "prepare.sh: stopped at line $LINENO (exit $?)" >&2' ERR
 . "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 need_docker
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "no image $IMAGE: ./build.sh first" >&2; exit 1; }
 [ -d "$MODEL_DIR" ] || { echo "no $MODEL_DIR: download the weights with ../vllm-flash-ar/download.sh" >&2; exit 1; }
 
-n_lean=$(find "$TABLE_DIR" -maxdepth 1 -name '*.safetensors' 2>/dev/null | wc -l)
+n_lean=0
+[ -d "$TABLE_DIR" ] && n_lean=$(find "$TABLE_DIR" -maxdepth 1 -name '*.safetensors' | wc -l)
 if [ "$n_lean" -ge 33 ]; then
   log "lean table: $TABLE_DIR has $n_lean shards, kept"
 else

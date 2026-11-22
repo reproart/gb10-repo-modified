@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stop the container (graceful, 60 s), as ../vllm-flash-ar/stop.sh does.
 set -euo pipefail
+trap 'echo "stop.sh: stopped at line $LINENO (exit $?)" >&2' ERR
 . "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 need_docker
 if docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
