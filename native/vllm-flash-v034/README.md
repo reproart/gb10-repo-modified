@@ -243,6 +243,28 @@ call parses, a quoted `<tool_call>` in the reasoning keeps the answer; chunks of
 all characters), so a build that does not hold stops there. To check on the server:
 `python3 ../bench/consistency.py --only fence`.
 
+## Stage 4: what is left from the dev image (2026-11-22)
+
+Four items of `vllm-flash-ar` were not here yet. Checked against 0.34's source:
+
+- **The metrics sidecar and the idle release** (its patch 13): ported. After
+  `IDLE_RELEASE_SEC` (60) seconds without a request the engine gives torch's cached GPU
+  blocks back and runs `malloc_trim(0)` once; on GB10 that is host memory, and stage 1's
+  bench started with 2-4 GiB free. The allocator gauges are on `METRICS_PORT` (18400). The
+  same `vllm_custom_metrics.py`, started from a hook on 0.34's `Scheduler.__init__`
+  (`src/patch_scheduler_metrics.py`); the dev image's other sources (its PLE mmap counters,
+  mamba guard, pin gauges) do not exist here and are skipped.
+- **The mamba state-copy guard** (patch 7): not ported. 0.34's `v1/worker/mamba_utils.py`
+  already has the race fix it backported (vllm#50729: the overlapping-copy single-CTA path,
+  a snapshot of the accepted counts); what is missing is the block-id bounds check, which on
+  the dev image counted 0 once its block-size fix was in. If a CUDA illegal-memory-access /
+  Xid 31 shows up under load, that is the place.
+- **Never-evict pinning** (patch 6): not ported. Off by default there too (`PIN_PROMPT`
+  empty); it patches the block pool and the scheduler. On request.
+- **A fused ablation projection**: not done. The ablation costs prefill 3-12% here (about a
+  hundred projections a forward, each a few separate kernels); one Triton kernel per
+  projection would cut most of it. On request.
+
 ## Stage 3c: the deterministic top-k kernel (measured 2026-11-22)
 
 Built in the image as planned (`DET_TOPK kernel built OK`, CUDA 13.0's nvcc in the base image,
@@ -352,9 +374,7 @@ What this checkpoint needs on top, all in this folder:
 The model's `config.json` already says `qwen4_exp` (0.34's name for Flash-Next), so no
 rename is needed (MiaAI-Lab's checkpoint did need one).
 
-Not ported yet, so off in this lane: the metrics sidecar, never-evict pinning, the mamba state-copy guard. Each comes over as its own stage
-once the bare lane boots and measures; some may be upstream already (0.34 may not need
-them).
+Not ported (stage 4 has why): never-evict pinning, the mamba state-copy guard's bounds check.
 
 ## Use
 
@@ -391,6 +411,7 @@ src/patch_lm_head_quant.py  the int8 lm_head patch
 src/test_v034_cpu.py      CPU tests of both, of the Dockerfile's mtp.py / hyperconnection.py / ablation steps and of the parser patches
 src/patches/*.v034.patch  blazux's tool-call parser patches 12 and 13, ported to vLLM 0.34.0
 src/check_tool_parser.py  the parser cases the build runs after them
+src/patch_scheduler_metrics.py  starts ../vllm-flash-ar's vllm_custom_metrics (allocator gauges, idle release); test_scheduler_metrics_cpu.py
 src/patch_qsa_topk.py     the QSA block top-k: @jschmied's kernel (QSA_DET_TOPK=1) or exact (QSA_EXACT_TOPK=1); test_qsa_topk_cpu.py
 ../vllm-flash-ar/src/patch_det_moe_align.py  the deterministic MoE alignment (DET_MOE_ALIGN=1, shared)
 ../vllm-flash-ar/src/patch_mtp_draft_vocab.py, draft_vocab_*.npy   the draft head and its id sets (shared)

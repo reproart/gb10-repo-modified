@@ -31,6 +31,10 @@
 #      VLLM_DET_MOE_ALIGN=1) and a deterministic QSA block top-k (src/patch_qsa_topk.py, the
 #      dev image's patch 9 ported to 0.34's _topk: @jschmied's kernel, built below, with
 #      VLLM_QSA_DET_TOPK=1, the exact torch.topk with VLLM_QSA_EXACT_TOPK=1 or as its fallback).
+#   8. the engine-side metrics sidecar and the idle release (../vllm-flash-ar's patch 13, its
+#      vllm_custom_metrics.py), started from a hook on 0.34's Scheduler.__init__
+#      (src/patch_scheduler_metrics.py). Inert unless VLLM_CUSTOM_METRICS_PORT or
+#      VLLM_IDLE_EMPTY_CACHE_SEC is set.
 ARG BASE=vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1
 FROM ${BASE}
 
@@ -62,7 +66,7 @@ RUN set -u; cd /opt/llm/kernel-det/src; export PATH="/usr/local/cuda/bin:$PATH";
 COPY vllm_fp8_hybrid.py patch_lm_head_quant.py patch_mtp_draft_vocab.py gb10_fp8_rowwise.py patch_hc_fp8.py \
      gb10_abliterate.py patch_abliterate.py check_tool_parser.py \
      qwen-tool-preamble.v034.patch qwen-tool-marker-guard.v034.patch \
-     patch_det_moe_align.py patch_qsa_topk.py /tmp/gb10/
+     patch_det_moe_align.py patch_qsa_topk.py vllm_custom_metrics.py patch_scheduler_metrics.py /tmp/gb10/
 RUN set -eu; \
     python3 -c 'import vllm; print("vLLM", vllm.__version__)'; \
     SP="$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirname(vllm.__file__)))')"; \
@@ -103,6 +107,11 @@ RUN set -eu; \
     python3 /tmp/gb10/patch_qsa_topk.py "$Q/ops/qsa_indexer.py"; \
     grep -q "topk_op = _GB10_QSA_DET_OP" "$Q/ops/qsa_indexer.py"; \
     echo "determinism: MoE align + QSA top-k OK ($([ -f /opt/llm/kernel-det/_C_det.so ] && echo 'deterministic kernel' || echo 'exact top-k only'))"; \
+    cp /tmp/gb10/vllm_custom_metrics.py "$SP/vllm_custom_metrics.py"; \
+    python3 /tmp/gb10/patch_scheduler_metrics.py "$SP/vllm/v1/core/sched/scheduler.py"; \
+    grep -q "Scheduler.__init__ = _gb10_init" "$SP/vllm/v1/core/sched/scheduler.py"; \
+    python3 -c "import vllm_custom_metrics, prometheus_client"; \
+    echo "engine metrics + idle release OK"; \
     rm -rf /tmp/gb10
 # serve.sh checks these before it passes DRAFT_VOCAB / DRAFT_HEAD / HC_FP8 / ABLATE (an older image lacks the hook)
-LABEL gb10.draft-head="1" gb10.hc-fp8="1" gb10.ablate="1" gb10.tool-parser="1" gb10.det="2"
+LABEL gb10.draft-head="1" gb10.hc-fp8="1" gb10.ablate="1" gb10.tool-parser="1" gb10.det="2" gb10.metrics="1"

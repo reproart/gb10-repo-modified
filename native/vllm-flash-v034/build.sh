@@ -19,7 +19,8 @@ cp "$V034_ROOT/Dockerfile" "$NATIVE_DIR/vllm-flash-ar/src/vllm_fp8_hybrid.py" "$
   "$NATIVE_DIR/vllm-flash-ar/src/patch_hc_fp8.py" "$NATIVE_DIR/vllm-flash-ar/src/gb10_abliterate.py" \
   "$NATIVE_DIR/vllm-flash-ar/src/patch_abliterate.py" "$V034_ROOT/src/check_tool_parser.py" \
   "$V034_ROOT"/src/patches/*.v034.patch "$NATIVE_DIR/vllm-flash-ar/src/patch_det_moe_align.py" \
-  "$V034_ROOT/src/patch_qsa_topk.py" "$ctx/"
+  "$V034_ROOT/src/patch_qsa_topk.py" "$NATIVE_DIR/vllm-flash-ar/src/vllm_custom_metrics.py" \
+  "$V034_ROOT/src/patch_scheduler_metrics.py" "$ctx/"
 log "building $IMAGE on $ref"
 docker build -t "$IMAGE" --build-arg "BASE=$ref" "$@" "$ctx"
 log "built $IMAGE ($(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)); ./prepare.sh once, then ./serve.sh"

@@ -186,8 +186,12 @@ def _refresh_once() -> None:
     """Pull every source once and update the metrics. Never raises."""
     try:
         _ensure_metrics()
-        # PLE mmap: lifetime counters -> prometheus counter deltas.
-        import vllm_ple_mmap as _pm
+        # PLE mmap: lifetime counters -> prometheus counter deltas (vLLM 0.34 in
+        # ../vllm-flash-v034 reads the table its own way: no such module there).
+        try:
+            import vllm_ple_mmap as _pm
+        except ImportError:
+            _pm = None
         life = getattr(_pm, "_STATS_LIFE", None)
         if life:
             for key, metric in (("calls", "ops"), ("op_ms", "op_ms"),

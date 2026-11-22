@@ -80,6 +80,18 @@ case "$DET_MOE_ALIGN$QSA_DET_TOPK$QSA_EXACT_TOPK" in
        echo "image $IMAGE has no determinism patches (built before stage 3b): ./build.sh first," \
          "or DET_MOE_ALIGN=0 QSA_DET_TOPK=0 QSA_EXACT_TOPK=0" >&2; exit 1 ;; esac ;;
 esac
+METRICS_ARGS=() METRICS_ENVS=()
+if [ "$METRICS_PORT" != 0 ] || [ "$IDLE_RELEASE_SEC" != 0 ]; then
+  if [ "$(image_label gb10.metrics)" = 1 ]; then
+    METRICS_ENVS=("VLLM_IDLE_EMPTY_CACHE_SEC=$IDLE_RELEASE_SEC" "VLLM_CUSTOM_METRICS_PORT=0")
+    if [ "$METRICS_PORT" != 0 ]; then
+      METRICS_ENVS[1]="VLLM_CUSTOM_METRICS_PORT=18400"
+      METRICS_ARGS=(-p "${BIND_ADDR:+$BIND_ADDR:}${METRICS_PORT}:18400")
+    fi
+  else
+    log "NOTE: image $IMAGE predates the engine metrics / idle release (METRICS_PORT, IDLE_RELEASE_SEC): ./build.sh"
+  fi
+fi
 [ "$(image_label gb10.tool-parser)" = 1 ] ||
   log "NOTE: image $IMAGE predates the tool-call parser fixes (stage 3a): a tool-call example in a reply" \
     "can still turn into a call. ./build.sh"
@@ -125,7 +137,7 @@ QSA_TOPK_DESC=stock
 [ "$QSA_EXACT_TOPK" = 1 ] && QSA_TOPK_DESC=exact
 ABL_DESC=off
 [ -n "$ABL_FILE" ] && ABL_DESC="$(basename "$ABL_FILE") (source $ABLATE_SOURCE, alpha $ABLATE_ALPHA, layers $ABLATE_LAYERS, mtp $ABLATE_MTP)"
-ENVS=(VLLM_FP8_HYBRID=1 "VLLM_HC_FP8=$HC_FP8" "VLLM_DET_MOE_ALIGN=$DET_MOE_ALIGN"
+ENVS=(VLLM_FP8_HYBRID=1 "VLLM_HC_FP8=$HC_FP8" ${METRICS_ENVS[@]+"${METRICS_ENVS[@]}"} "VLLM_DET_MOE_ALIGN=$DET_MOE_ALIGN"
   "VLLM_DET_MOE_ALIGN_MIN_TOKENS=$DET_MIN" "VLLM_QSA_DET_TOPK=$QSA_DET_TOPK" "VLLM_QSA_EXACT_TOPK=$QSA_EXACT_TOPK" ${DRAFT_ENVS[@]+"${DRAFT_ENVS[@]}"} ${ABL_ENVS[@]+"${ABL_ENVS[@]}"})
 [ -n "$API_KEY" ] && ENVS+=("VLLM_API_KEY=$API_KEY")
 # shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list
@@ -145,12 +157,13 @@ docker run -d --name "$NAME" --restart "$RESTART" \
   --log-opt max-size=10m --log-opt max-file=3 \
   --health-cmd "$HEALTH_CMD" --health-start-period=15m --health-interval=60s --health-timeout=15s --health-retries=10 \
   -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" -v "$VIEW_DIR:/model-view:ro" \
-  ${VOCAB_MOUNT[@]+"${VOCAB_MOUNT[@]}"} ${ABL_MOUNT[@]+"${ABL_MOUNT[@]}"} \
+  ${VOCAB_MOUNT[@]+"${VOCAB_MOUNT[@]}"} ${ABL_MOUNT[@]+"${ABL_MOUNT[@]}"} ${METRICS_ARGS[@]+"${METRICS_ARGS[@]}"} \
   "${ENV_ARGS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null
 log "$NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (vLLM $BASE_TAG, ctx $CTX, mtp $MTP, seqs $SEQS," \
   "chunk $BATCHED_TOKENS, kv $KV_BYTES, prefix cache $PREFIX_CACHE, ssm ${MAMBA_SSM_DTYPE:-checkpoint}," \
   "draft vocab ${DRAFT_VOCAB:-0}, draft head $DRAFT_HEAD, hc fp8 $HC_FP8, det moe align $DET_MOE_ALIGN" \
-  "(from $DET_MIN tokens), qsa top-k $QSA_TOPK_DESC, ablate $ABL_DESC, table from disk)"
+  "(from $DET_MIN tokens), qsa top-k $QSA_TOPK_DESC, ablate $ABL_DESC, metrics :$METRICS_PORT," \
+  "idle release ${IDLE_RELEASE_SEC}s, table from disk)"
 
 [ "$WAIT_MIN" = 0 ] && exit 0
 log "waiting for http://127.0.0.1:$PORT/v1/models (the first boot of an image compiles kernels)"
