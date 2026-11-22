@@ -20,6 +20,11 @@ fast/patch_align.py, Apache-2.0; ~3.7% prefill there); written here against the
 moe_align_block_size of this image's vLLM, located by name rather than by exact text, and
 checked on CPU against a reference of the kernel's layout (src/test_det_moe_align_cpu.py).
 
+vLLM 0.34 (../vllm-flash-v034) declares the function three times with @overload before the
+implementation and passes the kernel a scatter_idx: the patch wraps the implementation's call,
+and a request for scatter_idx (the deterministic path does not produce one) keeps the kernel.
+Its Marlin MoE (the backend 0.34 picks for int4 experts on GB10) asks for neither.
+
 usage: patch_det_moe_align.py <path to vllm/model_executor/layers/fused_moe/moe_align_block_size.py>
 """
 import ast
@@ -71,8 +76,14 @@ NEEDED = ("topk_ids", "num_experts", "block_size", "sorted_ids", "expert_ids", "
 def patch(src: str) -> str:
     if MARK in src:
         return src
-    fn = re.search(r"^def moe_align_block_size\(", src, re.M)
-    assert fn, "def moe_align_block_size( not found"
+    # the implementation: the def that is not an @overload stub (vLLM 0.34 has three before it)
+    fn = None
+    for cand in re.finditer(r"^def moe_align_block_size\(", src, re.M):
+        prev = src[:cand.start()].rstrip("\n").rsplit("\n", 1)[-1].strip()
+        if prev not in ("@overload", "@typing.overload"):
+            fn = cand
+            break
+    assert fn, "def moe_align_block_size( (the implementation) not found"
     # the kernel call inside it: "<indent>ops.moe_align_block_size(\n ... \n<indent>)\n"
     call = re.compile(r"^(?P<ind>[ ]+)ops\.moe_align_block_size\(\n(?P<args>.*?)\n(?P=ind)\)\n", re.S | re.M)
     m = call.search(src, fn.end())

@@ -31,7 +31,8 @@ EXPECT = ("input_mix_weight_up", "input_mix_weight_down", "ReplicatedLinear")
 
 
 def patch(path: str) -> str:
-    src = open(path).read()
+    with open(path) as f:
+        src = f.read()
     if MARK in src:
         return "already installed"
     missing = [s for s in EXPECT if s not in src]
@@ -39,7 +40,8 @@ def patch(path: str) -> str:
         raise SystemExit(f"patch_hc_fp8: {path} lacks {missing}: not the hyperconnection.py this was written for")
     out = src.rstrip("\n") + HOOK
     ast.parse(out)
-    open(path, "w").write(out)
+    with open(path, "w") as f:
+        f.write(out)
     return "INSTALLED"
 
 
