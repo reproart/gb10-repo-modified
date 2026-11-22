@@ -151,6 +151,9 @@ export ABLATE_SOURCE="${ABLATE_SOURCE:-mean}"
 export ABLATE_ALPHA="${ABLATE_ALPHA:-1}"
 export ABLATE_LAYERS="${ABLATE_LAYERS:-all}"
 export ABLATE_MTP="${ABLATE_MTP:-1}"
+# ABLATE_FUSED: 1 (default) = each projection one Triton kernel (row read once, written once;
+# images built after 2026-11-22); 0 = the torch ops, for an A/B.
+export ABLATE_FUSED="${ABLATE_FUSED:-1}"
 # docker --cpuset-cpus; empty = all cores (as the recipe measured). 5-9,15-19 are
 # GB10's Cortex-X925 cores (blazux's concurrent profile pins to them).
 export CPUSET="${CPUSET:-}"

@@ -127,6 +127,9 @@ export ABLATE_SOURCE="${ABLATE_SOURCE:-mean}"
 export ABLATE_ALPHA="${ABLATE_ALPHA:-1}"
 export ABLATE_LAYERS="${ABLATE_LAYERS:-all}"
 export ABLATE_MTP="${ABLATE_MTP:-1}"
+# ABLATE_FUSED: 1 (default) = each projection one Triton kernel (row read once, written once);
+# 0 = the torch ops (a matrix-vector product, an outer product, a subtraction), for an A/B.
+export ABLATE_FUSED="${ABLATE_FUSED:-1}"
 # safetensors: the disk-offloaded table is read through the loader's mmap views, which
 # fastsafetensors (../vllm-flash-ar's loader) does not hand over.
 export LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"

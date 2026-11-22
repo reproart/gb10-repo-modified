@@ -114,7 +114,8 @@ if [ -n "$ABL_FILE" ]; then
     echo "image $IMAGE has no ablation hook (built before stage 2): ./build.sh first, or ABLATE=0" >&2; exit 1; }
   ABL_MOUNT=(-v "$(cd "$(dirname "$ABL_FILE")" && pwd):/ablate:ro")
   ABL_ENVS=("VLLM_ABLATE=/ablate/$(basename "$ABL_FILE")" "VLLM_ABLATE_SOURCE=$ABLATE_SOURCE"
-            "VLLM_ABLATE_ALPHA=$ABLATE_ALPHA" "VLLM_ABLATE_LAYERS=$ABLATE_LAYERS" "VLLM_ABLATE_MTP=$ABLATE_MTP")
+            "VLLM_ABLATE_ALPHA=$ABLATE_ALPHA" "VLLM_ABLATE_LAYERS=$ABLATE_LAYERS" "VLLM_ABLATE_MTP=$ABLATE_MTP"
+            "VLLM_ABLATE_FUSED=$ABLATE_FUSED")
 fi
 
 if [ "$MEM_PREP" = 1 ]; then "$NATIVE_DIR/scripts/mem-prep.sh" prep || true; fi
@@ -136,7 +137,7 @@ QSA_TOPK_DESC=stock
 [ "$QSA_DET_TOPK" = 1 ] && QSA_TOPK_DESC=deterministic
 [ "$QSA_EXACT_TOPK" = 1 ] && QSA_TOPK_DESC=exact
 ABL_DESC=off
-[ -n "$ABL_FILE" ] && ABL_DESC="$(basename "$ABL_FILE") (source $ABLATE_SOURCE, alpha $ABLATE_ALPHA, layers $ABLATE_LAYERS, mtp $ABLATE_MTP)"
+[ -n "$ABL_FILE" ] && ABL_DESC="$(basename "$ABL_FILE") (source $ABLATE_SOURCE, alpha $ABLATE_ALPHA, layers $ABLATE_LAYERS, mtp $ABLATE_MTP, fused $ABLATE_FUSED)"
 ENVS=(VLLM_FP8_HYBRID=1 "VLLM_HC_FP8=$HC_FP8" ${METRICS_ENVS[@]+"${METRICS_ENVS[@]}"} "VLLM_DET_MOE_ALIGN=$DET_MOE_ALIGN"
   "VLLM_DET_MOE_ALIGN_MIN_TOKENS=$DET_MIN" "VLLM_QSA_DET_TOPK=$QSA_DET_TOPK" "VLLM_QSA_EXACT_TOPK=$QSA_EXACT_TOPK" ${DRAFT_ENVS[@]+"${DRAFT_ENVS[@]}"} ${ABL_ENVS[@]+"${ABL_ENVS[@]}"})
 [ -n "$API_KEY" ] && ENVS+=("VLLM_API_KEY=$API_KEY")
@@ -210,6 +211,11 @@ for _ in $(seq 1 $((WAIT_MIN * 6))); do
       if [ -n "$abl_line" ]; then
         log "ablation: ${abl_line##*ABLATION ON (VLLM_ABLATE): }"
         grep -q "MTP draft layer [0-9]* projects" <<< "$boot_log" && log "ablation: the MTP draft projects its inputs too"
+        if grep -q "fused projection kernel" <<< "$boot_log"; then
+          log "WARNING: the fused ablation kernel failed, torch ops instead: docker logs $NAME 2>&1 | grep 'fused projection'"
+        elif grep -q "projections on the fused kernel" <<< "$boot_log"; then
+          log "ablation: projections on the fused kernel"
+        fi
       else
         log "WARNING: ABLATE=$ABLATE but no 'ABLATION ON' line in the boot log: the answers may be the stock" \
           "model's; docker logs $NAME 2>&1 | grep ABLATION"

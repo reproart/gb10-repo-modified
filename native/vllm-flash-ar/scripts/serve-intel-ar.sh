@@ -239,7 +239,7 @@ if [ -n "$ABL_FILE" ]; then
   ABL_MOUNT=(-v "$(cd "$(dirname "$ABL_FILE")" && pwd):/ablate:ro")
   ABL_ENVS=("VLLM_ABLATE=/ablate/$(basename "$ABL_FILE")" "VLLM_ABLATE_SOURCE=${ABLATE_SOURCE:-mean}"
             "VLLM_ABLATE_ALPHA=${ABLATE_ALPHA:-1}" "VLLM_ABLATE_LAYERS=${ABLATE_LAYERS:-all}"
-            "VLLM_ABLATE_MTP=${ABLATE_MTP:-1}")
+            "VLLM_ABLATE_MTP=${ABLATE_MTP:-1}" "VLLM_ABLATE_FUSED=${ABLATE_FUSED:-1}")
 fi
 
 # Image pre-flight, before the running container is touched. Two knobs depend

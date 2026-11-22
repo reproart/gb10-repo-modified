@@ -24,6 +24,9 @@ and mtp.py as the Dockerfile leaves them before this patch (int8 lm_head sed, dr
    (fc_hidden's streams and fc_embedding's pending block output) projected, off bit-identical,
    one compiled graph.
 """
+import os as _os
+
+_os.environ.setdefault("TRITON_INTERPRET", "1")   # the fused kernel in Triton's interpreter, on CPU
 import ast
 import builtins
 import contextlib
@@ -358,6 +361,45 @@ class ProjectTest(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------- 4. the model
+class FusedTest(unittest.TestCase):
+    """The fused projection kernel (gb10::abl_project) against the torch ops, in Triton's
+    interpreter (needs: pip install triton), and the custom op inside a compiled graph."""
+
+    def setUp(self):
+        try:
+            import triton  # noqa: F401
+        except ImportError:
+            self.skipTest("needs triton")
+
+    def test_matches_torch(self):
+        g = torch.Generator().manual_seed(11)
+        for rank, streams, rows, h in ((1, 1, 5, 2560), (2, 4, 3, 64), (3, 1, 7, 100)):
+            q, _ = torch.linalg.qr(torch.randn(h, rank, generator=g, dtype=torch.float64))
+            u = (q.t() * 0.9).float()
+            x = torch.randn(rows, streams * h, generator=g) * 3
+            want = ga.project_torch(x.double(), u.double()).float()
+            got = ga.fused_project(x, u)
+            torch.testing.assert_close(got, want, rtol=1e-5, atol=1e-4)
+            self.assertTrue(torch.equal(got, ga.fused_project(x, u)))          # the same bits again
+            xb = x.to(torch.bfloat16)
+            gb = ga.fused_project(xb, u.to(torch.bfloat16))
+            self.assertEqual(gb.dtype, torch.bfloat16)
+            torch.testing.assert_close(gb.float(), want, rtol=2e-2, atol=5e-2)
+        nc = torch.randn(4, 2 * 64, generator=g)[:, ::2]                        # a strided view
+        u = torch.nn.functional.normalize(torch.randn(1, 64, generator=g), dim=1)
+        torch.testing.assert_close(ga.fused_project(nc, u), ga.project_torch(nc, u), rtol=1e-5, atol=1e-5)
+        self.assertEqual(ga.fused_project(torch.empty(0, 64), u).shape, (0, 64))
+
+    def test_custom_op_compiles(self):
+        ga._register_op()
+        g = torch.Generator().manual_seed(12)
+        u = torch.nn.functional.normalize(torch.randn(1, 32, generator=g), dim=1)
+        x = torch.randn(6, 4 * 32, generator=g)
+        fn = torch.compile(lambda a, b: torch.ops.gb10.abl_project(a, b) * 2, fullgraph=True,
+                           backend="aot_eager")
+        torch.testing.assert_close(fn(x, u), ga.project_torch(x, u) * 2)   # CPU: the torch ops inside
+
+
 class ModelTest(EnvCase):
     @classmethod
     def setUpClass(cls):
