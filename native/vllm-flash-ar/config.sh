@@ -111,14 +111,15 @@ export DET_MOE_ALIGN_MIN_TOKENS="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
 # differ a little from BF16's (deterministically). 0 = BF16 as shipped (README patch 16).
 export HC_FP8="${HC_FP8:-1}"
 
-# The MTP drafter's vocabulary (patch 10): 1 = the shipped 65,536 English/code ids, which
-# cover 47-54% of the tokens of Russian prose (a token outside the set is never drafted);
-# ru = 65,536 ids with 16,384 Russian ones in place of the least used English/code ones
-# (99.8% of Russian prose, English and code within 0.2 points); ru-wide = all of 1's ids
-# plus those, 81,920 (English exactly as 1, a 25% larger draft-head read); 0 = the full
-# vocabulary; a path under /model = your own (tools/build_draft_vocab.py). Not measured on
-# the GX10 yet: ../bench/perf.py --only decode decode-ru with 1, ru and ru-wide.
-export DRAFT_VOCAB="${DRAFT_VOCAB:-1}"
+# The MTP drafter's vocabulary (patch 10): ru (default since 2026-11-22) = 65,536 ids, the
+# shipped English/code set with 16,384 Russian tokens in place of its least used ones;
+# 1 = that shipped set, which covers 47-54% of the tokens of Russian prose (a token outside
+# the set is never drafted); ru-wide = all of 1's ids plus the Russian ones, 81,920;
+# 0 = the full vocabulary; a path under /model = your own (tools/build_draft_vocab.py).
+# Measured on the GX10 (MTP=4, ../bench/perf.py --only decode decode-ru), code / Russian
+# prose: 1 80.1 / 29.4 tok/s (13% of Russian drafts accepted), ru 79.6 / 50.2 (40%),
+# ru-wide 77.3 / 49.7. Outputs are the target's either way; only drafting changes.
+export DRAFT_VOCAB="${DRAFT_VOCAB:-ru}"
 
 # Refusal-direction ablation at inference (src/patch_abliterate.py, README patch 17), off by
 # default, the same knob as the SGLang Flash-Next profile (../models/qwen3.8-flash-next.sh):

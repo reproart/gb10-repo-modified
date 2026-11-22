@@ -250,7 +250,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `PREFIX_CACHE` | `1` | Prefix caching — fixed and recommended on this fork (bare script: `0`) |
 | `DET_TOPK` | `1` | Deterministic QSA top-k **kernel** (patch 9; @jschmied, vllm#55122): identical output at T=0 at full prefill speed. `0` = stock kernel (non-deterministic, may drop attention candidates) |
 | `EXACT_TOPK` | `0` | `1` = exact `torch.topk` fallback (patch 9; deterministic, −20–40% on long prefill). Wins over `DET_TOPK` when set |
-| `DRAFT_VOCAB` | `1` | The MTP drafter scores only the 65,536 most frequent tokens (patch 10; from upstream blazux): +3–5% decode on English/code, draft acceptance unchanged there (thinking on or off). The shipped id set is English/code-weighted — **CJK-heavy output loses acceptance and decode speed with it, and Russian too: it covers 47–54% of Russian prose tokens**. `ru` = a 65,536-id set with 16,384 Russian tokens in place of the least used English/code ones (99.8% of Russian prose, English and code within 0.2 points); `ru-wide` = all of `1` plus those, 81,920 ids (a 25% larger head read); `0` = full vocabulary; or build your own with `tools/build_draft_vocab.py` over your traffic (patch 10) |
+| `DRAFT_VOCAB` | `ru` | The MTP drafter scores only 65,536 tokens of the 248,320 (patch 10; from upstream blazux): +3–5% decode on English/code. `ru` (default since 2026-11-22): the shipped English/code set with 16,384 Russian tokens in place of its least used ones — Russian prose 50.2 tok/s against 29.4 with `1`, code 79.6 against 80.1 (MTP=4). `1` = the shipped set, which covers 47–54% of Russian prose tokens (**CJK-heavy output loses acceptance with it too**); `ru-wide` = all of `1` plus the Russian ones, 81,920 ids (no better on Russian, code 77.3); `0` = full vocabulary; or build your own with `tools/build_draft_vocab.py` over your traffic |
 | `DRAFT_HEAD` | `int8` | The drafter's head as the target has it: int8 GPTQ-Marlin, shared (`DRAFT_VOCAB=0`) or, with `DRAFT_VOCAB`, its own rows for those ids (160 MiB per draft step; images built before 2026-11-03 made that slice bf16, 320 MiB). `bf16` = that bf16 slice, for comparison. `int4` = a private int4 g128 RTN GPTQ-Marlin copy of the full-vocabulary head (built at first use, ~313 MiB vs 616 MiB read per draft step): measured a wash, tg unchanged within noise, draft acceptance 1–8 points lower (see the MTP options section) |
 | `PIN_PROMPT` / `PIN_MAX_FRACTION` | unset / `0.25` | Never-evict pin (patch 6); needs `PREFIX_CACHE=1` (the launcher warns otherwise). Use a distinctive substring of a few dozen characters — a word or two matches unrelated prompts |
 | `API_KEY` | unset | Non-empty → Bearer auth on the API (vLLM `--api-key`; generate with `openssl rand -hex 32`). `/health` stays open; the key is visible in `docker inspect` |
@@ -707,8 +707,23 @@ Throughput table).
   | vLLM's `v1/` source (Python, 1.4M tokens) | 98.02% | 97.98% | 98.03% |
   | this README (English technical prose, 28K tokens) | 99.03% | 98.84% | 99.03% |
 
-  Not measured on the GX10 yet: `../bench/perf.py --only decode decode-ru` with
-  `DRAFT_VOCAB=1`, `ru` and `ru-wide` (section 2b decodes Russian prose).
+  Measured (2026-11-22, GX10, `MTP=4`, `SEQS=8`, one boot each,
+  `../bench/perf.py --only decode decode-ru`: median of 5 code answers, of 3
+  Russian ones):
+
+  | `DRAFT_VOCAB` | code | Russian prose |
+  |---|---|---|
+  | `1` (shipped) | 80.1 tok/s (4.22 tok/step, 80% of drafts accepted) | 29.4 tok/s (1.52, **13%**) |
+  | `ru` | 79.6 (4.19, 80%) | **50.2** (2.58, 40%) |
+  | `ru-wide` | 77.3 (4.22, 80%) | 49.7 (2.63, 41%) |
+
+  Russian **+71%**, code within run-to-run spread: `ru` is the default since.
+  `ru-wide` buys nothing on Russian and its larger head read costs code ~3%.
+  The Russian answers were 280 / 351 / 364 tokens long: greedy output moves a
+  little with the verify batches' shapes (each configuration accepts different
+  runs of drafts), and stays the same run to run within one. Russian prose
+  drafts less well than code even with every token available (40% against 80%
+  a draft, like English prose's 44% in the table below).
 - **`DRAFT_HEAD=int4`** (same patch) — the other way to halve the head read
   without touching the vocabulary: a private int4 g128 RTN copy of the full head,
   quantized with vLLM's own `marlin_quantize` at first use (~23 s) from the
