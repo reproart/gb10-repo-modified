@@ -725,6 +725,13 @@ Throughput table).
   runs of drafts), and stays the same run to run within one. Russian prose
   drafts less well than code even with every token available (40% against 80%
   a draft, like English prose's 44% in the table below).
+
+  The same file serves `../vllm-flash-v034/` (vLLM 0.34, 2026-11-22): it puts the
+  hook on whichever `Qwen*MTP` class the file has (`Qwen4ExpMTP` there) and reads
+  the Marlin helpers' signatures at build time (0.34 has no act-order: no
+  permutation, `g_idx` or `is_k_full`); on this image it makes the calls it
+  always made. `src/test_draft_head_cpu.py` runs every case on both signatures
+  and patches both engines' `mtp.py`.
 - **`DRAFT_HEAD=int4`** (same patch) — the other way to halve the head read
   without touching the vocabulary: a private int4 g128 RTN copy of the full head,
   quantized with vLLM's own `marlin_quantize` at first use (~23 s) from the

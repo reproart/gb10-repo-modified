@@ -23,8 +23,9 @@ export TABLE_SRC_DIR="${TABLE_SRC_DIR:-/models/ple-table-fp8}"
 export TABLE_DIR="${TABLE_DIR:-/models/ple-table-fp8-lean}"
 export VIEW_DIR="${VIEW_DIR:-$HOME/.cache/gb10/vllm-flash-v034/model-view}"
 
-# --- The image: vllm/vllm-openai:v0.34.0 pinned by digest (image.lock, committed) plus two
-# build-time patches (./build.sh): the int4+fp8 hybrid dispatch and the int8 lm_head.
+# --- The image: vllm/vllm-openai:v0.34.0 pinned by digest (image.lock, committed) plus
+# build-time patches (./build.sh): the int4+fp8 hybrid dispatch, the int8 lm_head, the private
+# MTP draft head.
 export BASE_IMAGE="${BASE_IMAGE:-vllm/vllm-openai}"
 export BASE_TAG="${BASE_TAG:-v0.34.0}"
 BASE_DIGEST="$(cat "$V034_ROOT/image.lock" 2>/dev/null || true)"
@@ -52,6 +53,19 @@ export PREFIX_CACHE="${PREFIX_CACHE:-1}"
 # The GDN state's dtype (--mamba-ssm-cache-dtype); empty = the checkpoint's float32. Set it
 # the way ../vllm-flash-ar runs (bfloat16 there once its A/B says so).
 export MAMBA_SSM_DTYPE="${MAMBA_SSM_DTYPE:-}"
+# The MTP drafter's own head (../vllm-flash-ar's patch 10; the target verifies every drafted
+# token, so outputs never change, only how many drafts are accepted). Without it each draft
+# step reads the whole int8 head, 248,320 rows (616 MiB): 68.8 / 43.1 tok/s code / Russian at
+# stage 0, against 79.6 / 50.2 on ../vllm-flash-ar with it.
+# DRAFT_VOCAB: the ids the drafter scores, every other id -inf; their int8 rows on the same
+# Marlin kernel (65,536 rows: 160 MiB per draft step). ru (default) = English, code and
+# Russian (../vllm-flash-ar/src/draft_vocab_ru_65536.npy), ru-wide = 81,920 of them, 1 = the
+# English/code set, a path = your own ids.npy (../vllm-flash-ar/tools/build_draft_vocab.py),
+# 0 = the whole head.
+export DRAFT_VOCAB="${DRAFT_VOCAB:-ru}"
+# DRAFT_HEAD: int8 = the head's own precision (default); int4 = a private int4 g128 copy of
+# the head (the slice with DRAFT_VOCAB, else every row); bf16 = the slice in bf16 (compare).
+export DRAFT_HEAD="${DRAFT_HEAD:-int8}"
 # safetensors: the disk-offloaded table is read through the loader's mmap views, which
 # fastsafetensors (../vllm-flash-ar's loader) does not hand over.
 export LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"

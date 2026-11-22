@@ -28,6 +28,29 @@ done
 # The view follows the folders as they are now (cheap: links and two JSON files).
 python3 "$V034_ROOT/src/make_model_view.py" "$MODEL_DIR" "$TABLE_DIR" "$VIEW_DIR"
 
+# The drafter's own head: the id set mounted read-only at /opt/llm/ (the image has none).
+DRAFT_ENVS=() VOCAB_MOUNT=()
+case "$DRAFT_VOCAB" in
+  0|"") ;;
+  1) vocab_src="$NATIVE_DIR/vllm-flash-ar/src/draft_vocab_65536.npy" ;;
+  ru) vocab_src="$NATIVE_DIR/vllm-flash-ar/src/draft_vocab_ru_65536.npy" ;;
+  ru-wide) vocab_src="$NATIVE_DIR/vllm-flash-ar/src/draft_vocab_ru_81920.npy" ;;
+  *) vocab_src="$DRAFT_VOCAB" ;;
+esac
+if [ "${DRAFT_VOCAB:-0}" != 0 ]; then
+  [ -f "$vocab_src" ] || { echo "DRAFT_VOCAB=$DRAFT_VOCAB: no file $vocab_src" >&2; exit 1; }
+  vocab_src="$(cd "$(dirname "$vocab_src")" && pwd)/$(basename "$vocab_src")"
+  VOCAB_MOUNT=(-v "$vocab_src:/opt/llm/$(basename "$vocab_src"):ro")
+  DRAFT_ENVS+=("VLLM_MTP_DRAFT_VOCAB=/opt/llm/$(basename "$vocab_src")")
+fi
+case "$DRAFT_HEAD" in
+  int8) ;;
+  int4|bf16) DRAFT_ENVS+=("VLLM_MTP_DRAFT_HEAD=$DRAFT_HEAD") ;;
+  *) echo "DRAFT_HEAD=$DRAFT_HEAD: int8, int4 or bf16" >&2; exit 1 ;;
+esac
+[ "$DRAFT_HEAD" = bf16 ] && [ "${DRAFT_VOCAB:-0}" = 0 ] && {
+  echo "DRAFT_HEAD=bf16 is a DRAFT_VOCAB slice in bf16: set DRAFT_VOCAB too" >&2; exit 1; }
+
 if [ "$MEM_PREP" = 1 ]; then "$NATIVE_DIR/scripts/mem-prep.sh" prep || true; fi
 
 read -r -a SERVED_NAMES <<< "$SERVED_NAME"
@@ -43,7 +66,7 @@ if [ "$PREFIX_CACHE" = 1 ]; then ARGS+=(--enable-prefix-caching); else ARGS+=(--
 # shellcheck disable=SC2206  # EXTRA is a flag list, split on purpose
 ARGS+=(${EXTRA:-})
 
-ENVS=(VLLM_FP8_HYBRID=1)
+ENVS=(VLLM_FP8_HYBRID=1 ${DRAFT_ENVS[@]+"${DRAFT_ENVS[@]}"})
 [ -n "$API_KEY" ] && ENVS+=("VLLM_API_KEY=$API_KEY")
 # shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list
 EXTRA_ENVS=(${EXTRA_ENV:-})
@@ -62,9 +85,11 @@ docker run -d --name "$NAME" --restart "$RESTART" \
   --log-opt max-size=10m --log-opt max-file=3 \
   --health-cmd "$HEALTH_CMD" --health-start-period=15m --health-interval=60s --health-timeout=15s --health-retries=10 \
   -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" -v "$VIEW_DIR:/model-view:ro" \
+  ${VOCAB_MOUNT[@]+"${VOCAB_MOUNT[@]}"} \
   "${ENV_ARGS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null
 log "$NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (vLLM $BASE_TAG, ctx $CTX, mtp $MTP, seqs $SEQS," \
-  "chunk $BATCHED_TOKENS, kv $KV_BYTES, prefix cache $PREFIX_CACHE, ssm ${MAMBA_SSM_DTYPE:-checkpoint}, table from disk)"
+  "chunk $BATCHED_TOKENS, kv $KV_BYTES, prefix cache $PREFIX_CACHE, ssm ${MAMBA_SSM_DTYPE:-checkpoint}," \
+  "draft vocab ${DRAFT_VOCAB:-0}, draft head $DRAFT_HEAD, table from disk)"
 
 [ "$WAIT_MIN" = 0 ] && exit 0
 log "waiting for http://127.0.0.1:$PORT/v1/models (the first boot of an image compiles kernels)"

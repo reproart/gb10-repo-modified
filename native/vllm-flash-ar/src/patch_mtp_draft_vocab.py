@@ -29,12 +29,21 @@ marlin_quantize (chunked packing is bit-identical to whole-tensor packing). The 
 takes the selected columns of qweight/scales as they are and repacks them for Marlin the way
 vLLM loads the target's head (gptq_marlin_repack, marlin_permute_scales).
 
-usage: patch_mtp_draft_vocab.py <path to vllm/models/qwen3_8_flash_next/nvidia/mtp.py>
+Two engines (vllm-flash-ar's pinned image, vllm-flash-v034's vLLM 0.34): the hook goes on the
+file's one Qwen*MTP class (Qwen3_8FlashNextMTP, Qwen4ExpMTP) and reads the Marlin helpers'
+signatures once, at the build: the pinned image's take a permutation, g_idx and act_order,
+0.34's do not (no act-order there). The calls on the pinned image are the ones it always made.
+On both the first draft logits come from the profiling run, eager, before any CUDA graph is
+captured, so the head is built there; a first call inside a capture keeps the shared head for
+that graph (correct, only slower) and says so.
+
+usage: patch_mtp_draft_vocab.py <path to .../nvidia/mtp.py>
 Inert unless VLLM_MTP_DRAFT_VOCAB or VLLM_MTP_DRAFT_HEAD is set at runtime.
 """
+import ast
+import re
 import sys
 
-TARGET = sys.argv[1]
 MARK = "qwen38-flash-dgx: private MTP draft head"
 HOOK = '''
 
@@ -49,6 +58,13 @@ _DV_CHUNK = 16384
 def _dv_compute_logits(self, hidden_states: torch.Tensor, spec_step_idx: int = 0):
     st = getattr(self, "_dv_state", None)
     if st is None:
+        if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
+            # building reads the checkpoint and copies to the GPU, which a capture cannot hold
+            if not getattr(self, "_dv_capture_warned", False):
+                self._dv_capture_warned = True
+                _dv_logger.warning("MTP private draft head: first called inside a CUDA graph capture; "
+                                   "that graph keeps the shared head")
+            return _dv_shared_compute_logits(self, hidden_states, spec_step_idx)
         st = self._dv_state = _dv_build(self, hidden_states)
     ids, head, vocab = st
     red = head(hidden_states)
@@ -103,39 +119,27 @@ def _dv_build(self, hidden_states):
 
     if int4:
         from vllm.scalar_type import scalar_types as _st
-        from vllm.model_executor.layers.quantization.utils.marlin_utils_test import marlin_quantize as _mq
-        from vllm.model_executor.layers.quantization.utils.marlin_utils import (
-            marlin_make_workspace_new as _mws, apply_gptq_marlin_linear as _mapply)
+        from vllm.model_executor.layers.quantization.utils.marlin_utils import marlin_make_workspace_new as _mws
         qws, scs = [], []
         for i in range(0, n, _DV_CHUNK):
             wt = rows(sel[i:i + _DV_CHUNK]).to(dev).t().contiguous()      # [in, chunk] bf16
-            _, qw, s, _, _, _ = _mq(wt, _st.uint4b8, 128, False)
+            qw, s = _dv_quantize(wt, _st.uint4b8, 128)
             qws.append(qw); scs.append(s)
             del wt
         qw = torch.cat(qws, 1).contiguous(); sc = torch.cat(scs, 1).contiguous()
         del qws, scs
-        ws = _mws(dev)
-        e = torch.empty(0, dtype=torch.int, device=dev)
-
-        def apply(h, qw=qw, sc=sc, ws=ws, e=e, n=n, k=in_f):
-            return _mapply(h.to(sc.dtype), qw, sc, e, e, e, ws, _st.uint4b8, n, k, True)
+        apply = _dv_linear(qw, sc, _mws(dev), _st.uint4b8, n, in_f)
         bytes_ = qw.numel() * 4 + sc.numel() * sc.element_size()
         kind = "int4 g128 RTN GPTQ-Marlin"
     elif int8:
-        from vllm import _custom_ops as _ops
         from vllm.scalar_type import scalar_types as _st
         from vllm.model_executor.layers.quantization.utils.marlin_utils import (
-            marlin_make_workspace_new as _mws, marlin_permute_scales as _mps,
-            apply_gptq_marlin_linear as _mapply)
+            marlin_make_workspace_new as _mws, marlin_permute_scales as _mps)
         qc, sc = cols(sel)                        # the head's own int8 rows: [in/4, n] int32, [in/group, n]
-        e = torch.empty(0, dtype=torch.int, device=dev)
-        qw = _ops.gptq_marlin_repack(qc.to(dev).contiguous(), e, in_f, n, 8)
+        qw = _dv_repack(qc.to(dev).contiguous(), in_f, n, 8)
         sc = _mps(sc.to(device=dev, dtype=hidden_states.dtype).contiguous(), in_f, n, group)
         del qc
-        ws = _mws(dev)
-
-        def apply(h, qw=qw, sc=sc, ws=ws, e=e, n=n, k=in_f):
-            return _mapply(h.to(sc.dtype), qw, sc, e, e, e, ws, _st.uint8b128, n, k, True)
+        apply = _dv_linear(qw, sc, _mws(dev), _st.uint8b128, n, in_f)
         bytes_ = qw.numel() * 4 + sc.numel() * sc.element_size()
         kind = "int8 GPTQ-Marlin (the target head's own rows)"
     else:
@@ -168,6 +172,42 @@ def _dv_build(self, hidden_states):
                     full_bytes / 2**20, bytes_ / 2**20, _time.time() - t0)
     ids_t = torch.as_tensor(ids, device=dev) if ids is not None else None
     return ids_t, apply, vocab
+
+
+def _dv_old_api(fn, name, n_required):
+    """Whether a Marlin helper is the pinned image's: it has the act-order parameter (perm, g_idx,
+    act_order) or that image's number of required ones (repack 5, apply 11, quantize 4; 0.34's
+    take 4, 8, 3)."""
+    import inspect as _inspect
+    try:
+        ps = _inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in ps or sum(p.default is p.empty for p in ps.values()) >= n_required
+
+
+def _dv_repack(q, k, n, bits):
+    from vllm import _custom_ops as _ops
+    fn = _ops.gptq_marlin_repack
+    if _dv_old_api(fn, "perm", 5):  # pinned image: an empty permutation (no act-order)
+        return fn(q, torch.empty(0, dtype=torch.int, device=q.device), k, n, bits)
+    return fn(q, k, n, bits)
+
+
+def _dv_quantize(wt, wtype, group):
+    """bf16 [in, n] -> Marlin-packed weight and permuted scales (RTN, symmetric)."""
+    from vllm.model_executor.layers.quantization.utils.marlin_utils_test import marlin_quantize as fn
+    out = fn(wt, wtype, group, False) if _dv_old_api(fn, "act_order", 4) else fn(wt, wtype, group)
+    return out[1], out[2]
+
+
+def _dv_linear(qw, sc, ws, wtype, n, k):
+    """h -> h @ W^T on Marlin, W symmetric (an empty zero point), no act-order."""
+    from vllm.model_executor.layers.quantization.utils.marlin_utils import apply_gptq_marlin_linear as fn
+    e = torch.empty(0, dtype=torch.int, device=qw.device)
+    if _dv_old_api(fn, "g_idx", 11):  # pinned image: zp, g_idx, g_idx_sort_indices empty; is_k_full
+        return lambda h: fn(h.to(sc.dtype), qw, sc, e, e, e, ws, wtype, n, k, True)
+    return lambda h: fn(h.to(sc.dtype), qw, sc, e, ws, wtype, n, k)
 
 
 def _dv_gptq_rows():
@@ -221,16 +261,43 @@ if _dv_head_env == "bf16" and not _dv_os.environ.get("VLLM_MTP_DRAFT_VOCAB"):
     # a full-vocabulary bf16 copy of the head (~1.2 GiB) would be slower than sharing the int8 one
     _dv_logger.warning("VLLM_MTP_DRAFT_HEAD=bf16 ignored: it only applies to a VLLM_MTP_DRAFT_VOCAB slice")
     _dv_head_env = ""
+_dv_shared_compute_logits = Qwen3_8FlashNextMTP.compute_logits
 if _dv_os.environ.get("VLLM_MTP_DRAFT_VOCAB") or _dv_head_env == "int4":
     Qwen3_8FlashNextMTP.compute_logits = _dv_compute_logits  # type: ignore[method-assign]
     _dv_logger.info("MTP private draft head enabled: vocab=%s head=%s",
                     _dv_os.environ.get("VLLM_MTP_DRAFT_VOCAB"), _dv_os.environ.get("VLLM_MTP_DRAFT_HEAD", "shared"))
 '''
 
-src = open(TARGET).read()
-if MARK in src:
-    print("  draft-head hook already installed"); sys.exit(0)
-assert "class Qwen3_8FlashNextMTP(" in src, "MTP class not found"
-open(TARGET, "w").write(src.rstrip("\n") + HOOK)
-import ast; ast.parse(open(TARGET).read())
-print("  draft-head hook INSTALLED in", TARGET, "(inert unless VLLM_MTP_DRAFT_VOCAB / VLLM_MTP_DRAFT_HEAD is set)")
+HOOK_CLASS = "Qwen3_8FlashNextMTP"   # the name the hook is written with
+
+
+def mtp_class(src):
+    """The file's one MTP model class: Qwen3_8FlashNextMTP (pinned image), Qwen4ExpMTP (0.34)."""
+    found = re.findall(r"^class (Qwen\w*MTP)\(", src, re.MULTILINE)
+    if len(found) != 1:
+        sys.exit("patch_mtp_draft_vocab.py: expected one Qwen*MTP class, found %s" % (found or "none"))
+    return found[0]
+
+
+def hook_for(cls):
+    return HOOK.replace(HOOK_CLASS, cls)
+
+
+def patch(path):
+    with open(path) as f:
+        src = f.read()
+    if MARK in src:
+        return "already installed"
+    cls = mtp_class(src)
+    out = src.rstrip("\n") + hook_for(cls)
+    ast.parse(out)
+    with open(path, "w") as f:
+        f.write(out)
+    return "INSTALLED on " + cls
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit("usage: patch_mtp_draft_vocab.py <mtp.py>")
+    print("  draft-head hook", patch(sys.argv[1]), "in", sys.argv[1],
+          "(inert unless VLLM_MTP_DRAFT_VOCAB / VLLM_MTP_DRAFT_HEAD is set)")
