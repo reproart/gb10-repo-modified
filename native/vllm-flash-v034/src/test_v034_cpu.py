@@ -20,8 +20,8 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import make_model_view as mv  # noqa: E402
-import patch_lm_head_quant as lh  # noqa: E402
+import make_model_view as mv
+import patch_lm_head_quant as lh
 
 
 def write_safetensors(path, tensors):
@@ -116,7 +116,7 @@ class ViewTest(Tmp):
         model, table, view = self.make(lean=False)
         with self.assertRaisesRegex(SystemExit, "not a lean table"):
             mv.build(model, table, view)
-        model2, table2, view2 = os.path.join(self.d, "m2"), table, os.path.join(self.d, "v2")
+        model2, view2 = os.path.join(self.d, "m2"), os.path.join(self.d, "v2")
         shutil.copytree(model, model2)
         os.makedirs(view2)
         with open(os.path.join(view2, "notes.txt"), "w") as f:
