@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Serve Qwen3.8-Flash-Next on vLLM 0.34 (./build.sh and ./prepare.sh once): the one-server
+# checks, the checkpoint view refreshed, memory prepared, the container, a wait until the API
+# answers. Rerun to restart with new settings.
+#   ./serve.sh
+#   MTP=3 SEQS=16 ./serve.sh            any setting from config.sh
+# Then, as for every server here (the benches find :8000 by themselves):
+#   python3 ../bench/perf.py --only decode decode-ru prefill
+set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/config.sh"
+need_docker
+
+# One server at a time: each wants most of the 128 GB.
+pgrep -f "sglang.launch_server" >/dev/null 2>&1 && {
+  echo "an SGLang server is running: stop it first (sudo systemctl stop gb10-sglang, or Ctrl-C it)" >&2; exit 1; }
+for c in qwen38-flash gb10-vllm-inkling gb10-sglang-inkling gb10-vllm-b12x tfv41-r0 gb10-vllm-dsv41 glm53-flash-tf; do
+  docker ps --format '{{.Names}}' | grep -qx "$c" && { echo "container $c runs: stop it first" >&2; exit 1; }
+done
+if ! docker ps --format '{{.Names}}' | grep -qx "$NAME" &&
+   [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models" 2>/dev/null)" != 000 ]; then
+  echo "something already serves :$PORT" >&2; exit 1
+fi
+docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "no image $IMAGE: ./build.sh first" >&2; exit 1; }
+for d in "$MODEL_DIR" "$TABLE_DIR"; do
+  [ -d "$d" ] || { echo "no $d: ./prepare.sh first" >&2; exit 1; }
+done
+# The view follows the folders as they are now (cheap: links and two JSON files).
+python3 "$V034_ROOT/src/make_model_view.py" "$MODEL_DIR" "$TABLE_DIR" "$VIEW_DIR"
+
+if [ "$MEM_PREP" = 1 ]; then "$NATIVE_DIR/scripts/mem-prep.sh" prep || true; fi
+
+read -r -a SERVED_NAMES <<< "$SERVED_NAME"
+ARGS=(/model-view --served-model-name "${SERVED_NAMES[@]}" --host 0.0.0.0 --port 8000
+  --load-format "$LOAD_FORMAT" --engram-config '{"disk_offload": true}'
+  --max-model-len "$CTX" --max-num-seqs "$SEQS" --kv-cache-memory-bytes "$KV_BYTES"
+  --enable-chunked-prefill --max-num-batched-tokens "$BATCHED_TOKENS"
+  --enable-prompt-tokens-details --kv-cache-dtype auto
+  --enable-auto-tool-choice --tool-call-parser "$TOOL_PARSER" --reasoning-parser qwen3)
+if [ "$PREFIX_CACHE" = 1 ]; then ARGS+=(--enable-prefix-caching); else ARGS+=(--no-enable-prefix-caching); fi
+[ "$MTP" != 0 ] && ARGS+=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP}")
+[ -n "$MAMBA_SSM_DTYPE" ] && ARGS+=(--mamba-ssm-cache-dtype "$MAMBA_SSM_DTYPE")
+# shellcheck disable=SC2206  # EXTRA is a flag list, split on purpose
+ARGS+=(${EXTRA:-})
+
+ENVS=(VLLM_FP8_HYBRID=1)
+[ -n "$API_KEY" ] && ENVS+=("VLLM_API_KEY=$API_KEY")
+# shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list
+EXTRA_ENVS=(${EXTRA_ENV:-})
+for e in ${EXTRA_ENVS[@]+"${EXTRA_ENVS[@]}"}; do
+  for i in "${!ENVS[@]}"; do [ "${ENVS[$i]%%=*}" = "${e%%=*}" ] && unset 'ENVS[i]'; done
+  ENVS+=("$e")
+done
+ENV_ARGS=()
+for e in "${ENVS[@]}"; do ENV_ARGS+=(-e "$e"); done
+BIND_PFX="${BIND_ADDR:+$BIND_ADDR:}"
+HEALTH_CMD="python3 -c 'import urllib.request;urllib.request.urlopen(\"http://localhost:8000/health\",timeout=10)'"
+
+docker rm -f "$NAME" >/dev/null 2>&1 || true
+docker run -d --name "$NAME" --restart "$RESTART" \
+  --gpus all --ipc=host --shm-size 16g -p "${BIND_PFX}${PORT}:8000" \
+  --log-opt max-size=10m --log-opt max-file=3 \
+  --health-cmd "$HEALTH_CMD" --health-start-period=15m --health-interval=60s --health-timeout=15s --health-retries=10 \
+  -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" -v "$VIEW_DIR:/model-view:ro" \
+  "${ENV_ARGS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null
+log "$NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (vLLM $BASE_TAG, ctx $CTX, mtp $MTP, seqs $SEQS," \
+  "chunk $BATCHED_TOKENS, kv $KV_BYTES, prefix cache $PREFIX_CACHE, ssm ${MAMBA_SSM_DTYPE:-checkpoint}, table from disk)"
+
+[ "$WAIT_MIN" = 0 ] && exit 0
+log "waiting for http://127.0.0.1:$PORT/v1/models (the first boot of an image compiles kernels)"
+auth=()
+[ -n "$API_KEY" ] && auth=(-H "Authorization: Bearer $API_KEY")
+for _ in $(seq 1 $((WAIT_MIN * 6))); do
+  if curl -fsS -m 5 ${auth[@]+"${auth[@]}"} "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
+    log "serving ${SERVED_NAMES[0]} on :$PORT; logs: docker logs -f $NAME"
+    exit 0
+  fi
+  if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" != true ]; then
+    log "$NAME stopped during boot:"; docker logs --tail 80 "$NAME" 2>&1; exit 1
+  fi
+  sleep 10
+done
+log "not answering after $WAIT_MIN min; still loading? docker logs -f $NAME"
+exit 1

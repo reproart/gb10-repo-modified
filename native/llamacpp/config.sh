@@ -70,7 +70,7 @@ no_sglang() {
     exit 1
   fi
   local c
-  for c in gb10-vllm-inkling gb10-sglang-inkling gb10-vllm-b12x qwen38-flash tfv41-r0 gb10-vllm-dsv41 glm53-flash-tf; do
+  for c in gb10-vllm-inkling gb10-sglang-inkling gb10-vllm-b12x qwen38-flash tfv41-r0 gb10-vllm-dsv41 glm53-flash-tf qwen38-flash-v034; do
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$c"; then
       echo "container $c (another model server) runs: stop it first" >&2
       exit 1
