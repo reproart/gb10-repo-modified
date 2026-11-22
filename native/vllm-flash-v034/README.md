@@ -16,7 +16,31 @@ closer to the end of the prompt on this hybrid model), boot 662 → 241 s, decod
 better. Our recipe's prefill is ~1,800-2,150 tok/s on the dev image. Whether 0.34 does
 the same for this checkpoint is what this folder is for.
 
-## Status: stage 0, the first boot (unmeasured)
+## Status: stage 0 boots and measures (2026-11-22)
+
+The first boot worked as built: `../bench/perf.py`, GX10, MTP 4, 8 sequences, BF16 KV,
+GDN state float32, against `vllm-flash-ar` with this project's patches on (int8 draft
+slice of the Russian vocabulary, FP8 hyper-connection projections), each one boot:
+
+| | `vllm-flash-ar` (dev image, tuned) | vLLM 0.34, stage 0 (full draft head, BF16 HC) |
+|---|---|---|
+| TTFT, short prompt | 124-129 ms | 136 ms |
+| Single-stream decode, code | **79.6 tok/s** (4.19 tok/step, 80%) | 68.8 (4.35, 84%) |
+| Single-stream decode, Russian prose | **50.2** (2.58, 40%) | 43.1 (2.66, 41%) |
+| Aggregate at 1 / 2 / 4 / 8 streams | 64.0 / 106.9 / 163.5 / 256.6 (2026-11-19, `ABLATE=1`) | 63.5 / 91.1 / 165.8 / 242.9 |
+| Prefill, 2K / 8K / 32K / 101K | 1,838 / 2,009 / 1,810 / 1,913 (2026-11-19); its best 2,000 / 2,153 / 2,134 / 1,981 | **2,488 / 2,659 / 2,742 / 2,649** |
+| TTFT of the 101K prompt | 52.7 s | **38.2 s** |
+| Longest pause of running streams under a 32K prefill (1 / 4 streams) | 5.68 / 11.31 s | **2.46 / 2.49 s** |
+
+Prefill +24-34% over the dev image's best (+32-51% over its last run), a long prompt
+no longer stalls the streams already generating for more than ~2.5 s, and ~4 GiB more
+memory left available during a long prefill (~10 GiB against ~4-6). Decode is behind
+by what this lane does not have yet: the drafter scores the shared full-vocabulary
+head (616 MiB read per draft pass, four a step, against the 160 MiB slice; its
+acceptance is the full vocabulary's, 84% on code against 80% with the slice), and the
+hyper-connection projections run BF16. Those two are stage 1.
+
+### Stage 0, as built
 
 What 0.34 does natively that the dev image needs patches for: the n-gram table read
 from disk (`--engram-config '{"disk_offload": true}'`: the rows stay in the
