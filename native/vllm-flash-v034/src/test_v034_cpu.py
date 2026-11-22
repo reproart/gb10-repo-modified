@@ -7,7 +7,9 @@
    (src/testdata/*.v034, from the vllm-0.34.0 wheel): one quant_config line in each head,
    the same indentation, idempotent; a file without the head stops it.
 2. the Dockerfile's mtp.py steps in order: the lm_head patch, then ../vllm-flash-ar's
-   draft-head patch on Qwen4ExpMTP; the line the Dockerfile greps for is there.
+   draft-head patch on Qwen4ExpMTP; the line the Dockerfile greps for is there. Its
+   hyperconnection.py step: ../vllm-flash-ar's FP8 HC hook on 0.34's file, and every
+   string the Dockerfile greps for in it.
 3. make_model_view.py: links to the container mounts, the table's tensors in the merged
    index, ple_embedding_dtype in config.json, a non-lean table refused, a rerun replaces the
    view, a foreign file in the view directory refused.
@@ -28,6 +30,7 @@ import make_model_view as mv
 import patch_lm_head_quant as lh
 
 sys.path.insert(0, os.path.join(HERE, "..", "..", "vllm-flash-ar", "src"))
+import patch_hc_fp8 as ph
 import patch_mtp_draft_vocab as dv
 
 
@@ -89,6 +92,20 @@ class DraftHeadStepTest(Tmp):
             grep = re.search(r'grep -q "(\^    Qwen4ExpMTP[^"]+)" "\$Q/mtp.py"', f.read()).group(1)
         self.assertTrue(re.search(grep, src, re.MULTILINE))
         self.assertEqual(dv.patch(p), "already installed")
+
+    def test_dockerfile_hc_step(self):
+        p = os.path.join(self.d, "hyperconnection.py")
+        shutil.copy(os.path.join(HERE, "testdata", "hyperconnection.py.v034"), p)
+        self.assertEqual(ph.patch(p), "INSTALLED")
+        with open(p) as f:
+            src = f.read()
+        ast.parse(src)
+        with open(os.path.join(HERE, "..", "Dockerfile")) as f:
+            greps = re.findall(r'grep -q "([^"]+)" "\$Q/hyperconnection.py"', f.read())
+        self.assertEqual(len(greps), 2)
+        for g in greps:
+            self.assertIn(g, src)
+        self.assertEqual(ph.patch(p), "already installed")
 
 
 class ViewTest(Tmp):

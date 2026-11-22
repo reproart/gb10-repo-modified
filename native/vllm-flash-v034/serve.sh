@@ -52,11 +52,18 @@ esac
   echo "DRAFT_HEAD=bf16 is a DRAFT_VOCAB slice in bf16: set DRAFT_VOCAB too" >&2; exit 1; }
 DRAFT_ON=0
 [ "$MTP" != 0 ] && [ ${#DRAFT_ENVS[@]} -gt 0 ] && DRAFT_ON=1
-if [ "$DRAFT_ON" = 1 ] &&
-   [ "$(docker image inspect -f '{{index .Config.Labels "gb10.draft-head"}}' "$IMAGE" 2>/dev/null)" != 1 ]; then
+image_label() { docker image inspect -f "{{index .Config.Labels \"$1\"}}" "$IMAGE" 2>/dev/null || true; }
+if [ "$DRAFT_ON" = 1 ] && [ "$(image_label gb10.draft-head)" != 1 ]; then
   echo "image $IMAGE has no draft-head hook (built before stage 1a): ./build.sh first, or DRAFT_VOCAB=0" >&2
   exit 1
 fi
+case "$HC_FP8" in
+  0) ;;
+  1|up)
+    [ "$(image_label gb10.hc-fp8)" = 1 ] || {
+      echo "image $IMAGE has no FP8 HC hook (built before stage 1b): ./build.sh first, or HC_FP8=0" >&2; exit 1; } ;;
+  *) echo "HC_FP8=$HC_FP8: 0, 1 or up" >&2; exit 1 ;;
+esac
 
 if [ "$MEM_PREP" = 1 ]; then "$NATIVE_DIR/scripts/mem-prep.sh" prep || true; fi
 
@@ -73,7 +80,7 @@ if [ "$PREFIX_CACHE" = 1 ]; then ARGS+=(--enable-prefix-caching); else ARGS+=(--
 # shellcheck disable=SC2206  # EXTRA is a flag list, split on purpose
 ARGS+=(${EXTRA:-})
 
-ENVS=(VLLM_FP8_HYBRID=1 ${DRAFT_ENVS[@]+"${DRAFT_ENVS[@]}"})
+ENVS=(VLLM_FP8_HYBRID=1 "VLLM_HC_FP8=$HC_FP8" ${DRAFT_ENVS[@]+"${DRAFT_ENVS[@]}"})
 [ -n "$API_KEY" ] && ENVS+=("VLLM_API_KEY=$API_KEY")
 # shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list
 EXTRA_ENVS=(${EXTRA_ENV:-})
@@ -96,7 +103,7 @@ docker run -d --name "$NAME" --restart "$RESTART" \
   "${ENV_ARGS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null
 log "$NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (vLLM $BASE_TAG, ctx $CTX, mtp $MTP, seqs $SEQS," \
   "chunk $BATCHED_TOKENS, kv $KV_BYTES, prefix cache $PREFIX_CACHE, ssm ${MAMBA_SSM_DTYPE:-checkpoint}," \
-  "draft vocab ${DRAFT_VOCAB:-0}, draft head $DRAFT_HEAD, table from disk)"
+  "draft vocab ${DRAFT_VOCAB:-0}, draft head $DRAFT_HEAD, hc fp8 $HC_FP8, table from disk)"
 
 [ "$WAIT_MIN" = 0 ] && exit 0
 log "waiting for http://127.0.0.1:$PORT/v1/models (the first boot of an image compiles kernels)"
@@ -105,15 +112,27 @@ auth=()
 for _ in $(seq 1 $((WAIT_MIN * 6))); do
   if curl -fsS -m 5 ${auth[@]+"${auth[@]}"} "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
     log "serving ${SERVED_NAMES[0]} on :$PORT; logs: docker logs -f $NAME"
+    # both are set up in the profiling run, before the API answers
+    boot_log="$(docker logs "$NAME" 2>&1 || true)"
     if [ "$DRAFT_ON" = 1 ]; then
-      # built in the profiling run, before the API answers
-      head_line="$(docker logs "$NAME" 2>&1 | grep "MTP private draft head:" | head -1 || true)"
+      head_line="$(grep "MTP private draft head:" <<< "$boot_log" | head -1 || true)"
       if [ -n "$head_line" ]; then
         log "draft head: ${head_line##*MTP private draft head: }"
       else
         log "WARNING: no 'MTP private draft head:' line in the boot log, so the drafter scores the full head;" \
           "docker logs $NAME 2>&1 | grep -i 'draft head'"
       fi
+    fi
+    if [ "$HC_FP8" != 0 ]; then
+      hc_line="$(grep "FP8 HC: [0-9]" <<< "$boot_log" | head -1 || true)"
+      if [ -n "$hc_line" ]; then
+        log "hc fp8: ${hc_line##*FP8 HC: }"
+      else
+        log "WARNING: no 'FP8 HC:' line in the boot log, so the hyper-connection projections may be BF16;" \
+          "docker logs $NAME 2>&1 | grep 'FP8 HC'"
+      fi
+      grep -q "TORCH PATH\|kernel failed" <<< "$boot_log" &&
+        log "WARNING: an FP8 HC kernel fell back to torch (slower than BF16): docker logs $NAME 2>&1 | grep 'FP8 HC'"
     fi
     exit 0
   fi

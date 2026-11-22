@@ -26,6 +26,14 @@ unchanged), they are half the bytes.
 The GEMM is a torch custom op (gb10::fp8_row_linear), so torch.compile treats
 it as one opaque call and CUDA graphs capture its kernels. Lossy: the gate that
 mixes the residual streams moves by per-row FP8 rounding; check answers.
+
+vLLM 0.34 (../vllm-flash-v034, models/qwen4_exp/nvidia/hyperconnection.py) has the
+same layers in one class, GatedResidual, but reads two of the BF16 weights directly
+in fused kernels: down(+block_inject) + SiLU in a CuTe-DSL GEMM for up to 48 rows
+(_use_hc_down_silu), up + gate mix in an SM100 kernel (_use_hc_up_gate_mix; not on
+GB10). A converted layer turns its module's flag off, so it runs the module's
+unfused path: the Linear (this GEMM), then the split and the SiLU / gate-mix kernels.
+VLLM_HC_FP8=up converts only the up projections there, keeping the fused down kernel.
 """
 from __future__ import annotations
 
@@ -299,9 +307,9 @@ def _impl(x: torch.Tensor, wq: torch.Tensor, s: torch.Tensor, wt: torch.Tensor) 
     if not STATS["logged"]:
         STATS["logged"] = True
         logger.info("FP8 HC: %d hyper-connection projections in FP8 with per-row scales, "
-                    "%.2f -> %.2f GiB; inputs up to %d rows: %s",
+                    "%.2f -> %.2f GiB; inputs up to %d rows: %s%s",
                     STATS["layers"], STATS["bytes_before"] / 2**30, STATS["bytes_after"] / 2**30, MAX_ROWS,
-                    status())
+                    status(), "; fused BF16 kernels off in %d modules" % STATS["fused_off"] if STATS.get("fused_off") else "")
     return y.reshape(*x.shape[:-1], n)
 
 
@@ -320,6 +328,9 @@ else:
 # --------------------------------------------------------------------------- vLLM wiring
 
 HC_LAYERS = ("input_mix_weight_down_block_inject", "input_mix_weight_down", "input_mix_weight_up")
+# vLLM 0.34's GatedResidual: the flag of the fused kernel that reads each layer's weight as BF16
+FUSED_FLAGS = {"input_mix_weight_down_block_inject": "_use_hc_down_silu",
+               "input_mix_weight_up": "_use_hc_up_gate_mix"}
 _method_cls = {}
 
 
@@ -373,11 +384,14 @@ def convert_layer(lin, base, keep_from=None) -> bool:
     return True
 
 
-def install_hc(ns: dict, linear_base=None, unquantized=None) -> int:
+def install_hc(ns: dict, linear_base=None, unquantized=None, layers=HC_LAYERS) -> int:
     """Wrap __init__ of every nn.Module class defined in the module whose globals are
-    `ns` (vLLM's qwen3_8_flash_next/nvidia/hyperconnection.py): after it runs, its
-    HC_LAYERS get the FP8 method. block_inject rows (after the first output part of
-    the merged down projection) stay BF16. Returns the number of classes wrapped."""
+    `ns` (vLLM's qwen3_8_flash_next/nvidia/hyperconnection.py, 0.34's
+    qwen4_exp/nvidia/hyperconnection.py): after it runs, its `layers` (HC_LAYERS by
+    default) get the FP8 method, and a fused kernel that would read a converted
+    layer's weight as BF16 is turned off for that module (FUSED_FLAGS). block_inject
+    rows (after the first output part of the merged down projection) stay BF16.
+    Returns the number of classes wrapped."""
     if linear_base is None or unquantized is None:
         from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
         linear_base, unquantized = LinearBase, UnquantizedLinearMethod
@@ -392,7 +406,7 @@ def install_hc(ns: dict, linear_base=None, unquantized=None) -> int:
 
         def __init__(self, *args, _orig=orig, **kwargs):
             _orig(self, *args, **kwargs)
-            for name in HC_LAYERS:
+            for name in layers:
                 lin = self._modules.get(name)
                 if not isinstance(lin, linear_base):
                     continue
@@ -400,12 +414,14 @@ def install_hc(ns: dict, linear_base=None, unquantized=None) -> int:
                 if name.endswith("_block_inject"):
                     sizes = getattr(lin, "output_sizes", None)
                     keep = sizes[0] if sizes else None
-                convert_layer(lin, unquantized, keep)
+                if convert_layer(lin, unquantized, keep) and getattr(self, FUSED_FLAGS.get(name, ""), False):
+                    setattr(self, FUSED_FLAGS[name], False)
+                    STATS["fused_off"] = STATS.get("fused_off", 0) + 1
 
         __init__._gb10_fp8 = True
         obj.__init__ = __init__
         wrapped += 1
     if not wrapped:
         raise RuntimeError("VLLM_HC_FP8=1: no module class found to wrap in " + str(ns.get("__name__")))
-    logger.info("FP8 HC on: %d hyper-connection classes wrapped (VLLM_HC_FP8=1)", wrapped)
+    logger.info("FP8 HC on: %d hyper-connection classes wrapped, layers %s", wrapped, "/".join(layers))
     return wrapped

@@ -86,7 +86,36 @@ correct, only slower). `serve.sh` prints the third line itself once the API answ
 warns that it is missing), and refuses a `DRAFT_VOCAB` / `DRAFT_HEAD` on an image built
 before this stage (no `gb10.draft-head` label: `./build.sh`).
 
-### Stage 0, as built
+## Stage 1b: FP8 hyper-connection projections (built, to measure)
+
+`vllm-flash-ar`'s patch 16, the same files (`../vllm-flash-ar/src/gb10_fp8_rowwise.py`,
+`patch_hc_fp8.py`), `HC_FP8=1` by default as there. Each of the ~98 mixes a step reads
+two BF16 projections, down+inject [336 x 10240] (6.9 MB) and up [10240 x 320] (6.6 MB),
+~1.3 GB a target forward; in FP8 with a scale per row they are half that (the 16 inject
+and padding rows stay BF16). On the dev image that was 69.7 -> 74.5 tok/s.
+
+What 0.34 does with them on GB10 now (read from the wheel): the up projection is
+`F.linear` (cuBLAS) for the verify step's 5 rows (the model's CuTe skinny-GEMM plan for
+[10240 x 320] covers 1, 2, 4 and 8 rows: the drafter's single row uses it), followed by
+the gate-mix kernel; the down+inject projection is a fused CuTe-DSL down+SiLU GEMM for
+up to 48 rows. Both read BF16. A converted layer gives up the fused path (the module's
+flag goes off and it runs its unfused one: the Linear, i.e. the FP8 GEMM, then the split
+and the SiLU kernel), so the trade is half the bytes against one more small kernel a
+mix. Estimate: ~0.65 GB less read a forward, ~3 ms of the 55.5 ms step at stage 1a, so
+~+5% decode, about where `vllm-flash-ar` is. `HC_FP8=up` converts only the up
+projections and keeps the fused down kernel: the fallback if `1` measures worse.
+
+`serve.sh` prints the first-forward line once the API answers:
+
+```
+hc fp8: <N> hyper-connection projections in FP8 with per-row scales, <~1.3> -> <~0.65> GiB; inputs up to 64 rows: decode kernel for 16/32/64-row tiles; prefill dequantize on Triton; fused BF16 kernels off in <M> modules
+```
+
+(two projections a mix; the fused kernel is on in every combining mix), warns if it is missing or if a kernel fell back to
+torch (`TORCH PATH`: slower than BF16), and refuses `HC_FP8` on an image without the
+hook (`gb10.hc-fp8` label: `./build.sh`).
+
+## Stage 0, as built
 
 What 0.34 does natively that the dev image needs patches for: the n-gram table read
 from disk (`--engram-config '{"disk_offload": true}'`: the rows stay in the
@@ -103,12 +132,13 @@ What this checkpoint needs on top, all in this folder:
 | a lean table | 0.34 loads every tensor of every file it is given, and `vllm-flash-ar`'s table folder holds Qwen's FP8 shards whole (expert scales and dense weights of other layers beside the rows) | `./prepare.sh` once: `../vllm-flash-ar/tools/strip_ple_table.py` into `TABLE_DIR` (~48 GB, same file names) |
 | one model folder | the rows must come through the model's own files | `src/make_model_view.py` (each `serve.sh`): a folder of links to the model's files and the lean table's, a merged index, and `config.json` with `ple_embedding_dtype: float8_e4m3fn` (with a GPTQ config 0.34 would take the table for BF16 and refuse the fp8 rows); no weights copied, the checkpoint untouched |
 | the private draft head (stage 1a) | 0.34 shares or loads the full int8 head for the drafter: 616 MiB per draft pass | `../vllm-flash-ar/src/patch_mtp_draft_vocab.py` (`Dockerfile`), `DRAFT_VOCAB` / `DRAFT_HEAD` in `config.sh` |
+| FP8 hyper-connection projections (stage 1b) | the checkpoint's BF16 HC projections, ~1.3 GB read a forward | `../vllm-flash-ar/src/gb10_fp8_rowwise.py` + `patch_hc_fp8.py` (`Dockerfile`), `HC_FP8` in `config.sh` |
 | `--load-format safetensors` | the disk-offloaded table keeps the loader's mmap views of the shards; `fastsafetensors` (`vllm-flash-ar`'s loader) does not hand them over | `config.sh` |
 
 The model's `config.json` already says `qwen4_exp` (0.34's name for Flash-Next), so no
 rename is needed (MiaAI-Lab's checkpoint did need one).
 
-Not ported yet, so off in this lane: FP8 hyper-connection projections (`HC_FP8`), the refusal-direction ablation (`ABLATE`), deterministic MoE
+Not ported yet, so off in this lane: the refusal-direction ablation (`ABLATE`), deterministic MoE
 alignment and QSA top-k, the metrics sidecar, never-evict pinning, the tool-parser fixes
 12-13, the mamba state-copy guard. Each comes over as its own stage once the bare lane
 boots and measures; some may be upstream already (0.34 may not need them).
@@ -145,7 +175,8 @@ prepare.sh                the lean table and the view, once
 serve.sh / stop.sh        start (checks, view, memory, wait) / stop
 src/make_model_view.py    the checkpoint view (standard library)
 src/patch_lm_head_quant.py  the int8 lm_head patch
-src/test_v034_cpu.py      CPU tests of both and of the Dockerfile's mtp.py steps (python3 src/test_v034_cpu.py)
+src/test_v034_cpu.py      CPU tests of both and of the Dockerfile's mtp.py / hyperconnection.py steps
 ../vllm-flash-ar/src/patch_mtp_draft_vocab.py, draft_vocab_*.npy   the draft head and its id sets (shared)
-src/testdata/*.v034       vLLM 0.34.0's qwen4_exp/nvidia/model.py and mtp.py, from the wheel
+../vllm-flash-ar/src/gb10_fp8_rowwise.py, patch_hc_fp8.py          FP8 HC (shared; test_hc_fp8_cpu.py runs 0.34's file)
+src/testdata/*.v034       vLLM 0.34.0's qwen4_exp/nvidia/model.py, mtp.py, hyperconnection.py, from the wheel
 ```
