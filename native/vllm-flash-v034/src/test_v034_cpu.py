@@ -39,6 +39,7 @@ sys.path.insert(0, HERE)
 import make_model_view as mv
 import patch_lm_head_quant as lh
 import patch_qsa_topk as pq
+import patch_scheduler_metrics as psm
 
 sys.path.insert(0, os.path.join(HERE, "..", "..", "vllm-flash-ar", "src"))
 import patch_abliterate as pa
@@ -153,6 +154,18 @@ class DraftHeadStepTest(Tmp):
         greps = re.findall(r'grep -q "([^"]+)" "\$Q/ops/qsa_indexer.py"', docker)
         self.assertEqual(len(greps), 1)
         self.assertTrue(re.search(bre(greps[0]), qsa, re.MULTILINE))
+
+    def test_dockerfile_metrics_step(self):
+        p = os.path.join(self.d, "scheduler.py")
+        shutil.copy(os.path.join(HERE, "testdata", "scheduler.py.v034"), p)
+        self.assertEqual(psm.patch(p), "INSTALLED")
+        with open(p) as f:
+            src = f.read()
+        ast.parse(src)
+        with open(os.path.join(HERE, "..", "Dockerfile")) as f:
+            greps = re.findall(r'grep -q "([^"]+)" "\$SP/vllm/v1/core/sched/scheduler.py"', f.read())
+        self.assertEqual(len(greps), 1)
+        self.assertTrue(re.search(bre(greps[0]), src, re.MULTILINE))
 
     def test_dockerfile_hc_step(self):
         p = os.path.join(self.d, "hyperconnection.py")

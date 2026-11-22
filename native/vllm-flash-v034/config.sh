@@ -93,6 +93,16 @@ export DET_MOE_ALIGN_MIN_TOKENS="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
 #   image it cost 20-40% of long prefill). Both 0 = the stock, non-deterministic kernel.
 export QSA_DET_TOPK="${QSA_DET_TOPK:-1}"
 export QSA_EXACT_TOPK="${QSA_EXACT_TOPK:-0}"
+# Engine-side metrics (../vllm-flash-ar's patch 13): torch's caching-allocator gauges on their
+# own Prometheus port (vllm:torch_cuda_allocated_bytes, ..._reserved_bytes,
+# ..._max_reserved_bytes, vllm:torch_idle_released_bytes_total; vLLM's /metrics on PORT cannot
+# see the engine process). No auth even with API_KEY. 0 = off.
+export METRICS_PORT="${METRICS_PORT:-18400}"
+# After this many seconds without a request the engine gives torch's cached GPU blocks back
+# (torch.cuda.empty_cache(); CUDA graph pools stay) and runs malloc_trim(0) once: on GB10
+# they are host memory, held at the peak of the last large request (stage 1's bench started
+# with 2-4 GiB free). 0 = keep them; the next large request allocates again.
+export IDLE_RELEASE_SEC="${IDLE_RELEASE_SEC:-60}"
 # Refusal-direction ablation at inference (../vllm-flash-ar's patch 17, the same knobs), off by
 # default:
 #   ABLATE=1 ./serve.sh                    the vectors at ABLATE_VECTORS
