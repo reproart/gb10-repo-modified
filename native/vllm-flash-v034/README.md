@@ -214,6 +214,30 @@ insertion fails it.
 vectors answered a request the stock model refused, decode 79.3 tok/s (82% of drafts
 accepted).
 
+## Stage 3a: the tool-call parser fixes (built, to check)
+
+`../bench/consistency.py` on stages 1 and 2 failed its tool-call section as the dev image
+did before its patch 14: a reply that shows the tool-call syntax as an example (a call
+inside a ```` ```xml ```` fence, or `<function=NAME>` in the middle of a sentence) came back as
+a call, and the rest of the reply was dropped. vLLM 0.34's parser engine is the same one,
+moved on: blazux's two patches (12, Jordi Posthumus: a tool wrapper is held until its
+whitespace-only preamble reaches a function header; 13, @techfury90: a marker inside a fenced
+code block, or a wrapper-less `<function=` header that does not start a line, stays text)
+no longer apply (4 of 7 and 5 of 5 hunks off), so they are ported by hand to 0.34's lines:
+`src/patches/qwen-tool-preamble.v034.patch`, `qwen-tool-marker-guard.v034.patch` (Apache-2.0,
+with their attribution). The changes are the same; 0.34's new `skip_reasoning_parsing` bypass
+runs before the deferral, and nemotron_v3's config, now a `dataclasses.replace` of qwen3's,
+keeps both guards off. Both are on for the qwen3 configuration that
+`--tool-call-parser qwen3_xml` runs.
+
+Checked against vLLM 0.34.0's own parser tests (`tests/parser/engine` at the v0.34.0 tag)
+plus blazux's for these patches, on CPU: the stock 0.34 parser passes vLLM's 173 and fails 45
+of blazux's 51; the patched one passes all 224. The Dockerfile applies both with `--fuzz=0`
+and runs `src/check_tool_parser.py` (a fenced example and a mid-line header stay text, a real
+call parses, a quoted `<tool_call>` in the reasoning keeps the answer; chunks of 1, 7 and
+all characters), so a build that does not hold stops there. To check on the server:
+`python3 ../bench/consistency.py --only fence`.
+
 ## Stage 0, as built
 
 What 0.34 does natively that the dev image needs patches for: the n-gram table read
@@ -233,15 +257,16 @@ What this checkpoint needs on top, all in this folder:
 | the private draft head (stage 1a) | 0.34 shares or loads the full int8 head for the drafter: 616 MiB per draft pass | `../vllm-flash-ar/src/patch_mtp_draft_vocab.py` (`Dockerfile`), `DRAFT_VOCAB` / `DRAFT_HEAD` in `config.sh` |
 | FP8 hyper-connection projections (stage 1b) | the checkpoint's BF16 HC projections, ~1.3 GB read a forward | `../vllm-flash-ar/src/gb10_fp8_rowwise.py` + `patch_hc_fp8.py` (`Dockerfile`), `HC_FP8` in `config.sh` |
 | the refusal-direction ablation (stage 2) | optional, `ABLATE=1`: a direction projected out of every writer of the streams | `../vllm-flash-ar/src/gb10_abliterate.py` + `patch_abliterate.py` (`Dockerfile`), `ABLATE*` in `config.sh` |
+| the tool-call parser fixes (stage 3a) | 0.34's parser turns a quoted or fenced tool-call example into a call that drops the reply | `src/patches/*.v034.patch` (blazux 12 + 13 ported, `Dockerfile`), checked by `src/check_tool_parser.py` at build time |
 | `--load-format safetensors` | the disk-offloaded table keeps the loader's mmap views of the shards; `fastsafetensors` (`vllm-flash-ar`'s loader) does not hand them over | `config.sh` |
 
 The model's `config.json` already says `qwen4_exp` (0.34's name for Flash-Next), so no
 rename is needed (MiaAI-Lab's checkpoint did need one).
 
-Not ported yet, so off in this lane: deterministic MoE
-alignment and QSA top-k, the metrics sidecar, never-evict pinning, the tool-parser fixes
-12-13, the mamba state-copy guard. Each comes over as its own stage once the bare lane
-boots and measures; some may be upstream already (0.34 may not need them).
+Not ported yet, so off in this lane: deterministic MoE alignment and QSA top-k, the metrics
+sidecar, never-evict pinning, the mamba state-copy guard. Each comes over as its own stage
+once the bare lane boots and measures; some may be upstream already (0.34 may not need
+them).
 
 ## Use
 
@@ -275,9 +300,12 @@ prepare.sh                the lean table and the view, once
 serve.sh / stop.sh        start (checks, view, memory, wait) / stop
 src/make_model_view.py    the checkpoint view (standard library)
 src/patch_lm_head_quant.py  the int8 lm_head patch
-src/test_v034_cpu.py      CPU tests of both and of the Dockerfile's mtp.py / hyperconnection.py steps
+src/test_v034_cpu.py      CPU tests of both, of the Dockerfile's mtp.py / hyperconnection.py / ablation steps and of the parser patches
+src/patches/*.v034.patch  blazux's tool-call parser patches 12 and 13, ported to vLLM 0.34.0
+src/check_tool_parser.py  the parser cases the build runs after them
 ../vllm-flash-ar/src/patch_mtp_draft_vocab.py, draft_vocab_*.npy   the draft head and its id sets (shared)
 ../vllm-flash-ar/src/gb10_fp8_rowwise.py, patch_hc_fp8.py          FP8 HC (shared; test_hc_fp8_cpu.py runs 0.34's file)
 ../vllm-flash-ar/src/gb10_abliterate.py, patch_abliterate.py       the ablation (shared; test_abliterate_cpu.py runs 0.34's classes)
 src/testdata/*.v034       vLLM 0.34.0's qwen4_exp/nvidia/model.py, mtp.py, hyperconnection.py, from the wheel
+src/testdata/parser/      vLLM 0.34.0's parser files the patches change, from the wheel
 ```

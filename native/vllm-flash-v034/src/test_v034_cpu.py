@@ -11,7 +11,12 @@
    hyperconnection.py step: ../vllm-flash-ar's FP8 HC hook on 0.34's file, and every
    string the Dockerfile greps for in it. The ablation step, on model.py and mtp.py as the
    steps before leave them: 0.34's insertion points, the strings the Dockerfile greps for.
-3. make_model_view.py: links to the container mounts, the table's tensors in the merged
+3. the tool-call parser patches (src/patches/*.v034.patch): both apply to vLLM 0.34.0's own
+   parser files (src/testdata/parser/, from the wheel) with --fuzz=0, in order, and the
+   result parses and switches both guards on for the qwen3 configuration only. (Their
+   behaviour: check_tool_parser.py at build time; vLLM 0.34.0's parser tests plus blazux's,
+   224 of 224, were run against the patched files when they were ported.)
+4. make_model_view.py: links to the container mounts, the table's tensors in the merged
    index, ple_embedding_dtype in config.json, a non-lean table refused, a rerun replaces the
    view, a foreign file in the view directory refused.
 """
@@ -21,8 +26,10 @@ import os
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
+import typing
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -136,6 +143,39 @@ class DraftHeadStepTest(Tmp):
         for g in greps:
             self.assertIn(g, src)
         self.assertEqual(ph.patch(p), "already installed")
+
+
+class ToolParserPatchTest(Tmp):
+    FILES: typing.ClassVar[dict[str, str]] = {"engine/parser_engine_config.py": "parser_engine_config.py.v034",
+             "engine/streaming_parser_engine.py": "streaming_parser_engine.py.v034",
+             "qwen3.py": "qwen3.py.v034", "nemotron_v3.py": "nemotron_v3.py.v034"}
+
+    @unittest.skipUnless(shutil.which("patch"), "needs the patch tool")
+    def test_patches_apply_to_v034(self):
+        root = os.path.join(self.d, "vllm", "parser")
+        for rel, src in self.FILES.items():
+            os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+            shutil.copy(os.path.join(HERE, "testdata", "parser", src), os.path.join(root, rel))
+        for name in ("qwen-tool-preamble.v034.patch", "qwen-tool-marker-guard.v034.patch"):
+            with open(os.path.join(HERE, "patches", name)) as f:
+                r = subprocess.run(["patch", "--batch", "--forward", "--fuzz=0", "-p1"], cwd=self.d,
+                                   stdin=f, capture_output=True, text=True, check=False)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn("offset", r.stdout)
+        srcs = {}
+        for rel in self.FILES:
+            with open(os.path.join(root, rel)) as f:
+                srcs[rel] = f.read()
+            ast.parse(srcs[rel])
+        self.assertIn("guard_literal_tool_markers: bool = False", srcs["engine/parser_engine_config.py"])
+        self.assertIn("validate_tool_preamble: bool = False", srcs["engine/parser_engine_config.py"])
+        self.assertIn('validate_tool_preamble=name == "qwen3",\n        guard_literal_tool_markers=name == "qwen3",',
+                      srcs["qwen3.py"])
+        self.assertIn("validate_tool_preamble=False,\n        guard_literal_tool_markers=False,", srcs["nemotron_v3.py"])
+        engine = srcs["engine/streaming_parser_engine.py"]
+        for name in ("def _confirm_tool_preamble", "def _flush_tool_preamble", "def _marker_is_literal",
+                     "def _track_literal_text", "self._reset_marker_guard()", "confirmed_tool_start: bool = False"):
+            self.assertIn(name, engine)
 
 
 class ViewTest(Tmp):
