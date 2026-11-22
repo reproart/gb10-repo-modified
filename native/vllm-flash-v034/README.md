@@ -261,7 +261,13 @@ Four items of `vllm-flash-ar` were not here yet. Checked against 0.34's source:
   Xid 31 shows up under load, that is the place.
 - **Never-evict pinning** (patch 6): not ported. Off by default there too (`PIN_PROMPT`
   empty); it patches the block pool and the scheduler. On request.
-- **A fused ablation projection**: done (built, to measure). The ablation cost prefill 3-12%
+- **A fused ablation projection**: done, measured 2026-11-22 with `ABLATE=1`: prefill 2,312 /
+  2,643 / 2,665 / 2,594 tok/s (the torch ops: 2,319 / 2,505 / 2,602 / 2,556; no ablation:
+  2,520-2,577 / 2,832-2,858 / 2,721-2,753 / 2,636-2,637), the sweep 71.4 / 114.0 / 168.3 /
+  253.4 (torch ops 70.4 / 110.4 / 169.8 / 254.4; none 74.3 / 113.7 / 170.4 / 264.5), decode
+  81.2 / 50.9. So it took back 1.5-5.5% of prefill from 8K up, but not the 2K prompt's ~8% nor
+  the 8-stream ~4%: most of what the ablation costs is not the projections' bytes. Kept on.
+  Earlier notes: The ablation cost prefill 3-12%
   and the sweep 0-5% here: about a hundred projections a forward, each a matrix-vector
   product, an outer product and a subtraction, three passes over the [T, 2560] output plus
   their launches. `gb10_abliterate.project` now runs one Triton kernel per projection on the
