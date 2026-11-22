@@ -1124,6 +1124,20 @@ with layers left out it has; without `VLLM_ABLATE` the outputs equal the
 unpatched files' bit for bit; `torch.compile(fullgraph=True)` traces the
 patched forward in one graph.
 
+**On vLLM 0.34** (`../vllm-flash-v034/`, 2026-11-22) the same two files patch
+`qwen4_exp/nvidia/model.py` / `mtp.py`, with 0.34's own insertion points
+(`V034_*`, picked by the decoder layer's class name). Two differ: 0.34's PLE
+layer returns the streams with its addition already in them (the residual add
+is fused into its short-convolution kernel), so the patch takes the addition
+back out (`ple_out - hidden_states`), projects it and adds it back, which keeps
+the streams' component along the basis exactly at the cost of one more BF16
+rounding of the addition; and 0.34's draft has two writers instead of one fused
+input, `fc_hidden`'s output (the draft layer's streams) and `fc_embedding`'s
+(a pending block output added to every stream with unit weight), both
+projected. The same test runs every check on 0.34's own classes too
+(`../vllm-flash-v034/src/testdata/`), and fails if any of the PLE, attention
+or MLP insertions is left out.
+
 **Measured** (2026-11-19, GX10, the owner's settings: `MTP=4`, `SEQS=8`, one
 boot, `ABLATE=1` with the defaults: the mean direction, all layers, the MTP
 draft too): a real request the stock model refused got its answer.

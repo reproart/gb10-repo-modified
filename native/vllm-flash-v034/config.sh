@@ -25,7 +25,7 @@ export VIEW_DIR="${VIEW_DIR:-$HOME/.cache/gb10/vllm-flash-v034/model-view}"
 
 # --- The image: vllm/vllm-openai:v0.34.0 pinned by digest (image.lock, committed) plus
 # build-time patches (./build.sh): the int4+fp8 hybrid dispatch, the int8 lm_head, the private
-# MTP draft head, FP8 hyper-connection projections.
+# MTP draft head, FP8 hyper-connection projections, the refusal-direction ablation.
 export BASE_IMAGE="${BASE_IMAGE:-vllm/vllm-openai}"
 export BASE_TAG="${BASE_TAG:-v0.34.0}"
 BASE_DIGEST="$(cat "$V034_ROOT/image.lock" 2>/dev/null || true)"
@@ -74,6 +74,30 @@ export DRAFT_HEAD="${DRAFT_HEAD:-int8}"
 # which a converted layer gives up: 1 = both FP8 (default), up = only the up projections (the
 # fused down kernel kept), 0 = BF16 as shipped.
 export HC_FP8="${HC_FP8:-1}"
+# Refusal-direction ablation at inference (../vllm-flash-ar's patch 17, the same knobs), off by
+# default:
+#   ABLATE=1 ./serve.sh                    the vectors at ABLATE_VECTORS
+#   ABLATE=/path/other.npz ./serve.sh      another file (.npz, .npy or .pt)
+# A direction is projected out of everything that writes the model's four residual streams
+# (embedding, PLE, each attention / GDN and MLP output, the MTP draft's two inputs): the same as
+# orthogonalizing those weights against it, on the fly, no weight changes. The vectors, once:
+#   hf download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors \
+#     --revision 7b009deb2d3f21c5bb199366cb39e3ed129b4207 \
+#     --local-dir /models/qwen3.8-flash-next-refusal-ablation-vectors
+#   ABLATE_SOURCE  mean (default): the normalized mean of the file's per-layer vectors; top2 /
+#                  top3: their principal directions (a rank-2 / 3 projection); <n>: layer n's.
+#   ABLATE_ALPHA   1 removes the component; above 1 overshoots.
+#   ABLATE_LAYERS  all, or e.g. 20-47: whose writers are projected (the embedding with layer 0).
+#   ABLATE_MTP     1: the MTP draft projects its inputs too; 0: as shipped (answers never depend
+#                  on it, only the draft's acceptance).
+# serve.sh prints the boot log's "ABLATION ON ..." line (what is projected). On the dev image:
+# a refused request answered, decode 79.3 tok/s (../vllm-flash-ar README patch 17).
+export ABLATE="${ABLATE:-0}"
+export ABLATE_VECTORS="${ABLATE_VECTORS:-/models/qwen3.8-flash-next-refusal-ablation-vectors/refusal_directions-v4-late.npz}"
+export ABLATE_SOURCE="${ABLATE_SOURCE:-mean}"
+export ABLATE_ALPHA="${ABLATE_ALPHA:-1}"
+export ABLATE_LAYERS="${ABLATE_LAYERS:-all}"
+export ABLATE_MTP="${ABLATE_MTP:-1}"
 # safetensors: the disk-offloaded table is read through the loader's mmap views, which
 # fastsafetensors (../vllm-flash-ar's loader) does not hand over.
 export LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"

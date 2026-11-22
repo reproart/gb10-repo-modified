@@ -18,6 +18,11 @@ and mtp.py as the Dockerfile leaves them before this patch (int8 lm_head sed, dr
    gate on the read side): with VLLM_ABLATE every stream of the final multi-stream state, and
    the draft layer's input, has no component left along the direction; with some layers left
    out it has; without VLLM_ABLATE the outputs equal the unpatched files' bit for bit.
+5. The same for vLLM 0.34 (../../vllm-flash-v034/src/testdata/{model,mtp}.py.v034, from the
+   wheel; classes Qwen4Exp*): its own insertion points, picked by class name, its PLE layer
+   returning the sum (the addition taken out, projected, put back), its draft's two inputs
+   (fc_hidden's streams and fc_embedding's pending block output) projected, off bit-identical,
+   one compiled graph.
 """
 import ast
 import builtins
@@ -44,6 +49,9 @@ import patch_abliterate as pa  # noqa: E402
 
 MODEL_IMG = os.path.join(HERE, "testdata", "model.py.image")
 MTP_IMG = os.path.join(HERE, "testdata", "mtp.py.image")
+V034_DATA = os.path.join(HERE, "..", "..", "vllm-flash-v034", "src", "testdata")
+MODEL_V034 = os.path.join(V034_DATA, "model.py.v034")
+MTP_V034 = os.path.join(V034_DATA, "mtp.py.v034")
 H, NS, LAYERS, T = 16, 4, 4, 6          # hidden, HC streams, decoder layers, tokens
 ENV_KEYS = ("VLLM_ABLATE", "VLLM_ABLATE_ALPHA", "VLLM_ABLATE_SOURCE", "VLLM_ABLATE_LAYERS", "VLLM_ABLATE_MTP")
 
@@ -479,6 +487,178 @@ class ModelTest(EnvCase):
     def test_mtp_off_is_bit_identical(self):
         orig_mtp_text = read(MTP_IMG)
         _, m0 = self.build(self.orig_model, mtp_text=orig_mtp_text)
+        _, m1 = self.build(self.patched_model, mtp_text=self.patched_mtp)
+        g = torch.Generator().manual_seed(3)
+        ids, hid = torch.randint(0, 50, (T,), generator=g), torch.randn(T, NS * H, generator=g)
+        with torch.no_grad():
+            a, b = m0(ids, torch.arange(T), hidden_states=hid), m1(ids, torch.arange(T), hidden_states=hid)
+        self.assertTrue(torch.equal(a[0], b[0]) and torch.equal(a[1], b[1]))
+
+
+# --------------------------------------------------------------------------- vLLM 0.34
+class FakeGatedResidual034(FakeGatedResidual):
+    """0.34's GatedResidual: a missing injection combines the block output into every stream
+    with unit weight (the MTP draft's fc_embedding output); the final mixer may get no pending
+    block output (deepstack on the last layer materializes it)."""
+
+    def combine(self, hidden, block_output, injection):
+        if block_output is None:
+            return hidden
+        if injection is None:
+            return (hidden.unflatten(-1, (self.n, self.h)) + block_output.unsqueeze(-2)).flatten(-2)
+        return super().combine(hidden, block_output, injection)
+
+
+class FakePLE034(nn.Module):
+    """0.34's PLE layer returns the streams with its addition in them (a new tensor)."""
+
+    def __init__(self, config, **kwargs):
+        super().__init__()
+        self.lin = nn.Linear(NS * H, NS * H)
+
+    def start_prefetch(self, *args):
+        pass
+
+    def forward(self, hidden_states, input_ids, query_start_loc, ngram_context):
+        return hidden_states + self.lin(hidden_states)
+
+
+def fakes034():
+    return {
+        "GatedResidual": FakeGatedResidual034, "Qwen4ExpPLELayer": FakePLE034,
+        "Qwen4ExpQSAAttention": Block, "Qwen4ExpSparseMoeBlock": Block,
+        "is_hc_sequence_parallel_enabled": lambda cfg: False,
+        "get_fused_shared_expert_layers": lambda *a, **k: [],
+    }
+
+
+def text_config034():
+    cfg = text_config()
+    cfg.layer_types = ["linear_attention", "linear_attention", "linear_attention", "qwen_sparse_attention"]
+    return cfg
+
+
+def vllm_config034(cfg):
+    vc = vllm_config(cfg)
+    vc.parallel_config.enable_eplb = False
+    return vc
+
+
+def patched_texts034():
+    d = tempfile.mkdtemp()
+    try:
+        m, t = os.path.join(d, "model.py"), os.path.join(d, "mtp.py")
+        shutil.copy(MODEL_V034, m)
+        shutil.copy(MTP_V034, t)
+        model_edits, model_hook, mtp_edits = pa.engine_edits(read(m))
+        pa.patch(m, model_edits, model_hook)
+        pa.patch(t, mtp_edits, pa.MTP_HOOK)
+        return read(m), read(t)
+    finally:
+        shutil.rmtree(d)
+
+
+class V034PatchTest(unittest.TestCase):
+    def test_engine_and_insertions(self):
+        self.assertIs(pa.engine_edits(read(MODEL_IMG))[0], pa.MODEL_EDITS)
+        self.assertIs(pa.engine_edits(read(MODEL_V034))[0], pa.V034_MODEL_EDITS)
+        with self.assertRaises(SystemExit):
+            pa.engine_edits("class Foo:\n    pass\n")
+        m, t = patched_texts034()
+        ast.parse(m)
+        ast.parse(t)
+        self.assertEqual(m.count("# qwen38-flash-dgx ablation:"), 5)
+        self.assertEqual(m.count("_gb10_abl_project("), 5)
+        self.assertEqual(t.count("_gb10_abl_project("), 2)
+        self.assertIn('_gb10_abl.install(globals(), "Qwen4ExpDecoderLayer", "Qwen4ExpModel")', m)
+        self.assertIn("Qwen4ExpDecoderLayer._gb10_abl_on = False", m)
+        self.assertNotIn("Qwen3_8FlashNext", m[m.index(pa.MARK):])
+
+    def test_cli_on_both_engines(self):
+        for model_src, mtp_src, cls in ((MODEL_IMG, MTP_IMG, "Qwen3_8FlashNextModel"),
+                                        (MODEL_V034, MTP_V034, "Qwen4ExpModel")):
+            with tempfile.TemporaryDirectory() as d:
+                m, t = os.path.join(d, "model.py"), os.path.join(d, "mtp.py")
+                shutil.copy(model_src, m)
+                shutil.copy(mtp_src, t)
+                old_argv = sys.argv
+                sys.argv = ["patch_abliterate.py", m, t]
+                try:
+                    with contextlib.redirect_stdout(open(os.devnull, "w")) as devnull:
+                        exec(compile(read(os.path.join(HERE, "patch_abliterate.py")), "patch_abliterate.py", "exec"),
+                             {"__name__": "__main__"})
+                    devnull.close()
+                finally:
+                    sys.argv = old_argv
+                self.assertIn(f"{cls}._gb10_abl_on = False", read(m))
+                self.assertIn(pa.MARK, read(t))
+
+
+class V034ModelTest(ModelTest):
+    """ModelTest's checks on 0.34's own classes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.patched_model, cls.patched_mtp = patched_texts034()
+        cls.orig_model = read(MODEL_V034)
+
+    def build(self, model_text, env=None, mtp_text=None):
+        for k in ENV_KEYS:
+            os.environ.pop(k, None)
+        os.environ.update(env or {})
+        ns = load(model_text, ("Qwen4ExpDecoderLayer", "Qwen4ExpModel"), fakes034())
+        cfg = text_config034()
+        torch.manual_seed(1234)
+        model = ns["Qwen4ExpModel"](vllm_config=vllm_config034(cfg), prefix="model")
+        mtp = None
+        if mtp_text is not None:
+            tns = load(mtp_text, ("Qwen4ExpMultiTokenPredictor",),
+                       {**fakes034(), "Qwen4ExpDecoderLayer": ns["Qwen4ExpDecoderLayer"],
+                        "_EXTRA_WEIGHTS_MAPPER": frozenset()})
+            tns["_make_draft_vllm_config"] = lambda vc, *a: vc
+            torch.manual_seed(99)
+            mtp = tns["Qwen4ExpMultiTokenPredictor"](vllm_config=vllm_config034(cfg), prefix="mtp")
+        return model, mtp
+
+    @staticmethod
+    def along_rows(x, u):
+        """largest |component| along u of any H-wide row of x, relative to the row norms"""
+        xs = x.reshape(-1, H)
+        return ((xs @ u.t()).abs().max() / xs.norm(dim=-1).max()).item()
+
+    def test_ple_layer_present(self):
+        model, _ = self.build(self.patched_model)
+        self.assertEqual([layer.ple is not None for layer in model.layers], [False, True, False, False])
+
+    def test_mtp_draft(self):
+        V = directions(6)
+        captured = {}
+
+        def grab(mod, args, kwargs):
+            captured["streams"] = kwargs["hidden_states"].detach().clone()
+            captured["embedding"] = kwargs["prev_block_output"].detach().clone()
+
+        for flag, want_on in (("1", True), ("0", False)):
+            model, mtp = self.build(self.patched_model, self.env(V, mtp=flag), self.patched_mtp)
+            layer = mtp.layers[0]
+            self.assertEqual(layer.layer_idx, LAYERS)
+            self.assertEqual(bool(layer._gb10_abl_on), want_on)
+            u = model.layers[0]._gb10_abl_u
+            ids, _, multi = self.run_model(model)
+            handle = layer.register_forward_pre_hook(grab, with_kwargs=True)
+            with torch.no_grad():
+                _, draft_multi = mtp(ids, torch.arange(T), hidden_states=multi)
+            handle.remove()
+            if want_on:
+                self.assertLess(self.along(captured["streams"], u), 1e-5)       # fc_hidden's output
+                self.assertLess(self.along_rows(captured["embedding"], u), 1e-5)  # fc_embedding's
+                self.assertLess(self.along(draft_multi, u), 1e-5)
+            else:
+                self.assertGreater(self.along(captured["streams"], u), 1e-3)
+                self.assertGreater(self.along_rows(captured["embedding"], u), 1e-3)
+
+    def test_mtp_off_is_bit_identical(self):
+        _, m0 = self.build(self.orig_model, mtp_text=read(MTP_V034))
         _, m1 = self.build(self.patched_model, mtp_text=self.patched_mtp)
         g = torch.Generator().manual_seed(3)
         ids, hid = torch.randint(0, 50, (T,), generator=g), torch.randn(T, NS * H, generator=g)
