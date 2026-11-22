@@ -243,7 +243,32 @@ call parses, a quoted `<tool_call>` in the reasoning keeps the answer; chunks of
 all characters), so a build that does not hold stops there. To check on the server:
 `python3 ../bench/consistency.py --only fence`.
 
-## Stage 3b: determinism (in progress)
+## Stage 3c: the deterministic top-k kernel (built, to check)
+
+The A/B settled it (2026-11-22, `consistency.py`, `DET_MOE_ALIGN=1`): with `QSA_EXACT_TOPK=1`
+cold vs cold and hit vs hit gave the same text with a first-token top-5 gap of 0.0000 at ~4K
+and ~32K tokens, where the stock `persistent_topk` forked from the first token. So 0.34's build
+of that kernel is still non-deterministic on GB10, and the exact path, which on the dev image
+cost 20-40% of long prefill, is what holds it. Cold vs a cache hit still drifts late (the
+first token agrees, the reply forks 17-95 characters in): a hit computes fewer tokens, in
+other chunk shapes; the bench counts that as a warning, not a failure.
+
+The fast way is @jschmied's deterministic kernel (vllm#55122), the dev image's `DET_TOPK`:
+the Dockerfile fetches the same five sources at the same commit with the same sha256 checksums
+and builds `_C_det.so` with the base image's nvcc in a layer of its own;
+`src/patch_qsa_topk.py` (the stage 3b patch, renamed) swaps `torch.ops._C_det.persistent_topk`
+into 0.34's `_topk` with `QSA_DET_TOPK=1`, now the default. It registers the same arguments in
+the same order as the stock call (logits, lengths, output, workspace, k, max_seq_len); it is
+built for k = 512, 1024 and 2048 (this model's block top-k is 512; another k takes the exact
+path); its workspace need is a few hundred KB, within the 1 MiB 0.34 passes. If the kernel
+cannot be built (no nvcc in the base image, a compile error), the image still builds and the
+server logs `the deterministic kernel did not load` and takes the exact top-k: asking for
+determinism never gets the stock kernel. `serve.sh` prints the boot log's `QSA top-k:` line.
+`src/test_qsa_topk_cpu.py` runs 0.34's patched `_topk` with stand-in ops: the stock kernel when
+nothing is set, the deterministic op with the stock call's arguments, the exact path when asked
+for or for an unsupported k, and the fallback when the library does not load.
+
+## Stage 3b: determinism (MoE alignment; the top-k found)
 
 Measured with the image of stage 3b (2026-11-22, `DET_MOE_ALIGN=1`, `QSA_EXACT_TOPK=0`): still
 not deterministic. `consistency.py` section 2: cold vs cold and hit vs hit fork 15-78
@@ -273,10 +298,10 @@ before its patches 15 and 9. Two possible sources, both ported:
   int4 experts on Marlin on GB10 (Humming is preferred only on SM 9.0). From `SEQS x (1 +
   MTP) + 1` tokens a step (41): prefill and steps with a prefill chunk, decode keeps the
   kernel.
-- **QSA block top-k** (`QSA_EXACT_TOPK=1`, off): on GB10 0.34 always selects the sparse
+- **QSA block top-k** (`QSA_EXACT_TOPK=1`; stage 3c makes the fast kernel the default): on GB10 0.34 always selects the sparse
   attention's key blocks with `persistent_topk` (`cooperative_topk` is gated off for SM 12.x).
   That kernel was non-deterministic in the dev image's vLLM (vllm#51782); whether 0.34's build
-  has @jschmied's fix (vllm#55122) cannot be seen from its Python. `src/patch_qsa_exact_topk.py`
+  has @jschmied's fix (vllm#55122) cannot be seen from its Python. `src/patch_qsa_topk.py`
   is the dev image's exact fallback ported to 0.34's `_topk`: `torch.topk` over the visible
   columns, the rest masked. One change: the chosen block ids are put in ascending order,
   because 0.34's expansion kernel reads only the first `min(visible, block_topk)` slots, and
@@ -289,7 +314,7 @@ The plan: `consistency.py --only repeat` with the defaults; if it still forks, a
 dev image's `DET_TOPK`) is the fast way and comes next. Checks: `../vllm-flash-ar/src/
 test_det_moe_align_cpu.py` (0.34's own file, a stand-in kernel: the reference layout with no
 kernel call for a prefill batch; decode, `scatter_idx` and an `expert_map` keep the kernel) and
-`src/test_qsa_exact_topk_cpu.py` (the reference top-k in the slots the expansion reads,
+`src/test_qsa_topk_cpu.py` (the reference top-k in the slots the expansion reads,
 garbage past the visible count kept out, repeatable).
 
 ## Stage 0, as built
@@ -312,7 +337,7 @@ What this checkpoint needs on top, all in this folder:
 | FP8 hyper-connection projections (stage 1b) | the checkpoint's BF16 HC projections, ~1.3 GB read a forward | `../vllm-flash-ar/src/gb10_fp8_rowwise.py` + `patch_hc_fp8.py` (`Dockerfile`), `HC_FP8` in `config.sh` |
 | the refusal-direction ablation (stage 2) | optional, `ABLATE=1`: a direction projected out of every writer of the streams | `../vllm-flash-ar/src/gb10_abliterate.py` + `patch_abliterate.py` (`Dockerfile`), `ABLATE*` in `config.sh` |
 | the tool-call parser fixes (stage 3a) | 0.34's parser turns a quoted or fenced tool-call example into a call that drops the reply | `src/patches/*.v034.patch` (blazux 12 + 13 ported, `Dockerfile`), checked by `src/check_tool_parser.py` at build time |
-| determinism (stage 3b) | the same greedy request forks from run to run: MoE token alignment by `atomicAdd`, possibly the QSA top-k kernel | `../vllm-flash-ar/src/patch_det_moe_align.py` (`DET_MOE_ALIGN=1`), `src/patch_qsa_exact_topk.py` (`QSA_EXACT_TOPK=1`) |
+| determinism (stages 3b, 3c) | the same greedy request forks from run to run: the QSA top-k kernel (measured), MoE token alignment by `atomicAdd` | `src/patch_qsa_topk.py` + @jschmied's kernel built in the `Dockerfile` (`QSA_DET_TOPK=1`; `QSA_EXACT_TOPK=1` the exact fallback), `../vllm-flash-ar/src/patch_det_moe_align.py` (`DET_MOE_ALIGN=1`) |
 | `--load-format safetensors` | the disk-offloaded table keeps the loader's mmap views of the shards; `fastsafetensors` (`vllm-flash-ar`'s loader) does not hand them over | `config.sh` |
 
 The model's `config.json` already says `qwen4_exp` (0.34's name for Flash-Next), so no
@@ -357,7 +382,7 @@ src/patch_lm_head_quant.py  the int8 lm_head patch
 src/test_v034_cpu.py      CPU tests of both, of the Dockerfile's mtp.py / hyperconnection.py / ablation steps and of the parser patches
 src/patches/*.v034.patch  blazux's tool-call parser patches 12 and 13, ported to vLLM 0.34.0
 src/check_tool_parser.py  the parser cases the build runs after them
-src/patch_qsa_exact_topk.py  the exact QSA block top-k (QSA_EXACT_TOPK=1); test_qsa_exact_topk_cpu.py checks it
+src/patch_qsa_topk.py     the QSA block top-k: @jschmied's kernel (QSA_DET_TOPK=1) or exact (QSA_EXACT_TOPK=1); test_qsa_topk_cpu.py
 ../vllm-flash-ar/src/patch_det_moe_align.py  the deterministic MoE alignment (DET_MOE_ALIGN=1, shared)
 ../vllm-flash-ar/src/patch_mtp_draft_vocab.py, draft_vocab_*.npy   the draft head and its id sets (shared)
 ../vllm-flash-ar/src/gb10_fp8_rowwise.py, patch_hc_fp8.py          FP8 HC (shared; test_hc_fp8_cpu.py runs 0.34's file)
