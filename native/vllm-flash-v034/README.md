@@ -243,7 +243,16 @@ call parses, a quoted `<tool_call>` in the reasoning keeps the answer; chunks of
 all characters), so a build that does not hold stops there. To check on the server:
 `python3 ../bench/consistency.py --only fence`.
 
-## Stage 3c: the deterministic top-k kernel (built, to check)
+## Stage 3c: the deterministic top-k kernel (measured 2026-11-22)
+
+Built in the image as planned (`DET_TOPK kernel built OK`, CUDA 13.0's nvcc in the base image,
+~9 s), and the boot log says `QSA top-k: deterministic persistent_topk`. `consistency.py
+--only repeat`: cold vs cold and hit vs hit the same text, first-token gap 0.0000, at ~4K and
+~32K (cold vs hit: the late-fork warning, first token equal). Prefill 2,577 / 2,858 / 2,721 /
+2,636 tok/s at 2K / 8K / 32K / 101K, against 2,520 / 2,832 / 2,753 / 2,637 with the stock
+non-deterministic kernel: determinism at no cost. With stage 3a's parser fixes,
+`consistency.py` now passes all of its checks on this lane, as on the dev image.
+
 
 The A/B settled it (2026-11-22, `consistency.py`, `DET_MOE_ALIGN=1`): with `QSA_EXACT_TOPK=1`
 cold vs cold and hit vs hit gave the same text with a first-token top-5 gap of 0.0000 at ~4K
