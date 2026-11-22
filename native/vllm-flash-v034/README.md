@@ -40,7 +40,25 @@ head (616 MiB read per draft pass, four a step, against the 160 MiB slice; its
 acceptance is the full vocabulary's, 84% on code against 80% with the slice), and the
 hyper-connection projections run BF16. Those two are stage 1.
 
-## Stage 1a: the private draft head (built, to measure)
+## Stage 1a: the private draft head (measured 2026-11-22)
+
+`../bench/perf.py --only decode decode-ru`, same machine and settings as stage 0, one boot
+(median of 5 code answers, of 3 Russian ones):
+
+| | `vllm-flash-ar` (dev image, tuned) | 0.34, stage 0 (full draft head) | 0.34, stage 1a (`DRAFT_VOCAB=ru`, int8 slice) |
+|---|---|---|---|
+| Single-stream decode, code | **79.6 tok/s** (4.19 tok/step, 80%) | 68.8 (4.35, 84%) | 76.0 (4.22, 81%) |
+| Single-stream decode, Russian prose | 50.2 (2.58, 40%) | 43.1 (2.66, 41%) | **52.2** (2.80, 45%) |
+
+Code +10% and Russian +21% over stage 0. Russian is now ahead of the dev image (+4%, three
+answers), code 4.5% behind it at the same acceptance, so the rest of that gap is time per
+step, not drafting; the largest known difference left is the BF16 hyper-connection
+projections (stage 1b). The boot log, as expected:
+`self-check: top-1 agreement 1.000, rel err 0.0000 (T=8)`, `65536 of 248320 rows, 616 ->
+162 MiB per draft step, built in 10.1s`, in the profiling run, 2 min 25 s after the
+engine started; no capture warning.
+
+### How it works
 
 `vllm-flash-ar`'s patch 10, the same file (`../vllm-flash-ar/src/patch_mtp_draft_vocab.py`),
 now finds the file's MTP class (`Qwen4ExpMTP` here) and the Marlin helpers' signatures
@@ -66,9 +84,7 @@ MTP private draft head: int8 GPTQ-Marlin (the target head's own rows), 65536 of 
 and never `first called inside a CUDA graph capture` (that graph would keep the full head:
 correct, only slower). `serve.sh` prints the third line itself once the API answers (or
 warns that it is missing), and refuses a `DRAFT_VOCAB` / `DRAFT_HEAD` on an image built
-before this stage (no `gb10.draft-head` label: `./build.sh`). Expected: decode back to `vllm-flash-ar`'s 79.6 / 50.2 tok/s
-(code / Russian) or near it; what remains after that is the BF16 hyper-connection
-projections (stage 1b).
+before this stage (no `gb10.draft-head` label: `./build.sh`).
 
 ### Stage 0, as built
 
