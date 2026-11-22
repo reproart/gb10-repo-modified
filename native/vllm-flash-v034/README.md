@@ -16,13 +16,15 @@ closer to the end of the prompt on this hybrid model), boot 662 → 241 s, decod
 better. Our recipe's prefill is ~1,800-2,150 tok/s on the dev image. Whether 0.34 does
 the same for this checkpoint is what this folder is for.
 
-## Status: stage 1 on, the full bench (2026-11-22)
+## Status: stages 1 and 2 on, the full bench (2026-11-22)
 
 `../bench/perf.py` with this folder's defaults (the int8 draft slice of the Russian
-vocabulary, FP8 hyper-connection projections; ablation off), one boot, against
-`vllm-flash-ar` with the same two, and this lane's stage 0:
+vocabulary, FP8 hyper-connection projections) and `ABLATE=1` (the mean direction, all 48
+layers, the embedding, the MTP draft), one boot, against `vllm-flash-ar` and this lane's
+stage 0. The dev image's decode cells are without the ablation (79.3 / 4.26 / 82% with it,
+patch 17), its sweep with it:
 
-| | `vllm-flash-ar` (dev image) | 0.34, stage 0 | **0.34, stage 1** |
+| | `vllm-flash-ar` (dev image) | 0.34, stage 0 | **0.34, stage 1 + `ABLATE=1`** |
 |---|---|---|---|
 | TTFT, short prompt | 124-129 ms | 136 ms | **120 ms** |
 | Single-stream decode, code | 79.6 tok/s (4.19 tok/step, 80%) | 68.8 (4.35, 84%) | **79.8** (4.30, 83%) |
@@ -33,14 +35,19 @@ vocabulary, FP8 hyper-connection projections; ablation off), one boot, against
 | Longest pause under a 32K prefill (1 / 4 streams) | 5.68 / 11.31 s | **2.46 / 2.49 s** | 2.53 / 2.56 s |
 
 Decode is level with the dev image (code 79.8 against 79.6, Russian within its acceptance
-noise), the aggregate 3-10% above it at 1-4 streams and level at 8 (16-32 streams queue
-behind the 8-sequence cap: 240-244 tok/s), prefill 16-29% above its best run, and a long
-prompt still stalls the running streams for ~2.5 s instead of 6-11. Prefill is 3.5-7% below
-stage 0's run: the FP8 projections' prefill path converts each weight back to BF16 per call
-(~20 MB of traffic a mix, ~9 ms a forward by the bytes, <1% of a chunk), so most of that is
-likely the machine's run-to-run spread (the dev image's prefill runs spread 5-15%); a
-back-to-back `HC_FP8=0` / `1` `--only prefill` pair would settle it. Still to run here:
-`../bench/consistency.py`.
+noise) and with this lane's own stage 1b run without the ablation (78.5), so the ablation's
+projections cost decode nothing measurable; the aggregate is 3-10% above the dev image's
+(ablated too) at 1-4 streams and level at 8 (16-32 streams queue behind the 8-sequence cap:
+240-244 tok/s), prefill 16-29% above its best run, and a long prompt still stalls the running
+streams for ~2.5 s instead of 6-11.
+
+Prefill is 3.5-7% below stage 0's run. Two things are added there, both small by the bytes:
+the ablation's projections (two per layer over [8192, 2560] chunks plus the PLE layers', ~2% of
+a chunk if each reads its input three times) and the FP8 projections' prefill path (each
+weight converted back to BF16 per call, ~20 MB a mix, <1%); the rest is within this machine's
+run-to-run spread (the dev image's prefill runs spread 5-15%). A plain `./serve.sh` (no
+ablation) with `--only prefill` separates them. Still to run here: `../bench/consistency.py`
+without the ablation, and a request the stock model refuses with it.
 
 ## Stage 0 (2026-11-22)
 
@@ -164,7 +171,20 @@ hc fp8: <N> hyper-connection projections in FP8 with per-row scales, <~1.3> -> <
 torch (`TORCH PATH`: slower than BF16), and refuses `HC_FP8` on an image without the
 hook (`gb10.hc-fp8` label: `./build.sh`).
 
-## Stage 2: the refusal-direction ablation (built, to try)
+## Stage 2: the refusal-direction ablation (boots and measures, 2026-11-22)
+
+`ABLATE=1 ./serve.sh` booted as built; `serve.sh`'s report:
+
+```
+ablation: refusal direction the mean of layers 4-46's vectors from refusal_directions-v4-late.npz (sha256 bb311e37712e...), rank 1, alpha 1; covers 37%-89% (mean 71%) of the file's per-layer directions; projected out of the writers of 48 of 48 layers (0-47), the embedding. Answers are not the stock model's.
+ablation: the MTP draft projects its inputs too
+```
+
+and the full bench with it is the status table above: decode 79.8 / 49.3 tok/s, 83% of code
+drafts accepted (the draft projects its inputs as the target does, so acceptance holds).
+To confirm by hand: a request the stock model refuses.
+
+### How it is wired
 
 `vllm-flash-ar`'s patch 17, the same files (`../vllm-flash-ar/src/gb10_abliterate.py`,
 `patch_abliterate.py`) and the same knobs (`ABLATE`, `ABLATE_VECTORS`, `ABLATE_SOURCE`,
@@ -190,16 +210,9 @@ for bit, the patched forward compiles as one graph, and dropping the PLE, attent
 insertion fails it.
 
 `serve.sh` refuses `ABLATE` without the vectors or on an image without the hook
-(`gb10.ablate` label), and prints the boot log's line:
-
-```
-ablation: refusal direction the mean of layers 4-46's vectors from refusal_directions-v4-late.npz (sha256 bb311e37...), rank 1, alpha 1; covers ...; projected out of the writers of 48 of 48 layers (0-47), the embedding. Answers are not the stock model's.
-ablation: the MTP draft projects its inputs too
-```
-
-On the dev image the same vectors answered a request the stock model refused, decode 79.3
-tok/s (82% of drafts accepted). To check here: the same request, `perf.py --only decode
-decode-ru`.
+(`gb10.ablate` label), and prints the boot log's lines (above). On the dev image the same
+vectors answered a request the stock model refused, decode 79.3 tok/s (82% of drafts
+accepted).
 
 ## Stage 0, as built
 
