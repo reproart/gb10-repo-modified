@@ -105,9 +105,14 @@ fi
 # NOTE: inert unless the image has the patch-mtp-draft-vocab section of the
 # Dockerfile baked in (rebuild required; vLLM ignores the env otherwise).
 # DRAFT_VOCAB: 1 = the drafter scores only the 65,536 most frequent tokens
-# (+3-5% decode; the shipped id set is English/code-weighted — CJK/RU-heavy
-# traffic may prefer 0 or a custom set via tools/build_draft_vocab.py);
-# 0 = full vocabulary; a path = your own ids.npy.
+# (+3-5% decode; the shipped id set is English/code-weighted: it covers 47-54%
+# of the tokens of Russian prose, so Russian answers draft at half the
+# positions at most); ru = 65,536 ids, 49,152 of that set (the most frequent in
+# English and code) + 16,384 Russian ones (99.8% of Russian prose, English and
+# code within 0.2 points of 1); ru-wide = all of 1's ids + 16,384 Russian ones,
+# 81,920 (English exactly as 1, a 25% larger draft-head read); 0 = full
+# vocabulary; a path = your own ids.npy (tools/build_draft_vocab.py).
+# README, patch 10. ru / ru-wide are mounted from src/, no rebuild needed.
 DRAFT_VOCAB="${DRAFT_VOCAB:-1}"
 # DRAFT_HEAD: int8 (default) = the head as the target has it: shared
 # (DRAFT_VOCAB=0), or with DRAFT_VOCAB its own int8 rows for those ids on the
@@ -123,9 +128,17 @@ case "$DRAFT_HEAD" in
   int4|bf16) MTENV+=(-e VLLM_MTP_DRAFT_HEAD="$DRAFT_HEAD") ;;
   *) echo "WARNING: DRAFT_HEAD='$DRAFT_HEAD' is not int8, int4 or bf16: using int8" >&2; DRAFT_HEAD=int8 ;;
 esac
+VOCAB_MOUNT=()
 case "$DRAFT_VOCAB" in
   0) ;;
   1) MTENV+=(-e VLLM_MTP_DRAFT_VOCAB=/opt/llm/draft_vocab_65536.npy) ;;
+  ru|ru-wide)
+    vocab_file=draft_vocab_ru_65536.npy
+    [ "$DRAFT_VOCAB" = ru-wide ] && vocab_file=draft_vocab_ru_81920.npy
+    vocab_src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../src" && pwd)/$vocab_file"
+    [ -f "$vocab_src" ] || { echo "ERROR: DRAFT_VOCAB=$DRAFT_VOCAB: no $vocab_src" >&2; exit 1; }
+    VOCAB_MOUNT=(-v "$vocab_src:/opt/llm/$vocab_file:ro")
+    MTENV+=(-e VLLM_MTP_DRAFT_VOCAB="/opt/llm/$vocab_file") ;;
   *) MTENV+=(-e VLLM_MTP_DRAFT_VOCAB="$DRAFT_VOCAB") ;;
 esac
 
@@ -367,7 +380,7 @@ PLE_STATS_DEFAULT=30
 # first step with FileNotFoundError; put the file in the checkpoint dir and
 # pass /model/<name>.npy.
 case "$DRAFT_VOCAB" in
-  0|1|/model/*|/ple-table/*) ;;
+  0|1|ru|ru-wide|/model/*|/ple-table/*) ;;
   *) echo "WARNING: DRAFT_VOCAB='$DRAFT_VOCAB' — the container only sees /model and /ple-table. Put the ids.npy in the checkpoint dir and pass /model/<name>.npy (or bake it into a custom image)." >&2 ;;
 esac
 
@@ -435,7 +448,7 @@ docker run -d --name "$NAME" --restart "${RESTART:-unless-stopped}" ${CPU_ARGS[@
   --log-opt max-size="$LOG_MAX_SIZE" --log-opt max-file="$LOG_MAX_FILE" \
   --health-cmd "$HEALTH_CMD" --health-start-period=10m \
   --health-interval=60s --health-timeout=15s --health-retries=10 \
-  -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" ${PROF_MOUNT[@]+"${PROF_MOUNT[@]}"} ${ABL_MOUNT[@]+"${ABL_MOUNT[@]}"} \
+  -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" ${PROF_MOUNT[@]+"${PROF_MOUNT[@]}"} ${ABL_MOUNT[@]+"${ABL_MOUNT[@]}"} ${VOCAB_MOUNT[@]+"${VOCAB_MOUNT[@]}"} \
   "${ENV_ARGS[@]}" \
   "$IMAGE" \
   /model --served-model-name "${SERVED_NAMES[@]}" \

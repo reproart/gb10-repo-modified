@@ -76,6 +76,21 @@ CODE_PROMPT = (
     "in O(1), using a dict and a doubly linked list. Include docstrings."
 )
 
+# Russian prose (perf.py section 2b): the owner's everyday language. A draft that
+# cannot propose Cyrillic tokens (an English/code-weighted draft vocabulary, as
+# vllm-flash-ar's DRAFT_VOCAB=1) loses acceptance here and not on CODE_PROMPT.
+RU_PROMPT = (
+    "Объясни простыми словами, как работает HTTPS: что происходит при установке "
+    "соединения, зачем нужны сертификаты и что делает браузер, если сертификат "
+    "недействителен. Ответь связным текстом на русском языке, без списков, таблиц и кода."
+)
+
+
+def cyrillic_share(text):
+    """Share of the letters in text that are Cyrillic (0..1; 0 for no letters)."""
+    letters = [c for c in text or "" if c.isalpha()]
+    return sum("\u0400" <= c <= "\u04ff" for c in letters) / len(letters) if letters else 0.0
+
 
 def _get(url, timeout=30):
     req = urllib.request.Request(url, headers=HEADERS)
