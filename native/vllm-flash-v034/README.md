@@ -86,7 +86,26 @@ correct, only slower). `serve.sh` prints the third line itself once the API answ
 warns that it is missing), and refuses a `DRAFT_VOCAB` / `DRAFT_HEAD` on an image built
 before this stage (no `gb10.draft-head` label: `./build.sh`).
 
-## Stage 1b: FP8 hyper-connection projections (built, to measure)
+## Stage 1b: FP8 hyper-connection projections (measured 2026-11-22)
+
+`../bench/perf.py --only decode decode-ru`, one boot, as for 1a:
+
+| | `vllm-flash-ar` | 0.34, stage 1a | 0.34, stage 1b (`HC_FP8=1`) |
+|---|---|---|---|
+| Single-stream decode, code | 79.6 tok/s (4.19 tok/step, 80%) | 76.0 (4.22, 81%) | **78.5** (4.17, 79%) |
+| Single-stream decode, Russian prose | 50.2 (2.58, 40%) | 52.2 (2.80, 45%) | 50.8 (2.70, 43%) |
+| Time per decode step, code (median of the 5) | 52.6 ms | 55.6 ms | 53.7 ms |
+
+Code +3.3%, the step 1.9 ms shorter (the estimate was ~3 ms: the fused BF16 down+SiLU
+kernel it gives up was already lean). Russian moved with its acceptance (43% against
+45%, three answers of 281-390 tokens; per step 53.6 -> 53.1 ms), i.e. within the noise.
+Both are now level with `vllm-flash-ar` (79.6 / 50.2). The boot log: `200
+hyper-connection projections in FP8 with per-row scales, 1.25 -> 0.64 GiB; inputs up to
+64 rows: decode kernel for 16/32/64-row tiles; prefill dequantize on Triton; fused BF16
+kernels off in 98 modules`. To do: `HC_FP8=up` (FP8 up projections, the fused down kernel
+kept) against this, prefill and the concurrency sweep with it on, `consistency.py`.
+
+### How it works
 
 `vllm-flash-ar`'s patch 16, the same files (`../vllm-flash-ar/src/gb10_fp8_rowwise.py`,
 `patch_hc_fp8.py`), `HC_FP8=1` by default as there. Each of the ~98 mixes a step reads
