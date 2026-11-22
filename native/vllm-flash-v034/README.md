@@ -238,6 +238,41 @@ call parses, a quoted `<tool_call>` in the reasoning keeps the answer; chunks of
 all characters), so a build that does not hold stops there. To check on the server:
 `python3 ../bench/consistency.py --only fence`.
 
+## Stage 3b: determinism (built, to check)
+
+`../bench/consistency.py` section 2 sends one greedy request cold, twice from the prefix
+cache and cold again; on stages 1-2 the replies forked a few dozen characters in (top-5
+first-token gaps 0.2-0.5 nats), cold vs cold and hit vs hit alike, as on the dev image
+before its patches 15 and 9. Two possible sources, both ported:
+
+- **MoE token alignment** (`DET_MOE_ALIGN=1`, the default): vLLM's `moe_align_block_size`
+  kernel places an expert's routes with `atomicAdd`, so a route lands in another Marlin MoE
+  m-block from run to run and the expert's sums change order. On the dev image this was the
+  whole difference (gap 0.0000 after it, no measurable cost). `../vllm-flash-ar`'s patch,
+  which now finds 0.34's implementation behind its three `@overload` stubs and keeps the
+  kernel when a caller asks for 0.34's new `scatter_idx` (Marlin MoE does not). 0.34 runs
+  int4 experts on Marlin on GB10 (Humming is preferred only on SM 9.0). From `SEQS x (1 +
+  MTP) + 1` tokens a step (41): prefill and steps with a prefill chunk, decode keeps the
+  kernel.
+- **QSA block top-k** (`QSA_EXACT_TOPK=1`, off): on GB10 0.34 always selects the sparse
+  attention's key blocks with `persistent_topk` (`cooperative_topk` is gated off for SM 12.x).
+  That kernel was non-deterministic in the dev image's vLLM (vllm#51782); whether 0.34's build
+  has @jschmied's fix (vllm#55122) cannot be seen from its Python. `src/patch_qsa_exact_topk.py`
+  is the dev image's exact fallback ported to 0.34's `_topk`: `torch.topk` over the visible
+  columns, the rest masked. One change: the chosen block ids are put in ascending order,
+  because 0.34's expansion kernel reads only the first `min(visible, block_topk)` slots, and
+  `torch.topk(sorted=False)` does not promise the visible ones come first (the masked ids are
+  the highest, so they sort last; it is also the order @jschmied's kernel writes). Off by
+  default: on the dev image it cost 20-40% of long prefill, and 0.34's kernel may not need it.
+
+The plan: `consistency.py --only repeat` with the defaults; if it still forks, again with
+`QSA_EXACT_TOPK=1`. If the exact top-k is what it takes, @jschmied's deterministic kernel (the
+dev image's `DET_TOPK`) is the fast way and comes next. Checks: `../vllm-flash-ar/src/
+test_det_moe_align_cpu.py` (0.34's own file, a stand-in kernel: the reference layout with no
+kernel call for a prefill batch; decode, `scatter_idx` and an `expert_map` keep the kernel) and
+`src/test_qsa_exact_topk_cpu.py` (the reference top-k in the slots the expansion reads,
+garbage past the visible count kept out, repeatable).
+
 ## Stage 0, as built
 
 What 0.34 does natively that the dev image needs patches for: the n-gram table read
@@ -258,13 +293,13 @@ What this checkpoint needs on top, all in this folder:
 | FP8 hyper-connection projections (stage 1b) | the checkpoint's BF16 HC projections, ~1.3 GB read a forward | `../vllm-flash-ar/src/gb10_fp8_rowwise.py` + `patch_hc_fp8.py` (`Dockerfile`), `HC_FP8` in `config.sh` |
 | the refusal-direction ablation (stage 2) | optional, `ABLATE=1`: a direction projected out of every writer of the streams | `../vllm-flash-ar/src/gb10_abliterate.py` + `patch_abliterate.py` (`Dockerfile`), `ABLATE*` in `config.sh` |
 | the tool-call parser fixes (stage 3a) | 0.34's parser turns a quoted or fenced tool-call example into a call that drops the reply | `src/patches/*.v034.patch` (blazux 12 + 13 ported, `Dockerfile`), checked by `src/check_tool_parser.py` at build time |
+| determinism (stage 3b) | the same greedy request forks from run to run: MoE token alignment by `atomicAdd`, possibly the QSA top-k kernel | `../vllm-flash-ar/src/patch_det_moe_align.py` (`DET_MOE_ALIGN=1`), `src/patch_qsa_exact_topk.py` (`QSA_EXACT_TOPK=1`) |
 | `--load-format safetensors` | the disk-offloaded table keeps the loader's mmap views of the shards; `fastsafetensors` (`vllm-flash-ar`'s loader) does not hand them over | `config.sh` |
 
 The model's `config.json` already says `qwen4_exp` (0.34's name for Flash-Next), so no
 rename is needed (MiaAI-Lab's checkpoint did need one).
 
-Not ported yet, so off in this lane: deterministic MoE alignment and QSA top-k, the metrics
-sidecar, never-evict pinning, the mamba state-copy guard. Each comes over as its own stage
+Not ported yet, so off in this lane: the metrics sidecar, never-evict pinning, the mamba state-copy guard. Each comes over as its own stage
 once the bare lane boots and measures; some may be upstream already (0.34 may not need
 them).
 
@@ -303,9 +338,12 @@ src/patch_lm_head_quant.py  the int8 lm_head patch
 src/test_v034_cpu.py      CPU tests of both, of the Dockerfile's mtp.py / hyperconnection.py / ablation steps and of the parser patches
 src/patches/*.v034.patch  blazux's tool-call parser patches 12 and 13, ported to vLLM 0.34.0
 src/check_tool_parser.py  the parser cases the build runs after them
+src/patch_qsa_exact_topk.py  the exact QSA block top-k (QSA_EXACT_TOPK=1); test_qsa_exact_topk_cpu.py checks it
+../vllm-flash-ar/src/patch_det_moe_align.py  the deterministic MoE alignment (DET_MOE_ALIGN=1, shared)
 ../vllm-flash-ar/src/patch_mtp_draft_vocab.py, draft_vocab_*.npy   the draft head and its id sets (shared)
 ../vllm-flash-ar/src/gb10_fp8_rowwise.py, patch_hc_fp8.py          FP8 HC (shared; test_hc_fp8_cpu.py runs 0.34's file)
 ../vllm-flash-ar/src/gb10_abliterate.py, patch_abliterate.py       the ablation (shared; test_abliterate_cpu.py runs 0.34's classes)
 src/testdata/*.v034       vLLM 0.34.0's qwen4_exp/nvidia/model.py, mtp.py, hyperconnection.py, from the wheel
 src/testdata/parser/      vLLM 0.34.0's parser files the patches change, from the wheel
+src/testdata/{moe_align_block_size,qsa_indexer}.py.v034  the files the determinism patches change
 ```

@@ -9,6 +9,11 @@
 2. The patcher on vLLM's moe_align_block_size.py (MOE_ALIGN_SRC, or a minimal stand-in
    of the PR #53896 layout): the call wrapped once, the helper above the function, the
    file parses, a second run changes nothing.
+3. The patcher on vLLM 0.34.0's own file (../../vllm-flash-v034/src/testdata, three
+   @overload stubs before the implementation, a scatter_idx argument), and the patched
+   module run with a stand-in kernel: VLLM_DET_MOE_ALIGN=1 gives the reference layout for
+   a prefill batch without calling the kernel; a decode batch, a request for scatter_idx
+   and an expert_map keep the kernel; without the variable the kernel always runs.
 
     python3 src/test_det_moe_align_cpu.py
 """
@@ -103,7 +108,61 @@ def main():
     ast.parse(patched)
     assert "expert_map" not in patched.split(pd.MARK.replace("# ---", "# --- end"))[1]
     print("PASS patcher on a signature without expert_map: the condition does not name it")
+    v034()
     print("ALL OK")
+
+
+def v034():
+    import types
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "vllm-flash-v034", "src",
+                        "testdata", "moe_align_block_size.py.v034")
+    src = open(path).read()
+    patched = pd.patch(src)
+    ast.parse(patched)
+    assert patched.count("_deterministic_align(topk_ids") == 2 and patched.count("ops.moe_align_block_size(") == 1
+    assert "if _DET_ALIGN and topk_ids.shape[0] >= _DET_MIN_TOKENS and expert_map is None and scatter_idx is None:" \
+        in patched
+    impl = [i for i in range(len(patched)) if patched.startswith("def moe_align_block_size(", i)][-1]
+    assert patched.index("_deterministic_align(topk_ids, num_experts", impl) > impl  # the implementation's call
+    assert pd.patch(patched) == patched
+    print("PASS patcher on vLLM 0.34.0's file: the implementation's call wrapped (not an @overload stub), "
+          "expert_map and scatter_idx keep the kernel, idempotent")
+
+    calls = []
+
+    def kernel(topk_ids, num_experts, block_size, sorted_ids, expert_ids, num_tokens_post_pad, emap, scatter):
+        calls.append(topk_ids.shape[0])
+        sorted_ids.fill_(-7)
+
+    stubs = {"vllm._custom_ops": types.SimpleNamespace(moe_align_block_size=kernel),
+             "vllm.triton_utils": types.SimpleNamespace(triton=types.SimpleNamespace(cdiv=lambda a, b: -(-a // b))),
+             "vllm.utils.math_utils": types.SimpleNamespace(round_up=lambda x, m: -(-x // m) * m)}
+    body = patched.replace("from vllm import _custom_ops as ops\n", "ops = _stubs['vllm._custom_ops']\n") \
+        .replace("from vllm.triton_utils import triton\n", "triton = _stubs['vllm.triton_utils'].triton\n") \
+        .replace("from vllm.utils.math_utils import round_up\n", "round_up = _stubs['vllm.utils.math_utils'].round_up\n")
+    for env in ("1", "0"):
+        os.environ["VLLM_DET_MOE_ALIGN"] = env
+        ns = {"_stubs": stubs, "__name__": "moe_align_v034"}
+        exec(compile(body, path, "exec"), ns)
+        align = ns["moe_align_block_size"]
+        g = torch.Generator().manual_seed(21)
+        topk = torch.randint(0, 512, (300, 10), generator=g, dtype=torch.int32)
+        calls.clear()
+        sorted_ids, expert_ids, total = align(topk, 16, 512, ignore_invalid_experts=True)  # Marlin MoE's call
+        if env == "1":
+            ref_ids, ref_blocks, ref_total = reference(topk, 512, 16)
+            assert calls == [] and int(total) == ref_total
+            assert sorted_ids[:ref_total].tolist() == ref_ids and expert_ids[:len(ref_blocks)].tolist() == ref_blocks
+            assert bool((sorted_ids[ref_total:] == topk.numel()).all())
+            align(topk[:4], 16, 512, ignore_invalid_experts=True)                     # decode: the kernel
+            align(topk, 16, 512, ignore_invalid_experts=True, return_scatter_idx=True)  # scatter_idx: the kernel
+            align(topk, 16, 512, expert_map=torch.arange(512), ignore_invalid_experts=True)  # EP: the kernel
+            assert calls == [4, 300, 300], calls
+        else:
+            assert calls == [300]
+    os.environ.pop("VLLM_DET_MOE_ALIGN")
+    print("PASS vLLM 0.34.0's patched function: the reference layout for a 300-token batch with no kernel call; "
+          "decode, scatter_idx and expert_map keep the kernel; off without VLLM_DET_MOE_ALIGN")
 
 
 STANDIN = '''import torch

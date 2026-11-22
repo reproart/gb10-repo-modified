@@ -940,6 +940,14 @@ in BF16 (`include/humming/epilogue/gmem_writer.cuh` in humming-kernels
 `use_batch_invariant` kernels drop stream-K, but vLLM turns them on only with
 `VLLM_BATCH_INVARIANT=1`, its engine-wide batch-invariant mode. Marlin it is.
 
+**On vLLM 0.34** (`../vllm-flash-v034/`, 2026-11-22) the same patch: 0.34 declares
+`moe_align_block_size` three times with `@overload` before the implementation and
+passes the kernel a `scatter_idx`, so the patcher now wraps the implementation's
+call (not a stub's) and keeps the kernel when a caller asks for `scatter_idx`
+(0.34's Marlin MoE, the backend it picks for int4 experts on GB10, does not;
+Humming is preferred only on SM 9.0). `src/test_det_moe_align_cpu.py` runs 0.34's
+own file with a stand-in kernel.
+
 ### 16. FP8 hyper-connection projections (`src/gb10_fp8_rowwise.py`, `HC_FP8=1`)
 
 **Where a decode step goes** (2026-11-03, GX10, `PROFILE=1 PROFILE_SHAPES=1`,

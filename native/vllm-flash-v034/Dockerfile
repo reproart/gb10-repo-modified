@@ -3,7 +3,8 @@
 # Built by ./build.sh from a context it assembles (this file, ../vllm-flash-ar/src/
 # vllm_fp8_hybrid.py, patch_mtp_draft_vocab.py, gb10_fp8_rowwise.py, patch_hc_fp8.py,
 # gb10_abliterate.py and patch_abliterate.py, src/patch_lm_head_quant.py, check_tool_parser.py,
-# patches/*.v034.patch); BASE is vllm/vllm-openai@<image.lock>.
+# patches/*.v034.patch, ../vllm-flash-ar/src/patch_det_moe_align.py, src/patch_qsa_exact_topk.py);
+# BASE is vllm/vllm-openai@<image.lock>.
 # vLLM 0.34 serves this model (Qwen4Exp) with its n-gram table read from disk
 # (--engram-config disk_offload) natively; what this checkpoint needs on top:
 #   1. the int4+fp8 hybrid dispatch: the GPTQ config's excluded layers (GDN / attention
@@ -25,12 +26,17 @@
 #      0.34's parser engine (src/patches/*.v034.patch): a quoted or fenced tool-call example stays
 #      text instead of becoming a call that drops the answer. On for the qwen3 configuration
 #      (--tool-call-parser qwen3_xml); check_tool_parser.py runs the cases at build time.
+#   7. determinism: the MoE token alignment in a fixed order (../vllm-flash-ar's patch 15, the
+#      same file, which finds 0.34's implementation behind its @overload stubs; on with
+#      VLLM_DET_MOE_ALIGN=1) and an exact QSA block top-k (src/patch_qsa_exact_topk.py, the
+#      dev image's patch 9 fallback ported to 0.34's _topk; on with VLLM_QSA_EXACT_TOPK=1).
 ARG BASE=vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1
 FROM ${BASE}
 
 COPY vllm_fp8_hybrid.py patch_lm_head_quant.py patch_mtp_draft_vocab.py gb10_fp8_rowwise.py patch_hc_fp8.py \
      gb10_abliterate.py patch_abliterate.py check_tool_parser.py \
-     qwen-tool-preamble.v034.patch qwen-tool-marker-guard.v034.patch /tmp/gb10/
+     qwen-tool-preamble.v034.patch qwen-tool-marker-guard.v034.patch \
+     patch_det_moe_align.py patch_qsa_exact_topk.py /tmp/gb10/
 RUN set -eu; \
     python3 -c 'import vllm; print("vLLM", vllm.__version__)'; \
     SP="$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirname(vllm.__file__)))')"; \
@@ -66,6 +72,11 @@ RUN set -eu; \
               && patch --batch --forward --fuzz=0 -p1 < /tmp/gb10/qwen-tool-marker-guard.v034.patch); \
     python3 /tmp/gb10/check_tool_parser.py; \
     echo "tool-call parser: preamble + marker guard OK"; \
+    python3 /tmp/gb10/patch_det_moe_align.py "$SP/vllm/model_executor/layers/fused_moe/moe_align_block_size.py"; \
+    grep -q "and expert_map is None and scatter_idx is None:" "$SP/vllm/model_executor/layers/fused_moe/moe_align_block_size.py"; \
+    python3 /tmp/gb10/patch_qsa_exact_topk.py "$Q/ops/qsa_indexer.py"; \
+    grep -q "_gb10_qsa_exact_topk(logits" "$Q/ops/qsa_indexer.py"; \
+    echo "determinism: MoE align + exact QSA top-k OK"; \
     rm -rf /tmp/gb10
 # serve.sh checks these before it passes DRAFT_VOCAB / DRAFT_HEAD / HC_FP8 / ABLATE (an older image lacks the hook)
-LABEL gb10.draft-head="1" gb10.hc-fp8="1" gb10.ablate="1" gb10.tool-parser="1"
+LABEL gb10.draft-head="1" gb10.hc-fp8="1" gb10.ablate="1" gb10.tool-parser="1" gb10.det="1"

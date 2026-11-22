@@ -74,6 +74,22 @@ export DRAFT_HEAD="${DRAFT_HEAD:-int8}"
 # which a converted layer gives up: 1 = both FP8 (default), up = only the up projections (the
 # fused down kernel kept), 0 = BF16 as shipped.
 export HC_FP8="${HC_FP8:-1}"
+# Determinism (the same greedy request gives the same reply, cold or from the prefix cache;
+# ../bench/consistency.py section 2):
+# DET_MOE_ALIGN: 1 (default) = the MoE token alignment in a fixed order (../vllm-flash-ar's
+#   patch 15): vLLM's kernel places an expert's routes in atomicAdd arrival order, which moves
+#   a route between Marlin MoE m-blocks and so the order of its sums from run to run. On the
+#   dev image that was the whole run-to-run difference, at no measurable cost. 0 = the kernel.
+# DET_MOE_ALIGN_MIN_TOKENS: the steps it applies to, from this many tokens up; auto =
+#   SEQS x (1 + MTP) + 1: prefill and steps with a prefill chunk, not decode-only steps.
+export DET_MOE_ALIGN="${DET_MOE_ALIGN:-1}"
+export DET_MOE_ALIGN_MIN_TOKENS="${DET_MOE_ALIGN_MIN_TOKENS:-auto}"
+# QSA_EXACT_TOPK: 1 = the sparse attention's block top-k by an exact torch.topk instead of
+#   persistent_topk, which was non-deterministic on GB10 in the dev image's vLLM (vllm#51782);
+#   whether 0.34's kernel has the fix is not visible from outside, so it is off until
+#   consistency.py says it is needed (on the dev image the exact path cost 20-40% of long
+#   prefill).
+export QSA_EXACT_TOPK="${QSA_EXACT_TOPK:-0}"
 # Refusal-direction ablation at inference (../vllm-flash-ar's patch 17, the same knobs), off by
 # default:
 #   ABLATE=1 ./serve.sh                    the vectors at ABLATE_VECTORS

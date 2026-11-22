@@ -11,6 +11,8 @@
    hyperconnection.py step: ../vllm-flash-ar's FP8 HC hook on 0.34's file, and every
    string the Dockerfile greps for in it. The ablation step, on model.py and mtp.py as the
    steps before leave them: 0.34's insertion points, the strings the Dockerfile greps for.
+   The determinism step: ../vllm-flash-ar's MoE alignment patch and the exact QSA top-k on
+   0.34's moe_align_block_size.py and qsa_indexer.py, the strings the Dockerfile greps for.
 3. the tool-call parser patches (src/patches/*.v034.patch): both apply to vLLM 0.34.0's own
    parser files (src/testdata/parser/, from the wheel) with --fuzz=0, in order, and the
    result parses and switches both guards on for the qwen3 configuration only. (Their
@@ -36,9 +38,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import make_model_view as mv
 import patch_lm_head_quant as lh
+import patch_qsa_exact_topk as pq
 
 sys.path.insert(0, os.path.join(HERE, "..", "..", "vllm-flash-ar", "src"))
 import patch_abliterate as pa
+import patch_det_moe_align as pd
 import patch_hc_fp8 as ph
 import patch_mtp_draft_vocab as dv
 
@@ -129,6 +133,26 @@ class DraftHeadStepTest(Tmp):
                 self.assertTrue(re.search(bre(g), src, re.MULTILINE), (name, g))
         self.assertIn(lh.MARK, src)
         self.assertIn(dv.MARK, src)
+
+    def test_dockerfile_determinism_step(self):
+        with open(os.path.join(HERE, "..", "Dockerfile")) as f:
+            docker = f.read()
+        with open(os.path.join(HERE, "testdata", "moe_align_block_size.py.v034")) as f:
+            moe = pd.patch(f.read())
+        ast.parse(moe)
+        self.assertEqual(pd.patch(moe), moe)
+        for g in re.findall(r'grep -q "([^"]+)" "\$SP/vllm/model_executor/layers/fused_moe/moe_align_block_size.py"',
+                            docker):
+            self.assertTrue(re.search(bre(g), moe, re.MULTILINE), g)
+        q = os.path.join(self.d, "qsa_indexer.py")
+        shutil.copy(os.path.join(HERE, "testdata", "qsa_indexer.py.v034"), q)
+        self.assertEqual(pq.patch(q), "INSTALLED")
+        with open(q) as f:
+            qsa = f.read()
+        ast.parse(qsa)
+        greps = re.findall(r'grep -q "([^"]+)" "\$Q/ops/qsa_indexer.py"', docker)
+        self.assertEqual(len(greps), 1)
+        self.assertTrue(re.search(bre(greps[0]), qsa, re.MULTILINE))
 
     def test_dockerfile_hc_step(self):
         p = os.path.join(self.d, "hyperconnection.py")
