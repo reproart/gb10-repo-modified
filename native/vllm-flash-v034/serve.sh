@@ -7,6 +7,7 @@
 # Then, as for every server here (the benches find :8000 by themselves):
 #   python3 ../bench/perf.py --only decode decode-ru prefill
 set -euo pipefail
+trap 'echo "serve.sh: stopped at line $LINENO (exit $?)" >&2' ERR
 . "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 need_docker
 

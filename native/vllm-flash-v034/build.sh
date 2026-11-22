@@ -5,6 +5,7 @@
 #   ./build.sh
 #   ./build.sh --no-cache        anything docker build takes
 set -euo pipefail
+trap 'echo "build.sh: stopped at line $LINENO (exit $?)" >&2' ERR
 . "$(dirname "${BASH_SOURCE[0]}")/config.sh"
 need_docker
 # A base image through the page cache: never beside a GPU job.
