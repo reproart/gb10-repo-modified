@@ -64,7 +64,9 @@ MTP private draft head: int8 GPTQ-Marlin (the target head's own rows), 65536 of 
 ```
 
 and never `first called inside a CUDA graph capture` (that graph would keep the full head:
-correct, only slower). Expected: decode back to `vllm-flash-ar`'s 79.6 / 50.2 tok/s
+correct, only slower). `serve.sh` prints the third line itself once the API answers (or
+warns that it is missing), and refuses a `DRAFT_VOCAB` / `DRAFT_HEAD` on an image built
+before this stage (no `gb10.draft-head` label: `./build.sh`). Expected: decode back to `vllm-flash-ar`'s 79.6 / 50.2 tok/s
 (code / Russian) or near it; what remains after that is the BF16 hyper-connection
 projections (stage 1b).
 

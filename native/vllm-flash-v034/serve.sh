@@ -50,6 +50,13 @@ case "$DRAFT_HEAD" in
 esac
 [ "$DRAFT_HEAD" = bf16 ] && [ "${DRAFT_VOCAB:-0}" = 0 ] && {
   echo "DRAFT_HEAD=bf16 is a DRAFT_VOCAB slice in bf16: set DRAFT_VOCAB too" >&2; exit 1; }
+DRAFT_ON=0
+[ "$MTP" != 0 ] && [ ${#DRAFT_ENVS[@]} -gt 0 ] && DRAFT_ON=1
+if [ "$DRAFT_ON" = 1 ] &&
+   [ "$(docker image inspect -f '{{index .Config.Labels "gb10.draft-head"}}' "$IMAGE" 2>/dev/null)" != 1 ]; then
+  echo "image $IMAGE has no draft-head hook (built before stage 1a): ./build.sh first, or DRAFT_VOCAB=0" >&2
+  exit 1
+fi
 
 if [ "$MEM_PREP" = 1 ]; then "$NATIVE_DIR/scripts/mem-prep.sh" prep || true; fi
 
@@ -98,6 +105,16 @@ auth=()
 for _ in $(seq 1 $((WAIT_MIN * 6))); do
   if curl -fsS -m 5 ${auth[@]+"${auth[@]}"} "http://127.0.0.1:$PORT/v1/models" >/dev/null 2>&1; then
     log "serving ${SERVED_NAMES[0]} on :$PORT; logs: docker logs -f $NAME"
+    if [ "$DRAFT_ON" = 1 ]; then
+      # built in the profiling run, before the API answers
+      head_line="$(docker logs "$NAME" 2>&1 | grep "MTP private draft head:" | head -1 || true)"
+      if [ -n "$head_line" ]; then
+        log "draft head: ${head_line##*MTP private draft head: }"
+      else
+        log "WARNING: no 'MTP private draft head:' line in the boot log, so the drafter scores the full head;" \
+          "docker logs $NAME 2>&1 | grep -i 'draft head'"
+      fi
+    fi
     exit 0
   fi
   if [ "$(docker inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" != true ]; then
