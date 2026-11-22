@@ -17,7 +17,8 @@ trap 'rm -rf "$ctx"' EXIT
 cp "$V034_ROOT/Dockerfile" "$NATIVE_DIR/vllm-flash-ar/src/vllm_fp8_hybrid.py" "$V034_ROOT/src/patch_lm_head_quant.py" \
   "$NATIVE_DIR/vllm-flash-ar/src/patch_mtp_draft_vocab.py" "$NATIVE_DIR/vllm-flash-ar/src/gb10_fp8_rowwise.py" \
   "$NATIVE_DIR/vllm-flash-ar/src/patch_hc_fp8.py" "$NATIVE_DIR/vllm-flash-ar/src/gb10_abliterate.py" \
-  "$NATIVE_DIR/vllm-flash-ar/src/patch_abliterate.py" "$ctx/"
+  "$NATIVE_DIR/vllm-flash-ar/src/patch_abliterate.py" "$V034_ROOT/src/check_tool_parser.py" \
+  "$V034_ROOT"/src/patches/*.v034.patch "$ctx/"
 log "building $IMAGE on $ref"
 docker build -t "$IMAGE" --build-arg "BASE=$ref" "$@" "$ctx"
 log "built $IMAGE ($(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -c8-19)); ./prepare.sh once, then ./serve.sh"

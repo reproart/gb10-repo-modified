@@ -64,6 +64,9 @@ case "$HC_FP8" in
       echo "image $IMAGE has no FP8 HC hook (built before stage 1b): ./build.sh first, or HC_FP8=0" >&2; exit 1; } ;;
   *) echo "HC_FP8=$HC_FP8: 0, 1 or up" >&2; exit 1 ;;
 esac
+[ "$(image_label gb10.tool-parser)" = 1 ] ||
+  log "NOTE: image $IMAGE predates the tool-call parser fixes (stage 3a): a tool-call example in a reply" \
+    "can still turn into a call. ./build.sh"
 # The ablation: 0 = off, 1 = ABLATE_VECTORS, a path = that file; its directory read-only at
 # /ablate. Asked for but not possible stops the start: the server would answer as the stock model.
 ABL_FILE="" ABL_MOUNT=() ABL_ENVS=()

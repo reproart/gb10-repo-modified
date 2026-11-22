@@ -826,7 +826,10 @@ blazux's tests for both are in `src/patches/*-tests.patch` (vLLM's test tree
 is not in the image): on their side 30 cases, 21 failing on 12 alone and all
 passing with 13. `python3 ../bench/consistency.py --only fence` checks the
 served model end to end. This project's SGLang profiles carry the same guard
-for SGLang's own parser (`../patches/gb10_tool_fences.py`).
+for SGLang's own parser (`../patches/gb10_tool_fences.py`). On vLLM 0.34
+(`../vllm-flash-v034/`, 2026-11-22) both no longer apply and are ported by hand
+there (`src/patches/*.v034.patch`); vLLM 0.34.0's parser tests plus these
+two's pass 224 of 224 on the ported files.
 
 ### 15. Deterministic MoE token alignment (`src/patch_det_moe_align.py`, `DET_MOE_ALIGN=1`)
 

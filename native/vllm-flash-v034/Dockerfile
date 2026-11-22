@@ -2,8 +2,8 @@
 #
 # Built by ./build.sh from a context it assembles (this file, ../vllm-flash-ar/src/
 # vllm_fp8_hybrid.py, patch_mtp_draft_vocab.py, gb10_fp8_rowwise.py, patch_hc_fp8.py,
-# gb10_abliterate.py and patch_abliterate.py, src/patch_lm_head_quant.py); BASE is
-# vllm/vllm-openai@<image.lock>.
+# gb10_abliterate.py and patch_abliterate.py, src/patch_lm_head_quant.py, check_tool_parser.py,
+# patches/*.v034.patch); BASE is vllm/vllm-openai@<image.lock>.
 # vLLM 0.34 serves this model (Qwen4Exp) with its n-gram table read from disk
 # (--engram-config disk_offload) natively; what this checkpoint needs on top:
 #   1. the int4+fp8 hybrid dispatch: the GPTQ config's excluded layers (GDN / attention
@@ -21,11 +21,16 @@
 #   5. the refusal-direction ablation (ABLATE in config.sh): ../vllm-flash-ar's patch 17, the
 #      same files, with 0.34's own insertion points (picked by class name). Inert unless
 #      VLLM_ABLATE is set.
+#   6. the tool-call parser fixes (blazux's 12 and 13, ../vllm-flash-ar's patch 14), ported to
+#      0.34's parser engine (src/patches/*.v034.patch): a quoted or fenced tool-call example stays
+#      text instead of becoming a call that drops the answer. On for the qwen3 configuration
+#      (--tool-call-parser qwen3_xml); check_tool_parser.py runs the cases at build time.
 ARG BASE=vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1
 FROM ${BASE}
 
 COPY vllm_fp8_hybrid.py patch_lm_head_quant.py patch_mtp_draft_vocab.py gb10_fp8_rowwise.py patch_hc_fp8.py \
-     gb10_abliterate.py patch_abliterate.py /tmp/gb10/
+     gb10_abliterate.py patch_abliterate.py check_tool_parser.py \
+     qwen-tool-preamble.v034.patch qwen-tool-marker-guard.v034.patch /tmp/gb10/
 RUN set -eu; \
     python3 -c 'import vllm; print("vLLM", vllm.__version__)'; \
     SP="$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirname(vllm.__file__)))')"; \
@@ -56,6 +61,11 @@ RUN set -eu; \
     grep -q "prev_block_output = _gb10_abl_project(" "$Q/mtp.py"; \
     python3 -c "import gb10_abliterate"; \
     echo "model.py, mtp.py: ablation hook OK"; \
+    command -v patch >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends patch >/dev/null; }; \
+    (cd "$SP" && patch --batch --forward --fuzz=0 -p1 < /tmp/gb10/qwen-tool-preamble.v034.patch \
+              && patch --batch --forward --fuzz=0 -p1 < /tmp/gb10/qwen-tool-marker-guard.v034.patch); \
+    python3 /tmp/gb10/check_tool_parser.py; \
+    echo "tool-call parser: preamble + marker guard OK"; \
     rm -rf /tmp/gb10
 # serve.sh checks these before it passes DRAFT_VOCAB / DRAFT_HEAD / HC_FP8 / ABLATE (an older image lacks the hook)
-LABEL gb10.draft-head="1" gb10.hc-fp8="1" gb10.ablate="1"
+LABEL gb10.draft-head="1" gb10.hc-fp8="1" gb10.ablate="1" gb10.tool-parser="1"
