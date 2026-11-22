@@ -1044,6 +1044,16 @@ all three tiles. The same bench showed 16-64 rows 10-30% slower than before,
 because that commit had also stopped specializing on the strides, which keeps
 the loads of x from being vectorized; only the row count is unspecialized now.
 
+**On vLLM 0.34** (`../vllm-flash-v034/`, 2026-11-22) the same two files patch
+`qwen4_exp/nvidia/hyperconnection.py`. Its `GatedResidual` reads two of these
+weights directly in fused kernels: down(+block_inject) + SiLU in a CuTe-DSL GEMM
+for up to 48 rows, and up + gate mix in an SM100-only kernel; `install_hc` turns
+a module's flag off (`_use_hc_down_silu`, `_use_hc_up_gate_mix`) when it converts
+that layer, so the module runs its unfused path through this GEMM. `VLLM_HC_FP8=up`
+converts only the up projections, keeping the fused down kernel, for an A/B
+there (here it is the same as `1` minus the down projections).
+`src/test_hc_fp8_cpu.py` runs 0.34's own `hyperconnection.py` with the hook.
+
 Checks: `src/test_hc_fp8_cpu.py` (no GPU; with `pip install triton` it also
 runs the kernel in Triton's interpreter) and, in the image, the kernel against
 cuBLAS on the real shapes, with correctness, run-to-run bits, prefill sizes and

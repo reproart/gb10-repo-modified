@@ -25,7 +25,7 @@ export VIEW_DIR="${VIEW_DIR:-$HOME/.cache/gb10/vllm-flash-v034/model-view}"
 
 # --- The image: vllm/vllm-openai:v0.34.0 pinned by digest (image.lock, committed) plus
 # build-time patches (./build.sh): the int4+fp8 hybrid dispatch, the int8 lm_head, the private
-# MTP draft head.
+# MTP draft head, FP8 hyper-connection projections.
 export BASE_IMAGE="${BASE_IMAGE:-vllm/vllm-openai}"
 export BASE_TAG="${BASE_TAG:-v0.34.0}"
 BASE_DIGEST="$(cat "$V034_ROOT/image.lock" 2>/dev/null || true)"
@@ -66,6 +66,14 @@ export DRAFT_VOCAB="${DRAFT_VOCAB:-ru}"
 # DRAFT_HEAD: int8 = the head's own precision (default); int4 = a private int4 g128 copy of
 # the head (the slice with DRAFT_VOCAB, else every row); bf16 = the slice in bf16 (compare).
 export DRAFT_HEAD="${DRAFT_HEAD:-int8}"
+# HC_FP8 (../vllm-flash-ar's patch 16): the hyper-connection projections (down+inject
+# [336 x 10240] and up [10240 x 320], ~98 of each a step, BF16 in the checkpoint) in FP8 with
+# a scale per row on a Triton GEMM for decode-sized inputs: half the bytes. On the dev image
+# +7% decode, HumanEval unchanged; lossy (answers move a little, deterministically). On 0.34
+# the down projection otherwise runs a fused BF16 down+SiLU kernel (CuTe-DSL, up to 48 rows),
+# which a converted layer gives up: 1 = both FP8 (default), up = only the up projections (the
+# fused down kernel kept), 0 = BF16 as shipped.
+export HC_FP8="${HC_FP8:-1}"
 # safetensors: the disk-offloaded table is read through the loader's mmap views, which
 # fastsafetensors (../vllm-flash-ar's loader) does not hand over.
 export LOAD_FORMAT="${LOAD_FORMAT:-safetensors}"

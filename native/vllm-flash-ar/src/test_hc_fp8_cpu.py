@@ -16,7 +16,12 @@
    them (block_inject rows stay BF16) and apply matches the BF16 layer, nothing is
    wrapped twice, other quant methods are left alone;
 6. the patcher on a stand-in hyperconnection.py: hook appended once, inert without
-   VLLM_HC_FP8, refuses a file without the hyper-connection layers.
+   VLLM_HC_FP8, refuses a file without the hyper-connection layers;
+7. vLLM 0.34's own hyperconnection.py (../../vllm-flash-v034/src/testdata), patched and
+   run on stand-ins for its imports: GatedResidual's fused down+SiLU kernel (which reads
+   the weight as BF16) is used without VLLM_HC_FP8 and never with it; with =1 both
+   projections are FP8 and the down+inject / up+gate-mix outputs match BF16's within
+   FP8 rounding; with =up only the up projection converts and the fused down stays.
 
     python3 src/test_hc_fp8_cpu.py        (kernel checks need: pip install triton)
 """
@@ -275,6 +280,113 @@ with tempfile.TemporaryDirectory() as d:
     except SystemExit:
         refused = True
     check("  refuses a file without the hyper-connection layers", refused)
+
+# 7. vLLM 0.34's hyperconnection.py
+V034_HC = os.path.join(HERE, "..", "..", "vllm-flash-v034", "src", "testdata", "hyperconnection.py.v034")
+fused_calls = []
+
+
+class MergedColumnParallelLinear(LinearBase):
+    def __init__(self, input_size, output_sizes, bias=False, params_dtype=None, quant_config=None,
+                 prefix="", return_bias=True, disable_tp=False):
+        super().__init__(sum(output_sizes), input_size, UnquantizedLinearMethod(), list(output_sizes))
+
+
+class ReplicatedLinear034(LinearBase):
+    def __init__(self, input_size, output_size, bias=False, params_dtype=None, quant_config=None,
+                 prefix="", return_bias=True):
+        super().__init__(output_size, input_size, UnquantizedLinearMethod())
+
+
+def hc_silu(x, hc):
+    return F.silu(x.float()).to(x.dtype)
+
+
+def hc_gate_mix(xn, gate, hc):
+    m, d = xn.shape
+    g = torch.sigmoid(gate.float()) * xn.float()
+    return g.reshape(m, hc, d // hc).mean(1).to(xn.dtype)
+
+
+def hc_down_silu(xn, w, rank, hc):
+    fused_calls.append(w.dtype)
+    assert w.dtype == torch.bfloat16, "the fused kernel was handed a non-BF16 weight"
+    out = F.linear(xn, w)
+    return hc_silu(out[:, :rank], hc), out[:, rank:rank + hc]
+
+
+def stub(name, **attrs):
+    m = types.ModuleType(name)
+    m.__dict__.update(attrs)
+    sys.modules[name] = m
+    return m
+
+
+class GroupedGemmaRMSNorm(torch.nn.Module):
+    def __init__(self, n, eps=1e-6, group_size=None, dtype=None):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.zeros(n))
+
+
+saved = {k: sys.modules.get(k) for k in ("vllm.model_executor.layers.linear",)}
+stub("vllm.envs", VLLM_BATCH_INVARIANT=False)
+sys.modules["vllm"].envs = sys.modules["vllm.envs"]
+stub("vllm.model_executor.layers.linear", MergedColumnParallelLinear=MergedColumnParallelLinear,
+     ReplicatedLinear=ReplicatedLinear034, LinearBase=LinearBase, UnquantizedLinearMethod=UnquantizedLinearMethod)
+stub("vllm.model_executor.models")
+stub("vllm.model_executor.models.utils", maybe_prefix=lambda p, n: f"{p}.{n}" if p else n)
+stub("vllm.platforms", current_platform=types.SimpleNamespace(has_device_capability=lambda c: True))
+for pkg in ("q4", "q4.common", "q4.nvidia", "q4.nvidia.ops", "q4.nvidia.ops.cute_dsl"):
+    stub(pkg).__path__ = []
+stub("q4.common.hyperconnection", GroupedGemmaRMSNorm=GroupedGemmaRMSNorm, HyperConnectionConfig=object)
+stub("q4.nvidia.ops.cute_dsl.hc_down_silu", MAX_FUSED_M=48, hc_down_silu=hc_down_silu)
+stub("q4.nvidia.ops.hc", MIN_FUSED_UP_M=512, grouped_gemma_rmsnorm=None, hc_combine=None, hc_combine_norm=None,
+     hc_gate_mix=hc_gate_mix, hc_silu=hc_silu, hc_up_gate_mix=None, hc_up_gate_mix_supported=lambda w, hc: False)
+cfg = types.SimpleNamespace(hc_lowrank=320, hc_count=4, hidden_size=256, hc_per_branch_norm=True,
+                            rms_norm_eps=1e-6, params_dtype=torch.bfloat16)
+with tempfile.TemporaryDirectory() as d:
+    p = os.path.join(d, "hyperconnection.py")
+    with open(V034_HC) as f:
+        open(p, "w").write(f.read())
+    check("[0.34] patcher: the hook on vLLM 0.34's hyperconnection.py", ph.patch(p) == "INSTALLED")
+    patched = open(p).read()
+    out = {}
+    for env in ("0", "1", "up"):
+        os.environ["VLLM_HC_FP8"] = env
+        mod = types.ModuleType("q4.nvidia.hyperconnection")
+        mod.__package__ = "q4.nvidia"
+        exec(compile(patched, p, "exec"), mod.__dict__)
+        torch.manual_seed(0)
+        gr = mod.GatedResidual(cfg, use_combine=True)
+        down, up = gr.input_mix_weight_down_block_inject, gr.input_mix_weight_up
+        if env == "0":
+            w_down, w_up = down.weight.data.clone(), up.weight.data.clone()
+        else:
+            down.weight.data.copy_(w_down)
+            up.weight.data.copy_(w_up)
+        for lin in (down, up):
+            lin.quant_method.process_weights_after_loading(lin)
+        fused_calls.clear()
+        xn = torch.randn(5, 1024, generator=torch.Generator().manual_seed(3)).to(torch.bfloat16)
+        lowrank, injection = gr._down_and_inject(xn)
+        out[env] = (lowrank.float(), injection.float(), gr._up_gate_mix(lowrank, xn).float(),
+                    list(fused_calls), gr._use_hc_down_silu, gr._use_hc_up_gate_mix,
+                    down.weight.dtype, up.weight.dtype)
+    os.environ.pop("VLLM_HC_FP8")
+    check("  VLLM_HC_FP8=0: the fused BF16 down+SiLU kernel, BF16 weights",
+          out["0"][3] == [torch.bfloat16] and out["0"][6] == out["0"][7] == torch.bfloat16)
+    lr, inj, mixed, calls, f_down, f_up, dt_down, dt_up = out["1"]
+    check("  =1: both projections FP8, the fused down kernel off and never called",
+          dt_down == dt_up == torch.float8_e4m3fn and calls == [] and f_down is False and f_up is False)
+    check(f"  =1: down+inject, up+gate-mix = BF16's within FP8 rounding (lowrank {rel(lr, out['0'][0]):.4f}, "
+          f"injection {rel(inj, out['0'][1]):.4f}, mix {rel(mixed, out['0'][2]):.4f})",
+          rel(lr, out["0"][0]) < 0.03 and rel(inj, out["0"][1]) < 5e-3 and rel(mixed, out["0"][2]) < 0.03)
+    lr, inj, mixed, calls, f_down, f_up, dt_down, dt_up = out["up"]
+    check("  =up: only the up projection FP8, the fused down kernel kept",
+          dt_down == torch.bfloat16 and dt_up == torch.float8_e4m3fn and calls == [torch.bfloat16]
+          and f_down is True and torch.equal(lr, out["0"][0]) and rel(mixed, out["0"][2]) < 0.03)
+for k, v in saved.items():
+    sys.modules[k] = v
 
 print("ALL OK" if not fails else f"{fails} FAILED")
 sys.exit(1 if fails else 0)
