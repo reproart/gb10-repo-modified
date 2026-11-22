@@ -210,6 +210,9 @@ export PIN_PROMPT="${PIN_PROMPT:-}"
 # Anything else: vLLM flags (appended to the command line) and NAME=value pairs
 # for the container (EXTRA_ENV replaces a value the launcher sets under the
 # same name: docker would keep the first of two).
+# EXTRA="--mamba-ssm-cache-dtype bfloat16": the GDN state in bf16 instead of the checkpoint's
+# float32. Measured 2026-11-22 (MTP=4): single-stream decode the same (80.4 vs 80.1 tok/s on
+# code), consistency.py all PASS; the aggregate at 8 streams not measured yet. Off.
 export EXTRA="${EXTRA:-}"
 export EXTRA_ENV="${EXTRA_ENV:-}"
 

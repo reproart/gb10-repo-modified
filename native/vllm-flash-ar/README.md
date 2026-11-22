@@ -450,6 +450,7 @@ sessions, accepting ~5% slower long prefill.
 | Embeddings, other hyper-connection weights, norms, MoE gates, fc_hidden | bf16 | excluded via `dynamic` rules |
 | PLE n-gram table (51B params, layer 1) | **fp8** rows, mmapped from disk | `tools/fetch-ple-table-fp8.sh` + the mmap patch |
 | KV cache | bf16 | QSA refuses fp8 KV |
+| GDN recurrent state | float32 (the checkpoint's `mamba_ssm_dtype`) | `EXTRA="--mamba-ssm-cache-dtype bfloat16"` halves it; measured 2026-11-22 (MTP=4, `DRAFT_VOCAB=1`): single-stream decode 80.4 / 29.4 tok/s on code / Russian prose against 80.1 / 29.4, `../bench/consistency.py` all PASS, the Russian answer 266 tokens against 280 (the state's precision changes greedy output a little). No gain at one stream; another recipe on this image measured +8.5% at 8 streams, not checked here, so it stays off |
 
 ## The patches
 
