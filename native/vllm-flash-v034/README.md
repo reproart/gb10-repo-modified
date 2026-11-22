@@ -16,7 +16,33 @@ closer to the end of the prompt on this hybrid model), boot 662 → 241 s, decod
 better. Our recipe's prefill is ~1,800-2,150 tok/s on the dev image. Whether 0.34 does
 the same for this checkpoint is what this folder is for.
 
-## Status: stage 0 boots and measures (2026-11-22)
+## Status: stage 1 on, the full bench (2026-11-22)
+
+`../bench/perf.py` with this folder's defaults (the int8 draft slice of the Russian
+vocabulary, FP8 hyper-connection projections; ablation off), one boot, against
+`vllm-flash-ar` with the same two, and this lane's stage 0:
+
+| | `vllm-flash-ar` (dev image) | 0.34, stage 0 | **0.34, stage 1** |
+|---|---|---|---|
+| TTFT, short prompt | 124-129 ms | 136 ms | **120 ms** |
+| Single-stream decode, code | 79.6 tok/s (4.19 tok/step, 80%) | 68.8 (4.35, 84%) | **79.8** (4.30, 83%) |
+| Single-stream decode, Russian prose | 50.2 (2.58, 40%) | 43.1 (2.66, 41%) | 49.3 (2.57, 39%) |
+| Aggregate at 1 / 2 / 4 / 8 streams | 64.0 / 106.9 / 163.5 / 256.6 | 63.5 / 91.1 / 165.8 / 242.9 | **70.4 / 110.4 / 169.8** / 254.4 |
+| Prefill, 2K / 8K / 32K / 101K | best 2,000 / 2,153 / 2,134 / 1,981 | **2,488 / 2,659 / 2,742 / 2,649** | 2,319 / 2,505 / 2,602 / 2,556 |
+| TTFT of the 101K prompt | 52.7 s | **38.2 s** | 39.5 s |
+| Longest pause under a 32K prefill (1 / 4 streams) | 5.68 / 11.31 s | **2.46 / 2.49 s** | 2.53 / 2.56 s |
+
+Decode is level with the dev image (code 79.8 against 79.6, Russian within its acceptance
+noise), the aggregate 3-10% above it at 1-4 streams and level at 8 (16-32 streams queue
+behind the 8-sequence cap: 240-244 tok/s), prefill 16-29% above its best run, and a long
+prompt still stalls the running streams for ~2.5 s instead of 6-11. Prefill is 3.5-7% below
+stage 0's run: the FP8 projections' prefill path converts each weight back to BF16 per call
+(~20 MB of traffic a mix, ~9 ms a forward by the bytes, <1% of a chunk), so most of that is
+likely the machine's run-to-run spread (the dev image's prefill runs spread 5-15%); a
+back-to-back `HC_FP8=0` / `1` `--only prefill` pair would settle it. Still to run here:
+`../bench/consistency.py`.
+
+## Stage 0 (2026-11-22)
 
 The first boot worked as built: `../bench/perf.py`, GX10, MTP 4, 8 sequences, BF16 KV,
 GDN state float32, against `vllm-flash-ar` with this project's patches on (int8 draft
