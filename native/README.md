@@ -1148,7 +1148,8 @@ time, KV usage, accept length, cached tokens) come from `GB10_METRICS_URL`,
 default `<server>/metrics`; the server is started with them enabled. Behind a gateway, point it
 at the engine.
 
-`perf.py` takes `--levels`, `--prefill`, `--only <section>` and `--no-warmup`.
+`perf.py` takes `--levels`, `--prefill`, `--only <section> [...]` and `--no-warmup`;
+section 2b (`decode-ru`) decodes Russian prose next to section 2's code.
 Section 5 (`--only interference`, `--interference-prompt 32000`,
 `--interference-streams 1 4`) starts N long generations, sends one long
 unique prompt while they run, and prints their aggregate tok/s before /

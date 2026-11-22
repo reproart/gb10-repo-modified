@@ -15,6 +15,11 @@ What the columns mean (and the traps they avoid):
     TTFT and queueing do not leak into the generation speed; `e2e tok/s`
     (tokens / whole request, the figure the README headline uses) is shown
     next to it for comparison.
+  * 2b decodes Russian prose (common.RU_PROMPT, 3 runs) next to 2's code: a
+    speculative draft that cannot propose some tokens (vllm-flash-ar's reduced
+    draft vocabulary: English/code ids by default) loses acceptance only on
+    text made of them. A row whose answers are not Russian is flagged.
+    `--only decode decode-ru` runs both.
   * queue: time spent waiting for admission, from the engine's queue-time
     histogram (vLLM request_queue_time, SGLang queue_time) or, if only gauges
     are exported, the peak number of waiting requests. A level above the
@@ -72,7 +77,7 @@ import time
 import uuid
 
 import common
-from common import (CODE_PROMPT, GpuWatch, MemWatch, PeakWatch, broken, cache_hit_significant, calibrate, chat,
+from common import (CODE_PROMPT, RU_PROMPT, GpuWatch, MemWatch, PeakWatch, broken, cache_hit_significant, calibrate, chat, cyrillic_share,
                     decode_rate, delta, metrics, ple_summary, restarted, sidecar, spec_summary,
                     torch_summary, unique_prompt, vm_summary, vmstat, server_cgroup, cgroup_mem,
                     cgroup_summary)
@@ -129,14 +134,14 @@ def ttft_probe(n=5):
           f"min {min(vals) * 1000:.0f}   max {max(vals) * 1000:.0f}\n")
 
 
-def single_stream(n=5, max_tokens=700):
-    print(f"## 2. Single-stream decode (code, thinking off, up to {max_tokens} tokens)")
+def single_stream(n=5, max_tokens=700, prompt=CODE_PROMPT, what="code", number="2", russian=False):
+    print(f"## {number}. Single-stream decode ({what}, thinking off, up to {max_tokens} tokens)")
     rows = []
     s0 = sidecar(settle=True)
     with GpuWatch() as gpu:
         for _ in range(n):
             m0 = metrics()
-            r = chat(CODE_PROMPT, max_tokens, stream=True)
+            r = chat(prompt, max_tokens, stream=True)
             rows.append((r, spec_summary(m0, metrics())))
     for r, spec in rows:
         print(f"   {r['completion_tokens']:>4} tok  decode {_fmt(decode_rate(r), '.1f')} tok/s  "
@@ -146,6 +151,11 @@ def single_stream(n=5, max_tokens=700):
     if any(bad):
         print(f"   !! {sum(map(bool, bad))} of {len(rows)} answers look broken: {next(b for b in bad if b)}"
               " — these speeds are of garbage; check the server before anything else")
+    if russian:
+        shares = [cyrillic_share(r["content"]) for r, _ in rows]
+        if min(shares) < 0.8:
+            print(f"   !! an answer is not in Russian ({min(shares):.0%} Cyrillic letters): this row "
+                  "does not measure Russian text")
     short = [r for r, _ in rows if r["completion_tokens"] < max_tokens * 0.5]
     if short:
         print(f"   note: {len(short)} run(s) stopped early (<50% of max_tokens) — "
@@ -392,9 +402,10 @@ def main():
                     help="approx. size of the long prompt in the decode-during-prefill section")
     ap.add_argument("--interference-streams", nargs="+", type=int, default=[1, 4],
                     help="decode streams running while it is prefilled (default: 1 4)")
-    ap.add_argument("--only", choices=["warmup", "ttft", "decode", "concurrency", "prefill",
-                                       "interference"],
-                    help="run a single section (warmup alone: prime a freshly started server)")
+    ap.add_argument("--only", nargs="+", choices=["warmup", "ttft", "decode", "decode-ru", "concurrency",
+                                                  "prefill", "interference"],
+                    help="run only these sections (warmup alone: prime a freshly started server; "
+                         "decode = code, decode-ru = Russian prose)")
     ap.add_argument("--no-warmup", action="store_true",
                     help="skip the warmup pass (measure first-use JIT stalls on purpose)")
     args = ap.parse_args()
@@ -413,18 +424,19 @@ def main():
     m_start = metrics()
     # Warm up before any measured section (a cold server skews whichever
     # section runs first), unless --no-warmup asks for the cold numbers.
-    if args.only == "warmup" or not args.no_warmup:
+    if (args.only and "warmup" in args.only) or not args.no_warmup:
         warmup(args.levels)
     sections = {
         "ttft": ttft_probe,
         "decode": single_stream,
+        "decode-ru": lambda: single_stream(3, prompt=RU_PROMPT, what="Russian prose", number="2b", russian=True),
         "concurrency": lambda: concurrency(args.levels),
         "prefill": lambda: prefill(args.prefill),
         "interference": lambda: prefill_interference(args.interference_prompt,
                                                      args.interference_streams),
     }
     for name, fn in sections.items():
-        if args.only in (None, name):
+        if args.only is None or name in args.only:
             fn()
     if restarted(m_start, metrics()):
         print("!! the engine restarted during this run — see the rows flagged above; "

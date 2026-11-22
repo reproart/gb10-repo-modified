@@ -250,7 +250,7 @@ or set them in `config.local.sh` and run `./serve.sh`.
 | `PREFIX_CACHE` | `1` | Prefix caching — fixed and recommended on this fork (bare script: `0`) |
 | `DET_TOPK` | `1` | Deterministic QSA top-k **kernel** (patch 9; @jschmied, vllm#55122): identical output at T=0 at full prefill speed. `0` = stock kernel (non-deterministic, may drop attention candidates) |
 | `EXACT_TOPK` | `0` | `1` = exact `torch.topk` fallback (patch 9; deterministic, −20–40% on long prefill). Wins over `DET_TOPK` when set |
-| `DRAFT_VOCAB` | `1` | The MTP drafter scores only the 65,536 most frequent tokens (patch 10; from upstream blazux): +3–5% decode on English/code, draft acceptance unchanged there (thinking on or off). The shipped id set is English/code-weighted — **CJK-heavy output loses acceptance and decode speed with it**, so set `0` (full vocabulary) or build your own set with `tools/build_draft_vocab.py` over your traffic |
+| `DRAFT_VOCAB` | `1` | The MTP drafter scores only the 65,536 most frequent tokens (patch 10; from upstream blazux): +3–5% decode on English/code, draft acceptance unchanged there (thinking on or off). The shipped id set is English/code-weighted — **CJK-heavy output loses acceptance and decode speed with it, and Russian too: it covers 47–54% of Russian prose tokens**. `ru` = a 65,536-id set with 16,384 Russian tokens in place of the least used English/code ones (99.8% of Russian prose, English and code within 0.2 points); `ru-wide` = all of `1` plus those, 81,920 ids (a 25% larger head read); `0` = full vocabulary; or build your own with `tools/build_draft_vocab.py` over your traffic (patch 10) |
 | `DRAFT_HEAD` | `int8` | The drafter's head as the target has it: int8 GPTQ-Marlin, shared (`DRAFT_VOCAB=0`) or, with `DRAFT_VOCAB`, its own rows for those ids (160 MiB per draft step; images built before 2026-11-03 made that slice bf16, 320 MiB). `bf16` = that bf16 slice, for comparison. `int4` = a private int4 g128 RTN GPTQ-Marlin copy of the full-vocabulary head (built at first use, ~313 MiB vs 616 MiB read per draft step): measured a wash, tg unchanged within noise, draft acceptance 1–8 points lower (see the MTP options section) |
 | `PIN_PROMPT` / `PIN_MAX_FRACTION` | unset / `0.25` | Never-evict pin (patch 6); needs `PREFIX_CACHE=1` (the launcher warns otherwise). Use a distinctive substring of a few dozen characters — a word or two matches unrelated prompts |
 | `API_KEY` | unset | Non-empty → Bearer auth on the API (vLLM `--api-key`; generate with `openssl rand -hex 32`). `/health` stays open; the key is visible in `docker inspect` |
@@ -682,6 +682,33 @@ Throughput table).
   +5% decode, ~2.5 ms off a ~52 ms step (three draft passes of ~0.6 ms
   saved each, as the profile predicted); acceptance unchanged, as it should
   be with the same logits. The 4-stream cell is within the sweep's spread.
+- **`DRAFT_VOCAB=ru` / `ru-wide`** (2026-11-22, same patch, new id sets; the
+  launcher mounts them from `src/`, so no rebuild) — the shipped set covers
+  English and code, and Russian prose only in part: a token outside the set can
+  never be drafted, so about every other position of a Russian answer stops the
+  draft there. The Russian sets are built with `tools/build_draft_vocab.py`
+  (`--base`, `--base-keep`, `--holdout`, added for this) over 200 MB of Russian
+  Wikipedia (`wikimedia/wikipedia` 20231101.ru, shard 2 of 21) and 95% of
+  `d0rj/alpaca-cleaned-ru` (CC-BY-4.0; instruction answers, the register a chat
+  model writes in), 46 M tokens. `ru` keeps 49,152 ids of the shipped set (the
+  most frequent over SGLang 0.5.21's source and this project's English docs and
+  code; 35,025 of its ids never appear there) and adds the 16,384 most frequent
+  Russian ones: the same 65,536 rows, the same 160 MiB per draft pass. `ru-wide`
+  keeps all 65,536 and adds the same Russian ones, 81,920 rows (+25% head read,
+  ~1–2% of a decode step). Share of each held-out text's tokens the set covers
+  (the share of positions the draft can propose at all; none of these texts is
+  in the build corpora):
+
+  | held-out text | `1` (shipped) | `ru` | `ru-wide` |
+  |---|---:|---:|---:|
+  | Russian Wikipedia, last 4,346 articles of the shard (923K tokens) | 54.0% | 99.86% | 99.91% |
+  | Russian instruction answers, the 5% left out (451K tokens) | 47.4% | 99.80% | 99.89% |
+  | `../MANUAL.md` (Russian technical prose with code, 25K tokens) | 76.6% | 99.10% | 99.18% |
+  | vLLM's `v1/` source (Python, 1.4M tokens) | 98.02% | 97.98% | 98.03% |
+  | this README (English technical prose, 28K tokens) | 99.03% | 98.84% | 99.03% |
+
+  Not measured on the GX10 yet: `../bench/perf.py --only decode decode-ru` with
+  `DRAFT_VOCAB=1`, `ru` and `ru-wide` (section 2b decodes Russian prose).
 - **`DRAFT_HEAD=int4`** (same patch) — the other way to halve the head read
   without touching the vocabulary: a private int4 g128 RTN copy of the full head,
   quantized with vLLM's own `marlin_quantize` at first use (~23 s) from the
@@ -1139,7 +1166,9 @@ src/gb10_abliterate.py        refusal-direction ablation at inference: vectors, 
 src/patch_abliterate.py       its insertion points in model.py / mtp.py
 src/test_abliterate_cpu.py    CPU test of both on the image's own files (src/testdata/; no GPU, no vLLM)
 src/draft_vocab_65536.npy     the default 65,536-token draft id set (from blazux)
-tools/build_draft_vocab.py    rebuild the draft id set (from blazux)
+src/draft_vocab_ru_65536.npy  DRAFT_VOCAB=ru: 49,152 of those + 16,384 Russian ids
+src/draft_vocab_ru_81920.npy  DRAFT_VOCAB=ru-wide: all of them + the same Russian ids
+tools/build_draft_vocab.py    rebuild / extend a draft id set (from blazux; --base, --holdout added)
 tools/quantize_mtp_experts_int4.py  int4 RTN the MTP draft experts -> -MTP_int4RTN checkpoint
 src/mamba_utils_guarded.py    hardened align-mode state copy (vllm#50729 + guard)
 src/test_ple_mmap_cpu.py      CPU unit test for the gather (no GPU needed)
