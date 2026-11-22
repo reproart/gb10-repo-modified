@@ -138,6 +138,43 @@ hc fp8: <N> hyper-connection projections in FP8 with per-row scales, <~1.3> -> <
 torch (`TORCH PATH`: slower than BF16), and refuses `HC_FP8` on an image without the
 hook (`gb10.hc-fp8` label: `./build.sh`).
 
+## Stage 2: the refusal-direction ablation (built, to try)
+
+`vllm-flash-ar`'s patch 17, the same files (`../vllm-flash-ar/src/gb10_abliterate.py`,
+`patch_abliterate.py`) and the same knobs (`ABLATE`, `ABLATE_VECTORS`, `ABLATE_SOURCE`,
+`ABLATE_ALPHA`, `ABLATE_LAYERS`, `ABLATE_MTP`; off by default):
+
+```bash
+ABLATE=1 ./serve.sh        # Mambavtt's vectors at ABLATE_VECTORS (hf download, see config.sh)
+```
+
+The direction is projected out of every writer of the four residual streams: the token
+embedding, the PLE addition, each attention / GDN and MLP output, the deepstack embeddings,
+and the MTP draft's inputs. 0.34's insertion points differ from the dev image's in two
+places: its PLE layer returns the streams with the addition already in them (the residual
+add is fused into its short-convolution kernel), so the addition is taken back out
+(`ple_out - hidden_states`), projected and added back (the streams' component along the
+direction is kept exactly; the addition is rounded to BF16 once more); and its draft has two
+writers, `fc_hidden`'s output (the draft layer's streams) and `fc_embedding`'s (a pending block
+output added to every stream with unit weight), both projected.
+`../vllm-flash-ar/src/test_abliterate_cpu.py` runs 0.34's own decoder layer, model and draft
+on CPU stand-ins: every stream of the final state and both draft inputs lose the direction,
+a layer left out keeps it, without `VLLM_ABLATE` the outputs equal the unpatched files' bit
+for bit, the patched forward compiles as one graph, and dropping the PLE, attention or MLP
+insertion fails it.
+
+`serve.sh` refuses `ABLATE` without the vectors or on an image without the hook
+(`gb10.ablate` label), and prints the boot log's line:
+
+```
+ablation: refusal direction the mean of layers 4-46's vectors from refusal_directions-v4-late.npz (sha256 bb311e37...), rank 1, alpha 1; covers ...; projected out of the writers of 48 of 48 layers (0-47), the embedding. Answers are not the stock model's.
+ablation: the MTP draft projects its inputs too
+```
+
+On the dev image the same vectors answered a request the stock model refused, decode 79.3
+tok/s (82% of drafts accepted). To check here: the same request, `perf.py --only decode
+decode-ru`.
+
 ## Stage 0, as built
 
 What 0.34 does natively that the dev image needs patches for: the n-gram table read
@@ -156,12 +193,13 @@ What this checkpoint needs on top, all in this folder:
 | one model folder | the rows must come through the model's own files | `src/make_model_view.py` (each `serve.sh`): a folder of links to the model's files and the lean table's, a merged index, and `config.json` with `ple_embedding_dtype: float8_e4m3fn` (with a GPTQ config 0.34 would take the table for BF16 and refuse the fp8 rows); no weights copied, the checkpoint untouched |
 | the private draft head (stage 1a) | 0.34 shares or loads the full int8 head for the drafter: 616 MiB per draft pass | `../vllm-flash-ar/src/patch_mtp_draft_vocab.py` (`Dockerfile`), `DRAFT_VOCAB` / `DRAFT_HEAD` in `config.sh` |
 | FP8 hyper-connection projections (stage 1b) | the checkpoint's BF16 HC projections, ~1.3 GB read a forward | `../vllm-flash-ar/src/gb10_fp8_rowwise.py` + `patch_hc_fp8.py` (`Dockerfile`), `HC_FP8` in `config.sh` |
+| the refusal-direction ablation (stage 2) | optional, `ABLATE=1`: a direction projected out of every writer of the streams | `../vllm-flash-ar/src/gb10_abliterate.py` + `patch_abliterate.py` (`Dockerfile`), `ABLATE*` in `config.sh` |
 | `--load-format safetensors` | the disk-offloaded table keeps the loader's mmap views of the shards; `fastsafetensors` (`vllm-flash-ar`'s loader) does not hand them over | `config.sh` |
 
 The model's `config.json` already says `qwen4_exp` (0.34's name for Flash-Next), so no
 rename is needed (MiaAI-Lab's checkpoint did need one).
 
-Not ported yet, so off in this lane: the refusal-direction ablation (`ABLATE`), deterministic MoE
+Not ported yet, so off in this lane: deterministic MoE
 alignment and QSA top-k, the metrics sidecar, never-evict pinning, the tool-parser fixes
 12-13, the mamba state-copy guard. Each comes over as its own stage once the bare lane
 boots and measures; some may be upstream already (0.34 may not need them).
@@ -201,5 +239,6 @@ src/patch_lm_head_quant.py  the int8 lm_head patch
 src/test_v034_cpu.py      CPU tests of both and of the Dockerfile's mtp.py / hyperconnection.py steps
 ../vllm-flash-ar/src/patch_mtp_draft_vocab.py, draft_vocab_*.npy   the draft head and its id sets (shared)
 ../vllm-flash-ar/src/gb10_fp8_rowwise.py, patch_hc_fp8.py          FP8 HC (shared; test_hc_fp8_cpu.py runs 0.34's file)
+../vllm-flash-ar/src/gb10_abliterate.py, patch_abliterate.py       the ablation (shared; test_abliterate_cpu.py runs 0.34's classes)
 src/testdata/*.v034       vLLM 0.34.0's qwen4_exp/nvidia/model.py, mtp.py, hyperconnection.py, from the wheel
 ```

@@ -64,6 +64,27 @@ case "$HC_FP8" in
       echo "image $IMAGE has no FP8 HC hook (built before stage 1b): ./build.sh first, or HC_FP8=0" >&2; exit 1; } ;;
   *) echo "HC_FP8=$HC_FP8: 0, 1 or up" >&2; exit 1 ;;
 esac
+# The ablation: 0 = off, 1 = ABLATE_VECTORS, a path = that file; its directory read-only at
+# /ablate. Asked for but not possible stops the start: the server would answer as the stock model.
+ABL_FILE="" ABL_MOUNT=() ABL_ENVS=()
+case "$ABLATE" in
+  0|"") ;;
+  1) ABL_FILE="$ABLATE_VECTORS" ;;
+  *) ABL_FILE="$ABLATE" ;;
+esac
+if [ -n "$ABL_FILE" ]; then
+  if [ ! -f "$ABL_FILE" ]; then
+    echo "ABLATE=$ABLATE: no vectors at $ABL_FILE" >&2
+    [ "$ABLATE" = 1 ] && echo "  download them once: hf download Mambavtt/qwen3.8-flash-next-refusal-ablation-vectors" \
+      "--revision 7b009deb2d3f21c5bb199366cb39e3ed129b4207 --local-dir $(dirname "$ABL_FILE")" >&2
+    exit 1
+  fi
+  [ "$(image_label gb10.ablate)" = 1 ] || {
+    echo "image $IMAGE has no ablation hook (built before stage 2): ./build.sh first, or ABLATE=0" >&2; exit 1; }
+  ABL_MOUNT=(-v "$(cd "$(dirname "$ABL_FILE")" && pwd):/ablate:ro")
+  ABL_ENVS=("VLLM_ABLATE=/ablate/$(basename "$ABL_FILE")" "VLLM_ABLATE_SOURCE=$ABLATE_SOURCE"
+            "VLLM_ABLATE_ALPHA=$ABLATE_ALPHA" "VLLM_ABLATE_LAYERS=$ABLATE_LAYERS" "VLLM_ABLATE_MTP=$ABLATE_MTP")
+fi
 
 if [ "$MEM_PREP" = 1 ]; then "$NATIVE_DIR/scripts/mem-prep.sh" prep || true; fi
 
@@ -80,7 +101,9 @@ if [ "$PREFIX_CACHE" = 1 ]; then ARGS+=(--enable-prefix-caching); else ARGS+=(--
 # shellcheck disable=SC2206  # EXTRA is a flag list, split on purpose
 ARGS+=(${EXTRA:-})
 
-ENVS=(VLLM_FP8_HYBRID=1 "VLLM_HC_FP8=$HC_FP8" ${DRAFT_ENVS[@]+"${DRAFT_ENVS[@]}"})
+ABL_DESC=off
+[ -n "$ABL_FILE" ] && ABL_DESC="$(basename "$ABL_FILE") (source $ABLATE_SOURCE, alpha $ABLATE_ALPHA, layers $ABLATE_LAYERS, mtp $ABLATE_MTP)"
+ENVS=(VLLM_FP8_HYBRID=1 "VLLM_HC_FP8=$HC_FP8" ${DRAFT_ENVS[@]+"${DRAFT_ENVS[@]}"} ${ABL_ENVS[@]+"${ABL_ENVS[@]}"})
 [ -n "$API_KEY" ] && ENVS+=("VLLM_API_KEY=$API_KEY")
 # shellcheck disable=SC2206  # EXTRA_ENV is a NAME=value list
 EXTRA_ENVS=(${EXTRA_ENV:-})
@@ -99,11 +122,11 @@ docker run -d --name "$NAME" --restart "$RESTART" \
   --log-opt max-size=10m --log-opt max-file=3 \
   --health-cmd "$HEALTH_CMD" --health-start-period=15m --health-interval=60s --health-timeout=15s --health-retries=10 \
   -v "$MODEL_DIR:/model:ro" -v "$TABLE_DIR:/ple-table:ro" -v "$VIEW_DIR:/model-view:ro" \
-  ${VOCAB_MOUNT[@]+"${VOCAB_MOUNT[@]}"} \
+  ${VOCAB_MOUNT[@]+"${VOCAB_MOUNT[@]}"} ${ABL_MOUNT[@]+"${ABL_MOUNT[@]}"} \
   "${ENV_ARGS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null
 log "$NAME starting on ${BIND_ADDR:-0.0.0.0}:$PORT as ${SERVED_NAMES[*]} (vLLM $BASE_TAG, ctx $CTX, mtp $MTP, seqs $SEQS," \
   "chunk $BATCHED_TOKENS, kv $KV_BYTES, prefix cache $PREFIX_CACHE, ssm ${MAMBA_SSM_DTYPE:-checkpoint}," \
-  "draft vocab ${DRAFT_VOCAB:-0}, draft head $DRAFT_HEAD, hc fp8 $HC_FP8, table from disk)"
+  "draft vocab ${DRAFT_VOCAB:-0}, draft head $DRAFT_HEAD, hc fp8 $HC_FP8, ablate $ABL_DESC, table from disk)"
 
 [ "$WAIT_MIN" = 0 ] && exit 0
 log "waiting for http://127.0.0.1:$PORT/v1/models (the first boot of an image compiles kernels)"
@@ -133,6 +156,16 @@ for _ in $(seq 1 $((WAIT_MIN * 6))); do
       fi
       grep -q "TORCH PATH\|kernel failed" <<< "$boot_log" &&
         log "WARNING: an FP8 HC kernel fell back to torch (slower than BF16): docker logs $NAME 2>&1 | grep 'FP8 HC'"
+    fi
+    if [ -n "$ABL_FILE" ]; then
+      abl_line="$(grep "ABLATION ON" <<< "$boot_log" | head -1 || true)"
+      if [ -n "$abl_line" ]; then
+        log "ablation: ${abl_line##*ABLATION ON (VLLM_ABLATE): }"
+        grep -q "MTP draft layer [0-9]* projects" <<< "$boot_log" && log "ablation: the MTP draft projects its inputs too"
+      else
+        log "WARNING: ABLATE=$ABLATE but no 'ABLATION ON' line in the boot log: the answers may be the stock" \
+          "model's; docker logs $NAME 2>&1 | grep ABLATION"
+      fi
     fi
     exit 0
   fi

@@ -1,8 +1,9 @@
 # Qwen3.8-Flash-Next (Intel AutoRound int4 hybrid) on stock vLLM 0.34, one DGX Spark.
 #
 # Built by ./build.sh from a context it assembles (this file, ../vllm-flash-ar/src/
-# vllm_fp8_hybrid.py, patch_mtp_draft_vocab.py, gb10_fp8_rowwise.py and patch_hc_fp8.py,
-# src/patch_lm_head_quant.py); BASE is vllm/vllm-openai@<image.lock>.
+# vllm_fp8_hybrid.py, patch_mtp_draft_vocab.py, gb10_fp8_rowwise.py, patch_hc_fp8.py,
+# gb10_abliterate.py and patch_abliterate.py, src/patch_lm_head_quant.py); BASE is
+# vllm/vllm-openai@<image.lock>.
 # vLLM 0.34 serves this model (Qwen4Exp) with its n-gram table read from disk
 # (--engram-config disk_offload) natively; what this checkpoint needs on top:
 #   1. the int4+fp8 hybrid dispatch: the GPTQ config's excluded layers (GDN / attention
@@ -17,10 +18,14 @@
 #   4. FP8 hyper-connection projections (HC_FP8 in config.sh): ../vllm-flash-ar's patch 16,
 #      the same files; on 0.34 a converted layer also turns off GatedResidual's fused kernel
 #      that reads its weight as BF16 (down+SiLU). Inert unless VLLM_HC_FP8=1|up.
+#   5. the refusal-direction ablation (ABLATE in config.sh): ../vllm-flash-ar's patch 17, the
+#      same files, with 0.34's own insertion points (picked by class name). Inert unless
+#      VLLM_ABLATE is set.
 ARG BASE=vllm/vllm-openai@sha256:20fdb089454afbb324efa4110a2c025ff7b27cc1a086e07aa580b18df8ad1ce1
 FROM ${BASE}
 
-COPY vllm_fp8_hybrid.py patch_lm_head_quant.py patch_mtp_draft_vocab.py gb10_fp8_rowwise.py patch_hc_fp8.py /tmp/gb10/
+COPY vllm_fp8_hybrid.py patch_lm_head_quant.py patch_mtp_draft_vocab.py gb10_fp8_rowwise.py patch_hc_fp8.py \
+     gb10_abliterate.py patch_abliterate.py /tmp/gb10/
 RUN set -eu; \
     python3 -c 'import vllm; print("vLLM", vllm.__version__)'; \
     SP="$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirname(vllm.__file__)))')"; \
@@ -45,6 +50,12 @@ RUN set -eu; \
     grep -q "_use_hc_down_silu" "$Q/hyperconnection.py"; \
     python3 -c "import gb10_fp8_rowwise"; \
     echo "hyperconnection.py: FP8 HC hook OK"; \
+    cp /tmp/gb10/gb10_abliterate.py "$SP/gb10_abliterate.py"; \
+    python3 /tmp/gb10/patch_abliterate.py "$Q/model.py" "$Q/mtp.py"; \
+    grep -q "^Qwen4ExpDecoderLayer._gb10_abl_on = False" "$Q/model.py"; \
+    grep -q "prev_block_output = _gb10_abl_project(" "$Q/mtp.py"; \
+    python3 -c "import gb10_abliterate"; \
+    echo "model.py, mtp.py: ablation hook OK"; \
     rm -rf /tmp/gb10
-# serve.sh checks these before it passes DRAFT_VOCAB / DRAFT_HEAD / HC_FP8 (an older image lacks the hook)
-LABEL gb10.draft-head="1" gb10.hc-fp8="1"
+# serve.sh checks these before it passes DRAFT_VOCAB / DRAFT_HEAD / HC_FP8 / ABLATE (an older image lacks the hook)
+LABEL gb10.draft-head="1" gb10.hc-fp8="1" gb10.ablate="1"

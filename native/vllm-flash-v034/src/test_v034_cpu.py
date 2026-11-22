@@ -9,7 +9,8 @@
 2. the Dockerfile's mtp.py steps in order: the lm_head patch, then ../vllm-flash-ar's
    draft-head patch on Qwen4ExpMTP; the line the Dockerfile greps for is there. Its
    hyperconnection.py step: ../vllm-flash-ar's FP8 HC hook on 0.34's file, and every
-   string the Dockerfile greps for in it.
+   string the Dockerfile greps for in it. The ablation step, on model.py and mtp.py as the
+   steps before leave them: 0.34's insertion points, the strings the Dockerfile greps for.
 3. make_model_view.py: links to the container mounts, the table's tensors in the merged
    index, ple_embedding_dtype in config.json, a non-lean table refused, a rerun replaces the
    view, a foreign file in the view directory refused.
@@ -30,6 +31,7 @@ import make_model_view as mv
 import patch_lm_head_quant as lh
 
 sys.path.insert(0, os.path.join(HERE, "..", "..", "vllm-flash-ar", "src"))
+import patch_abliterate as pa
 import patch_hc_fp8 as ph
 import patch_mtp_draft_vocab as dv
 
@@ -47,6 +49,11 @@ def write_safetensors(path, tensors):
     raw = json.dumps(header).encode()
     with open(path, "wb") as f:
         f.write(struct.pack("<Q", len(raw)) + raw + bytes(off))
+
+
+def bre(pattern):
+    """grep's basic regular expression as Python's: ( ) { } + ? | are literal there."""
+    return re.sub(r"([(){}+?|])", r"\\\1", pattern)
 
 
 class Tmp(unittest.TestCase):
@@ -92,6 +99,29 @@ class DraftHeadStepTest(Tmp):
             grep = re.search(r'grep -q "(\^    Qwen4ExpMTP[^"]+)" "\$Q/mtp.py"', f.read()).group(1)
         self.assertTrue(re.search(grep, src, re.MULTILINE))
         self.assertEqual(dv.patch(p), "already installed")
+
+    def test_dockerfile_ablation_step(self):
+        m, t = os.path.join(self.d, "model.py"), os.path.join(self.d, "mtp.py")
+        shutil.copy(os.path.join(HERE, "testdata", "model.py.v034"), m)
+        shutil.copy(os.path.join(HERE, "testdata", "mtp.py.v034"), t)
+        lh.patch(m)
+        lh.patch(t)
+        dv.patch(t)
+        with open(m) as f:
+            model_edits, model_hook, mtp_edits = pa.engine_edits(f.read())
+        self.assertIs(model_edits, pa.V034_MODEL_EDITS)
+        self.assertTrue(pa.patch(m, model_edits, model_hook).startswith("INSTALLED"))
+        self.assertTrue(pa.patch(t, mtp_edits, pa.MTP_HOOK).startswith("INSTALLED"))
+        with open(os.path.join(HERE, "..", "Dockerfile")) as f:
+            docker = f.read()
+        for name, path in (("model.py", m), ("mtp.py", t)):
+            with open(path) as f:
+                src = f.read()
+            ast.parse(src)
+            for g in re.findall(rf'grep -q "([^"]+)" "\$Q/{re.escape(name)}"', docker):
+                self.assertTrue(re.search(bre(g), src, re.MULTILINE), (name, g))
+        self.assertIn(lh.MARK, src)
+        self.assertIn(dv.MARK, src)
 
     def test_dockerfile_hc_step(self):
         p = os.path.join(self.d, "hyperconnection.py")

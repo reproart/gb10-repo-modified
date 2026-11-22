@@ -1,6 +1,7 @@
 """Refusal-direction ablation at inference for Qwen3.8-Flash-Next on vLLM (qwen38-flash-dgx
-image). src/patch_abliterate.py wires it into models/qwen3_8_flash_next/nvidia/model.py and
-mtp.py at build time; this module is imported only when VLLM_ABLATE is set at runtime.
+image; vLLM 0.34 in ../vllm-flash-v034). src/patch_abliterate.py wires it into
+models/qwen3_8_flash_next/nvidia/model.py and mtp.py (0.34: models/qwen4_exp/nvidia/) at build
+time; this module is imported only when VLLM_ABLATE is set at runtime.
 
 Where it acts. This model keeps hc_count = 4 residual streams per token ([T, 4 x 2560]), and
 no layer writes them directly: a block (attention or GDN, then the MLP / MoE) returns one
@@ -292,12 +293,13 @@ class Ablation:
                 logger.warning("ABLATION: VLLM_ABLATE_LAYERS names layers %s, not in 0-%d", extra, n_layers - 1)
 
 
-def install(ns: dict):
-    """Called from model.py's appended hook with its globals: wraps the decoder layer's and the
-    model's __init__ so every instance attaches (or not) after it is built. The forward code
-    the patch inserted reads the flags and buffers."""
-    layer_cls = ns["Qwen3_8FlashNextDecoderLayer"]
-    model_cls = ns["Qwen3_8FlashNextModel"]
+def install(ns: dict, layer: str = "Qwen3_8FlashNextDecoderLayer", model: str = "Qwen3_8FlashNextModel"):
+    """Called from model.py's appended hook with its globals and its two class names (vLLM 0.34:
+    Qwen4ExpDecoderLayer, Qwen4ExpModel): wraps the decoder layer's and the model's __init__ so
+    every instance attaches (or not) after it is built. The forward code the patch inserted
+    reads the flags and buffers."""
+    layer_cls = ns[layer]
+    model_cls = ns[model]
     if getattr(layer_cls, "_gb10_abl", None) is not None:
         return layer_cls._gb10_abl
     cfg = settings()
