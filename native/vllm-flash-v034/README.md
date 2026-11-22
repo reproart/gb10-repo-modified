@@ -214,7 +214,12 @@ insertion fails it.
 vectors answered a request the stock model refused, decode 79.3 tok/s (82% of drafts
 accepted).
 
-## Stage 3a: the tool-call parser fixes (built, to check)
+## Stage 3a: the tool-call parser fixes (checked 2026-11-22)
+
+`consistency.py` section 1 on the image with them: all six cases PASS (the fenced example and
+the mid-line header, streamed and not, stay text with the reply after them; the control calls
+parse), where stages 1-2 failed three.
+
 
 `../bench/consistency.py` on stages 1 and 2 failed its tool-call section as the dev image
 did before its patch 14: a reply that shows the tool-call syntax as an example (a call
@@ -238,7 +243,21 @@ call parses, a quoted `<tool_call>` in the reasoning keeps the answer; chunks of
 all characters), so a build that does not hold stops there. To check on the server:
 `python3 ../bench/consistency.py --only fence`.
 
-## Stage 3b: determinism (built, to check)
+## Stage 3b: determinism (in progress)
+
+Measured with the image of stage 3b (2026-11-22, `DET_MOE_ALIGN=1`, `QSA_EXACT_TOPK=0`): still
+not deterministic. `consistency.py` section 2: cold vs cold and hit vs hit fork 15-78
+characters in, with first-token top-5 gaps 0.10-0.54 nats at ~4K and ~32K tokens, and at 32K a
+cache hit gives another first token than the cold prefill. The first token comes from the
+prefill alone, and the MoE alignment is now fixed there (0.34's Marlin MoE calls the patched
+`moe_align_block_size`; its grouped GEMM reduces in order, FP32, no atomics; the dense
+Marlin's atomic reduction is off by default), so the next suspect is the QSA top-k kernel:
+`QSA_EXACT_TOPK=1` is the A/B. If that settles it, @jschmied's deterministic kernel is the fast
+way: it registers `_C_det.persistent_topk(logits, lengths, output, workspace, k,
+max_seq_len)`, the same arguments in the same order as 0.34's `_topk` passes to
+`persistent_topk`, so its wiring is a swap of the op.
+
+What was built:
 
 `../bench/consistency.py` section 2 sends one greedy request cold, twice from the prefix
 cache and cold again; on stages 1-2 the replies forked a few dozen characters in (top-5
