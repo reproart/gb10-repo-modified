@@ -113,6 +113,9 @@ fi
 # 81,920 (English exactly as 1, a 25% larger draft-head read); 0 = full
 # vocabulary; a path = your own ids.npy (tools/build_draft_vocab.py).
 # README, patch 10. ru / ru-wide are mounted from src/, no rebuild needed.
+# Measured (MTP=4), code / Russian prose: 1 80.1 / 29.4 tok/s, ru 79.6 / 50.2,
+# ru-wide 77.3 / 49.7; config.sh defaults to ru, a direct call of this script
+# keeps the recipe's 1.
 DRAFT_VOCAB="${DRAFT_VOCAB:-1}"
 # DRAFT_HEAD: int8 (default) = the head as the target has it: shared
 # (DRAFT_VOCAB=0), or with DRAFT_VOCAB its own int8 rows for those ids on the
