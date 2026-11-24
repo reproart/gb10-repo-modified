@@ -60,7 +60,7 @@
 | `vllm-b12x/` | Qwen3.8-Flash-Next-FP4-Local (QAD от NVIDIA), vLLM в Docker | ~96 ГиБ | 61.0 (MTP 3) | измерена, качество не сравнивали |
 | `sglang-inkling/` | Inkling-2-Mini 26B MoE (3.4B акт., 5.4B с петлёй), картинки, драфт DSpark внутри, SGLang в Docker | ~18 ГиБ | 54 код / 20 русский | измерена, HumanEval не прогоняли |
 | `vllm-inkling/` | та же Inkling-2-Mini, те же веса, vLLM в Docker (для сравнения движков) | те же ~18 ГиБ | 50 код / 20 русский | измерена, HumanEval 98.2% (161/164, с оговорками) |
-| `vllm-ling/` | Ling-3.2-air 124B MoE (5.5B акт.), картинки и видео, эксперты NVFP4 W4A16, vLLM в Docker | ~73 ГиБ | 18.6 (без MTP), 229 суммарно на 32 | измерена, HumanEval 93.9% без размышлений |
+| `vllm-ling/` | Ling-3.2-air 124B MoE (5.5B акт.), картинки и видео, эксперты NVFP4 W4A16, vLLM в Docker | ~73 ГиБ | 42.3 с MTP (`SPEC_TOKENS=1`), 22.7 без; 296 суммарно на 24 с MTP | измерена, HumanEval 93.9% без размышлений, 98.2% с ними |
 | `vllm-flash-ar/` | Qwen3.8-Flash-Next, int4 AutoRound (Intel) + int8 голова + FP8, vLLM в Docker | ~67 + ~49 ГиБ (таблица) | 65.8 (MTP 3), 259 суммарно на 8 | измерена в рецепте, долго в работе |
 | `vllm-flash-v034/` | та же модель и веса на vLLM 0.34 (Docker), таблица PLE читается с диска средствами vLLM | те же + ~48 ГиБ (очищенная таблица) | 79.8 (MTP 4, этап 1 + `ABLATE=1`; русский 49.3) | декод вровень с `vllm-flash-ar`, 1–4 потока +3–10%, префилл +16–29%, паузы 2.5 с вместо 6–11 |
 | `tensorfold-dsv41/` | DeepSeek-V4.1-Flash-1017, EXL3 2.9 бит, контекст 1M, TensorFold в Docker, **на двух Spark** (TP=2) | 196 + 189 ГиБ на каждом | 92 код / 57 текст (по рецепту) | у нас не измерена |
@@ -712,7 +712,7 @@ FP8-оригинал (129 ГБ) на один Spark не помещается. �
 ```bash
 cd vllm-ling
 ./pull.sh                          # образ (~12.2 ГБ), дайджест в image.lock
-./serve.sh                         # контекст 32K, без MTP; Ctrl-C останавливает
+./serve.sh                         # контекст 32K, с MTP (SPEC_TOKENS=0 без него); Ctrl-C останавливает
 MODEL_DIR=/путь/к/весам ./serve.sh # если веса не в /models/primitive-ai
 python3 ../bench/consistency.py    # сначала ответы (у Ling-3.0 были NaN), потом perf.py
 ```

@@ -4,8 +4,8 @@
 # stops it). The card's command, with its values as knobs (config.sh):
 #
 #   ./pull.sh                           once: the container, pinned by image.lock
-#   ./serve.sh                          32K context, plain decode
-#   SPEC_TOKENS=1 ./serve.sh            the checkpoint's MTP layer as the draft
+#   ./serve.sh                          32K context, the checkpoint's MTP layer as the draft
+#   SPEC_TOKENS=0 ./serve.sh            plain decode
 #   MAX_MODEL_LEN=262144 ./serve.sh     the checkpoint's full window
 #   MODEL_DIR=/path/to/weights ./serve.sh
 #

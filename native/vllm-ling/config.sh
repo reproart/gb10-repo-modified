@@ -51,8 +51,9 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 # Spark's pool held 104.5 GiB in practice and left 3.4; 0.7 leaves 18
 # (README, Measured).
 GPU_UTIL="${GPU_UTIL:-0.7}"
-# The checkpoint's MTP layer: proposals per step; 0 = off.
-SPEC_TOKENS="${SPEC_TOKENS:-0}"
+# The checkpoint's MTP layer: proposals per step; 0 = off
+# (1.86x on one stream, README, Measured).
+SPEC_TOKENS="${SPEC_TOKENS:-1}"
 # --moe-backend; empty = vLLM's choice. For W4A16 NVFP4 use one that applies
 # the experts' SwiGLU clamp (vLLM refuses the ones that do not).
 MOE_BACKEND="${MOE_BACKEND:-}"

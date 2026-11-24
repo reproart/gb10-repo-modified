@@ -938,8 +938,8 @@ puts the two recipes and their measurements side by side.
 [`vllm-ling/`](vllm-ling/README.md) serves
 `primitive-ai/Ling-3.2-air-NVFP4A16` (124B MoE, 5.5B active, images and video,
 NVFP4 W4A16 experts, ~73 GiB) in a vLLM nightly container pinned in
-`image.lock`, with the card's command as knobs, on :8888. Measured: 18.6
-tok/s, 229 at 32 streams, HumanEval 93.9% with thinking off.
+`image.lock`, with the card's command as knobs, on :8888. Measured: 22.7
+tok/s plain and 42.3 with MTP, HumanEval 93.9% without thinking, 98.2% with.
 
 ## Flash-Next as Intel's AutoRound int4 on vLLM: `vllm-flash-ar/`
 
