@@ -142,8 +142,8 @@ native NVFP4 + DFlash2 profile in `../results/RESULTS.md`.
 off" rows are reasoning text at the template's default effort (0.9), and
 the long-context rows flag "the answer looks wrong": with 8 tokens allowed
 the model only begins its reasoning ("The user has provided a long..."),
-which is not a broken answer. Decode on a code answer at effort `none` is
-still to measure.
+which is not a broken answer. 698 of the 700 decode tokens are reasoning
+(measured later on the same prompt); much of it is drafted code.
 
 | | Inkling-2-Mini, vLLM | Qwen3.8-27B NVFP4, SGLang |
 |---|---:|---:|
@@ -159,13 +159,15 @@ HumanEval (`../scripts/run-humaneval.sh nothink` with
 truncated at 4096. Those five re-run at 16384: three answered and passed,
 HumanEval/116 and /145 hit 16384 again (never closed their reasoning).
 **98.2% (161/164)**; the one wrong answer is HumanEval/118. Effort `none`
-still thinks: 734 tokens a problem on average, against ~200 for the 27B
+still thinks: 734 tokens a problem on average (truncated ones counted at the 4096 cap), against ~200 for the 27B
 with thinking off (93.9% NVFP4, 97.6% FP8), so per answer it costs about
 3.7x the tokens.
 
 `perf.py` again at effort `none`
 (`GB10_TEMPLATE_KWARGS='{"reasoning_effort": "none"}'`, 14:45 UTC, same
-server): the code answer drafts worse than the reasoning text did.
+server). These 700 tokens are 509 of terse reasoning, then the start of the
+answer, so this is not the decode rate of a code answer either: the whole
+reply (1,417 tokens) accepted 4.37 tokens a step, the first 700 3.48.
 
 | | effort 0.9 (above) | effort `none` |
 |---|---:|---:|
@@ -180,13 +182,32 @@ model still opens with reasoning, and 8 tokens hold only its start. Host
 memory during the run: 2.9 GiB free (page cache aside) with the server and
 a desktop session up.
 
-Reading: slower than the 27B at decode (57 against 94 tok/s on the same
-code prompt) and aggregate (375-404 against 598), faster at prefill from
-32K up (2.0x at 101K, 1.3x at 32K) and gentler on streams during a long
-prefill; more accurate on HumanEval, at several times the tokens. Next:
-`DRAFT_SAMPLE_METHOD=` (greedy drafting; the probabilistic method may cost
-acceptance at temperature 0), the SGLang twin (FA4), `MAX_BATCHED_TOKENS`
-above 2048.
+Draft sampling, 2026-11-24, after a reboot, port 8890, effort `none`, two
+boots back to back (vLLM's default is `greedy`):
+
+| | probabilistic (recipe) | greedy (`DRAFT_SAMPLE_METHOD=`) |
+|---|---:|---:|
+| Single-stream decode, 700 tokens | 50.3 tok/s (49.7-50.4) | 51.4 (51.1-52.3) |
+| Acceptance | 3.48 a step, 35% | 3.48, 35% |
+| Aggregate at 8 / 16 / 32 streams | 147.6 / 231.5 / 341.7 | 142.6 / 241.1 / 345.9 |
+| Prefill 2K / 8K / 32K / 101K | 2,284 / 1,889 / 2,396 / 1,928 | 2,156 / 1,911 / 2,194 / 1,953 |
+
+No difference at temperature 0: acceptance is the same and 2% is inside
+this project's ~8% boot-to-boot spread. Not measured at the model's default
+temperature 1.0, so the recipe's value stays. Both boots are ~10% below
+2026-11-21's 57.1 tok/s, 101K prefill too (which drafting does not touch):
+something about the machine that day, cause not found. Compare only runs of
+the same session.
+
+Reading: on this bench, slower than the 27B at decode (50-57 tok/s at
+`none`, 79.6 at the default effort, against 94.2; the outputs differ, so no
+like-for-like ratio) and aggregate (342-404 against 598), faster at long
+prefill (1.3x at 32K, 1.6-1.9x at 101K). HumanEval is not a ranking: 161
+against the 27B FP8's 160 is inside run-to-run noise (2-3 problems flip),
+only the truncated problems got a second, larger budget, and the 27B had
+2,048 tokens without thinking while this model always thinks. The two
+endless replies were not inspected. Next: the SGLang twin (FA4),
+`MAX_BATCHED_TOKENS` above 2048.
 
 Notes: the container runs as root, so
 `~/.cache/gb10-vllm-inkling` (compile caches, kept between runs) ends up
