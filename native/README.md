@@ -311,7 +311,7 @@ a model server's CUDA allocations, in nobody's RSS) and the process list who.
 run lost its engine to earlyoom with 1015 MiB available and 6 GiB of swap in
 use; nothing else was running that anyone knew of.
 
-Every server here (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-flash-ar/`, `tensorfold-dsv41/`,
+Every server here (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-ling/`, `vllm-flash-ar/`, `tensorfold-dsv41/`,
 `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`) now runs `mem-prep.sh prep`
 before it starts, on both nodes for the pairs: with the GPU idle, it drops
 the page cache and compacts free memory, and prints a line with how much is
@@ -330,7 +330,7 @@ on it. It is a one-off before a start: `vm.compaction_proactiveness=0`
 (background compaction while serving) stays.
 
 The downloads, image pulls and copies (`tensorfold-dsv41/download.sh` and
-`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`, `sglang-inkling/pull.sh`, `vllm-inkling/pull.sh`,
+`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`, `sglang-inkling/pull.sh`, `vllm-inkling/pull.sh`, `vllm-ling/pull.sh`,
 `vllm-flash-ar/build.sh`, `download.sh` and `prepare.sh`,
 `tensorfold-glm53/setup.sh`, `./serve.sh install`, `llamacpp/build.sh`)
 refuse while anything runs on a GPU of a node they touch: their Spark
@@ -932,6 +932,14 @@ weights, port and model id, in `vllm/vllm-openai:inkling-2-mini` (vLLM >=
 sampling, context 262144) as knobs, at `--gpu-memory-utilization 0.8`
 instead of vLLM's default 0.9. For an engine A/B on one model; its README
 puts the two recipes and their measurements side by side.
+
+## Ling-3.2-air on vLLM: `vllm-ling/`
+
+[`vllm-ling/`](vllm-ling/README.md) serves
+`primitive-ai/Ling-3.2-air-NVFP4A16` (124B MoE, 5.5B active, images and video,
+NVFP4 W4A16 experts, ~73 GiB) in a vLLM nightly container pinned in
+`image.lock`, with the card's command as knobs, on :8888. Measured: 18.6
+tok/s, 229 at 32 streams, HumanEval 93.9% with thinking off.
 
 ## Flash-Next as Intel's AutoRound int4 on vLLM: `vllm-flash-ar/`
 

@@ -26,6 +26,7 @@
   LMSYS, а не наш venv.
 - **vLLM в Docker** (`vllm-inkling/`) — та же Inkling-2-Mini на vLLM, для
   сравнения движков.
+- **vLLM в Docker** (`vllm-ling/`) — Ling-3.2-air (NVFP4 W4A16).
 - **vLLM в Docker** (`vllm-flash-ar/`) — Flash-Next в int4 AutoRound от Intel
   (рецепт blazux → Saren-Arterius, ваша копия).
 - **vLLM 0.34 в Docker** (`vllm-flash-v034/`) — та же модель и те же веса на
@@ -59,6 +60,7 @@
 | `vllm-b12x/` | Qwen3.8-Flash-Next-FP4-Local (QAD от NVIDIA), vLLM в Docker | ~96 ГиБ | 61.0 (MTP 3) | измерена, качество не сравнивали |
 | `sglang-inkling/` | Inkling-2-Mini 26B MoE (3.4B акт., 5.4B с петлёй), картинки, драфт DSpark внутри, SGLang в Docker | ~18 ГиБ | 54 код / 20 русский | измерена, HumanEval не прогоняли |
 | `vllm-inkling/` | та же Inkling-2-Mini, те же веса, vLLM в Docker (для сравнения движков) | те же ~18 ГиБ | 50 код / 20 русский | измерена, HumanEval 98.2% (161/164, с оговорками) |
+| `vllm-ling/` | Ling-3.2-air 124B MoE (5.5B акт.), картинки и видео, эксперты NVFP4 W4A16, vLLM в Docker | ~73 ГиБ | 18.6 (без MTP), 229 суммарно на 32 | измерена, HumanEval 93.9% без размышлений |
 | `vllm-flash-ar/` | Qwen3.8-Flash-Next, int4 AutoRound (Intel) + int8 голова + FP8, vLLM в Docker | ~67 + ~49 ГиБ (таблица) | 65.8 (MTP 3), 259 суммарно на 8 | измерена в рецепте, долго в работе |
 | `vllm-flash-v034/` | та же модель и веса на vLLM 0.34 (Docker), таблица PLE читается с диска средствами vLLM | те же + ~48 ГиБ (очищенная таблица) | 79.8 (MTP 4, этап 1 + `ABLATE=1`; русский 49.3) | декод вровень с `vllm-flash-ar`, 1–4 потока +3–10%, префилл +16–29%, паузы 2.5 с вместо 6–11 |
 | `tensorfold-dsv41/` | DeepSeek-V4.1-Flash-1017, EXL3 2.9 бит, контекст 1M, TensorFold в Docker, **на двух Spark** (TP=2) | 196 + 189 ГиБ на каждом | 92 код / 57 текст (по рецепту) | у нас не измерена |
@@ -700,6 +702,20 @@ GPU_UTIL=0.9 ./serve.sh            # ровно рецепт (умолчание
 включены, как в SGLang-версии, и нет `--privileged`. Для честного сравнения
 запускайте оба с одинаковой долей памяти и контекстом.
 
+### 4.11c. Ling-3.2-air на vLLM (Docker)
+
+Сборка `primitive-ai/Ling-3.2-air-NVFP4A16`: эксперты NVFP4, активации BF16.
+FP8-оригинал (129 ГБ) на один Spark не помещается. Подробно —
+[`vllm-ling/README.md`](vllm-ling/README.md). Доля памяти 0.7: при 0.8 системе
+оставалось 3.4 ГиБ.
+
+```bash
+cd vllm-ling
+./pull.sh                          # образ (~12.2 ГБ), дайджест в image.lock
+./serve.sh                         # контекст 32K, без MTP; Ctrl-C останавливает
+MODEL_DIR=/путь/к/весам ./serve.sh # если веса не в /models/primitive-ai
+python3 ../bench/consistency.py    # сначала ответы (у Ling-3.0 были NaN), потом perf.py
+```
 
 ### 4.12. DeepSeek-V4.1-Flash-1017 на двух Spark (TensorFold)
 
@@ -1228,7 +1244,7 @@ llama.cpp, пока не сделать `--undo`.
 страничный кэш, `other` — то, что держит драйвер GPU (выделения CUDA сервера
 не видны ни в чьём RSS). Список процессов в конце строки скажет, кто.
 
-**Перед каждым стартом.** Все наши серверы (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-flash-ar/`, `vllm-flash-v034/`,
+**Перед каждым стартом.** Все наши серверы (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-ling/`, `vllm-flash-ar/`, `vllm-flash-v034/`,
 `tensorfold-dsv41/`, `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`), если
 GPU свободен, сбрасывают страничный кэш и уплотняют свободную память, у пар
 — на обеих машинах. В выводе при старте появляется строка: сколько памяти
@@ -1258,7 +1274,7 @@ GPU свободен, сбрасывают страничный кэш и упл
 **Не копировать рядом с сервером.** У sudoingX Spark наглухо зависал (ни ssh,
 ни ping) при копировании 25 ГБ рядом с задачей на GPU. Поэтому загрузки,
 скачивание образов и копирование (`tensorfold-dsv41/download.sh`,
-`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`, `sglang-inkling/pull.sh`, `vllm-inkling/pull.sh`,
+`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`, `sglang-inkling/pull.sh`, `vllm-inkling/pull.sh`, `vllm-ling/pull.sh`,
 `vllm-flash-ar/build.sh`, `download.sh`, `prepare.sh`,
 `tensorfold-glm53/setup.sh`, `./serve.sh install`, `llamacpp/build.sh`)
 отказываются работать, пока на GPU любой из затронутых машин что-то
@@ -1414,6 +1430,7 @@ llamacpp/             сборка и запуск GLM-5.3-Flash на llama.cpp 
 vllm-b12x/            Flash-Next FP4-Local от NVIDIA на vLLM (Docker)
 sglang-inkling/       Inkling-2-Mini на SGLang в образе LMSYS (Docker), пока поддержки нет в релизе
 vllm-inkling/         та же Inkling-2-Mini на vLLM (Docker), для сравнения движков
+vllm-ling/            Ling-3.2-air NVFP4 W4A16 на vLLM (Docker)
 tensorfold-dsv41/     DeepSeek-V4.1-Flash на двух Spark, TensorFold (Docker)
 vllm-dsv41/           та же DeepSeek на двух Spark, настроенный vLLM (Docker)
 tensorfold-glm53/     GLM-5.3-Flash на двух Spark, TensorFold по рецепту MiaAI-Lab (Docker)
