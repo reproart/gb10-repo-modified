@@ -920,8 +920,8 @@ DSpark draft) in LMSYS's `lmsysorg/sglang:inkling-2-mini` image, pinned by
 digest in `image.lock`: support is still an open SGLang PR (#51926), so no
 release venv loads it. The SGLang cookbook's two DGX Spark recipes (DSpark
 with 8 draft tokens, the default, or plain decode) as knobs, on :8888.
-Unmeasured here; once a release carries the model it becomes a `models/`
-profile.
+Measured: 54 tok/s, 421 at 48 streams; once a release carries the model it
+becomes a `models/` profile.
 
 ## Inkling-2-Mini on vLLM's container: `vllm-inkling/`
 
@@ -931,7 +931,7 @@ weights, port and model id, in `vllm/vllm-openai:inkling-2-mini` (vLLM >=
 `dgx_spark_gb10` command (DSpark with 7 proposals and probabilistic draft
 sampling, context 262144) as knobs, at `--gpu-memory-utilization 0.8`
 instead of vLLM's default 0.9. For an engine A/B on one model; its README
-puts the two recipes side by side. Unmeasured.
+puts the two recipes and their measurements side by side.
 
 ## Flash-Next as Intel's AutoRound int4 on vLLM: `vllm-flash-ar/`
 

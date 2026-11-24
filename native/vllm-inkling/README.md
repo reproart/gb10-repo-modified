@@ -123,7 +123,7 @@ ready, nothing cached yet.
   is this machine, so 0.8 stays. With the server up and a desktop session
   beside it, `free -g` showed 11 GiB available.
 - Warnings worth knowing: the scheduler caps a step at 2048 tokens with 7
-  draft tokens (`MAX_BATCHED_TOKENS` raises it, untested); KV padding
+  draft tokens (`MAX_BATCHED_TOKENS` raises it, measured below); KV padding
   layers "may waste at most" 12.5% / 12.5% / 350% in three cache groups;
   the draft gets no image embeddings (text-only draft inputs on image
   prompts, so expect lower acceptance there); the target's attention runs
@@ -206,8 +206,47 @@ prefill (1.3x at 32K, 1.6-1.9x at 101K). HumanEval is not a ranking: 161
 against the 27B FP8's 160 is inside run-to-run noise (2-3 problems flip),
 only the truncated problems got a second, larger budget, and the 27B had
 2,048 tokens without thinking while this model always thinks. The two
-endless replies were not inspected. Next: the SGLang twin (FA4),
-`MAX_BATCHED_TOKENS` above 2048.
+endless replies were not inspected. The
+SGLang twin and a larger `MAX_BATCHED_TOKENS`: next section.
+
+## Against the SGLang twin
+
+2026-11-24, one session, one boot of each, same `../bench/perf.py` at effort
+`none`, each engine's recipe (SGLang: mem 0.45, context 1M, prefill chunk
+8192; vLLM: 0.8, 262144, 2048), and vLLM once more with
+`MAX_BATCHED_TOKENS=8192`. Memory shares and contexts were not equalised.
+
+| | SGLang | vLLM | vLLM, 8192 |
+|---|---:|---:|---:|
+| TTFT, short prompt | 213 ms | 221 ms | not run |
+| Decode, first 700 tokens of the code prompt | 54.2 tok/s | 49.7 | 48.8 |
+| Russian prose (506 / 578-617 tokens) | 19.6 tok/s | 19.7 | not run |
+| Aggregate at 8 / 16 / 32 streams | 139.5 / 216.1 / 336.2 | 149.9 / 230.6 / 349.8 | 142.5 / 213.1 / 355.9 |
+| Aggregate at 48 (its request cap) | 420.6 | not run | not run |
+| Prefill 2K / 8K / 32K / 101K, tok/s | 2,227 / 2,887 / 2,786 / 2,286 | 2,122 / 1,823 / 2,191 / 1,927 | 2,288 / 2,474 / 2,369 / 2,108 |
+| Decode during a 32K prefill, 1 / 4 streams | 0.6 / 2.5 tok/s | 1.9 / 11.8 | 1.3 / 5.0 |
+| Longest pause there, 1 / 4 streams | 11.7 / 11.7 s | 3.7 / 1.7 s | 6.8 / 6.9 s |
+| Boot to ready | 6.4 min, first boot | ~2.5 min, caches warm | |
+
+Whole replies at temperature 0, one run each, tok/s (the engines' texts
+differ, so these are not the same tokens):
+
+| | SGLang `none` | vLLM `none` | SGLang 0.9 | vLLM 0.9 |
+|---|---:|---:|---:|---:|
+| Code (LRU cache) | 63.6 | 61.2 | 58.0 | 66.3 |
+| English prose | 39.8 | 29.5 | 30.0 | 40.4 |
+| Russian prose | 19.6 | 19.8 | 20.1 | 20.9 |
+| Short math | 45.3 | 50.0 | 44.5 | 46.3 |
+
+Reading: decode and aggregate are a tie within the ~8% boot spread (the
+700-token row is 9%, on one boot). SGLang prefills faster, 27% at 32K and
+19% at 101K (58% at 8K); the larger chunk gives vLLM 8-9% of that at 32K and
+101K. SGLang pays by freezing other streams for the whole 32K prompt. Russian
+is ~20 tok/s on both, 1.2-1.4 tokens a step: the draft hardly helps there.
+The perf.py "not in Russian" flag is the reasoning it counts with the
+answer; the answers themselves are 99% Cyrillic. Both answered the math
+prompt correctly (12:10, 180 km). SGLang's 0.45 left ~50 GiB available and
+410,240 tokens of KV. HumanEval was not run on SGLang.
 
 Notes: the container runs as root, so
 `~/.cache/gb10-vllm-inkling` (compile caches, kept between runs) ends up

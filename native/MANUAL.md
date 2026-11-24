@@ -57,8 +57,8 @@
 | `ling-3.0-flash` | Ling-3.0-flash 124B MoE (5.1B акт.), текст, FP8-голова, SGLang 0.5.21 | ~66 ГиБ | 44 у NVIDIA без MTP, 54–103 с MTP (на их ветке SGLang) | не измерена: ответы — мусор (NaN), ищем причину |
 | `ling-3.0-flash-vl` | Ling-3.0-flash-VL 125B MoE (5.1B акт.), картинки и видео, SGLang 0.5.21 | ~70 ГБ (оценка) | ~33 по рецепту SGLang (FP4) | рецепт проверен на Spark, у нас не измерена |
 | `vllm-b12x/` | Qwen3.8-Flash-Next-FP4-Local (QAD от NVIDIA), vLLM в Docker | ~96 ГиБ | 61.0 (MTP 3) | измерена, качество не сравнивали |
-| `sglang-inkling/` | Inkling-2-Mini 26B MoE (3.4B акт., 5.4B с петлёй), картинки, драфт DSpark внутри, SGLang в Docker | ~18 ГиБ | | не измерена (рецепт SGLang проверен на Spark: gsm8k 93.9%) |
-| `vllm-inkling/` | та же Inkling-2-Mini, те же веса, vLLM в Docker (для сравнения движков) | те же ~18 ГиБ | | не измерена |
+| `sglang-inkling/` | Inkling-2-Mini 26B MoE (3.4B акт., 5.4B с петлёй), картинки, драфт DSpark внутри, SGLang в Docker | ~18 ГиБ | 54 код / 20 русский | измерена, HumanEval не прогоняли |
+| `vllm-inkling/` | та же Inkling-2-Mini, те же веса, vLLM в Docker (для сравнения движков) | те же ~18 ГиБ | 50 код / 20 русский | измерена, HumanEval 98.2% (161/164, с оговорками) |
 | `vllm-flash-ar/` | Qwen3.8-Flash-Next, int4 AutoRound (Intel) + int8 голова + FP8, vLLM в Docker | ~67 + ~49 ГиБ (таблица) | 65.8 (MTP 3), 259 суммарно на 8 | измерена в рецепте, долго в работе |
 | `vllm-flash-v034/` | та же модель и веса на vLLM 0.34 (Docker), таблица PLE читается с диска средствами vLLM | те же + ~48 ГиБ (очищенная таблица) | 79.8 (MTP 4, этап 1 + `ABLATE=1`; русский 49.3) | декод вровень с `vllm-flash-ar`, 1–4 потока +3–10%, префилл +16–29%, паузы 2.5 с вместо 6–11 |
 | `tensorfold-dsv41/` | DeepSeek-V4.1-Flash-1017, EXL3 2.9 бит, контекст 1M, TensorFold в Docker, **на двух Spark** (TP=2) | 196 + 189 ГиБ на каждом | 92 код / 57 текст (по рецепту) | у нас не измерена |

@@ -67,8 +67,7 @@ Added here: `--served-model-name inkling-2-mini` and `--enable-metrics`
 ## What to watch
 
 - **`MEM_FRACTION=0.45`.** The cookbook's Spark value, and the only one it
-  verified there. With ~18 GiB of weights it leaves a small KV pool for 128
-  GB. This project runs the 27B at 0.85 and has seen machines wedge above
+  verified there. Measured: 410,240 tokens of KV with ~50 GiB still available. This project runs the 27B at 0.85 and has seen machines wedge above
   that, so 0.6-0.85 is worth measuring rather than assuming.
 - **Loop options do not apply to this checkpoint.** The cookbook's
   `--inkling2-loop-num-passes` and `--inkling2-loop-share-cache` need a
@@ -95,8 +94,10 @@ The vLLM twin, [`../vllm-inkling/`](../vllm-inkling/README.md), serves the
 same weights on the same port and model id, for an engine A/B; its README
 puts the two recipes side by side.
 
-Not measured here yet: first boot, decode, aggregate, HumanEval. Measure
-like the SGLang profiles, but with the template's own switch: Inkling's
+Measured 2026-11-24 with the recipe as it is: `../vllm-inkling/README.md`,
+"Against the SGLang twin" (54.2 tok/s, 420.6 at 48 streams, prefill to 2,887
+tok/s, other streams freeze during a long prefill). Boot 6.4 min; KV 410,240
+tokens, 48 requests, context 1,048,576. HumanEval not run. Measure like the SGLang profiles, but with the template's own switch: Inkling's
 chat template ignores `enable_thinking` (what `../bench/` sends for
 "thinking off") and reads only `reasoning_effort` (default 0.9, "high";
 `none` still thinks briefly), so
