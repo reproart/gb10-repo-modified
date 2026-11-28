@@ -59,7 +59,7 @@
 | `ling-3.0-flash` | Ling-3.0-flash 124B MoE (5.1B акт.), текст, FP8-голова, SGLang 0.5.21 | ~66 ГиБ | 44 у NVIDIA без MTP, 54–103 с MTP (на их ветке SGLang) | не измерена: ответы — мусор (NaN), ищем причину |
 | `ling-3.0-flash-vl` | Ling-3.0-flash-VL 125B MoE (5.1B акт.), картинки и видео, SGLang 0.5.21 | ~70 ГБ (оценка) | ~33 по рецепту SGLang (FP4) | рецепт проверен на Spark, у нас не измерена |
 | `vllm-b12x/` | Qwen3.8-Flash-Next-FP4-Local (QAD от NVIDIA), vLLM в Docker | ~96 ГиБ | 61.0 (MTP 3) | измерена, качество не сравнивали |
-| `sglang-inkling/` | Inkling-2-Mini 26B MoE (3.4B акт., 5.4B с петлёй), картинки, драфт DSpark внутри, SGLang в Docker | ~18 ГиБ | 54 код / 20 русский | измерена, HumanEval не прогоняли |
+| `sglang-inkling/` | Inkling-2-Mini 26B MoE (3.4B акт., 5.4B с петлёй), картинки, драфт DFlash2 (или встроенный DSpark), SGLang в Docker | ~19 ГиБ | 74,5 код / 39,2 русский | измерена, HumanEval 159/164 |
 | `vllm-inkling/` | та же Inkling-2-Mini, те же веса, vLLM в Docker (для сравнения движков) | те же ~18 ГиБ | 50 код / 20 русский | измерена, HumanEval 98.2% (161/164, с оговорками) |
 | `vllm-ling/` | Ling-3.2-air 124B MoE (5.5B акт.), картинки и видео, эксперты NVFP4 W4A16, vLLM в Docker | ~73 ГиБ | 42.3 с MTP (`SPEC_TOKENS=1`), 22.7 без; 296 суммарно на 24 с MTP | измерена, HumanEval 93.9% без размышлений, 98.2% с ними |
 | `vllm-ernie/` | ERNIE 5.5 Flash Preview 280B MoE (14B акт.), MXFP4 + FP8, DSpark, **на двух Spark**, vLLM 0.32 + vLLM-ERNIE в Docker | ~80 ГиБ на каждом | 84 код / 43 текст у автора рантайма | ещё не запускали |
@@ -664,8 +664,12 @@ cd sglang-inkling
 ../scripts/mem-prep.sh idle && $HF download thinkingmachines/Inkling-2-Mini \
   --revision ed40e7da625f594fc9c4990f5f66be24873c22d7 \
   --local-dir /models/thinkingmachines/Inkling-2-Mini
+../scripts/mem-prep.sh idle && $HF download incoai/Inkling-2-Mini-DFlash2 \
+  --revision 4f9088ea66c21f2b99ed657d1941c306b03e84d2 \
+  --local-dir /models/incoai/Inkling-2-Mini-DFlash2
 ./pull.sh                       # образ (~15 ГБ), дайджест уже в image.lock
-./serve.sh                      # рецепт DSpark (8 черновых токенов); Ctrl-C останавливает
+./serve.sh                      # драфт DFlash2 (8 токенов); Ctrl-C останавливает
+STRATEGY=dspark ./serve.sh      # рецепт DSpark из кукбука, без доп. скачивания
 STRATEGY=balanced ./serve.sh    # без спекулятивного декодирования
 MEM_FRACTION=0.7 ./serve.sh     # больше памяти под KV, чем 0.45 из рецепта
 ```
@@ -678,6 +682,17 @@ MEM_FRACTION=0.7 ./serve.sh     # больше памяти под KV, чем 0.
 чекпойнту не применимы: в нём `is_varloop: false`, SGLang откажет при
 старте. Когда поддержка выйдет в релиз, модель станет обычным профилем
 `models/inkling-2-mini.sh`.
+
+По умолчанию с 2026-11-28 — отдельный драфт `incoai/Inkling-2-Mini-DFlash2`
+(~1 ГБ, Apache-2.0) с их патчем для SGLang (лежит в `patches/`, проверяется
+по sha256, применяется в контейнере при каждом старте). В одной сессии:
+74,5 tok/s на коде против 55,3 у vLLM с DSpark и 59,7 у SGLang с DSpark,
+39,2 против 21,6 на русской прозе, 565 против 377 tok/s на 32 потоках,
+HumanEval 159/164 (у vLLM 158). Минус SGLang: пока идёт длинный префилл
+(32K), остальные потоки стоят ~9,6 с (у vLLM 2,6 с). Веса без цензуры
+(LoRA от OpenUncensored, слитая в `/models/OpenUncensored/Inkling-2-Mini-Uncensored`,
+см. `vllm-inkling/README.md`) запускаются через `MODEL_DIR=...` в обоих
+движках.
 
 ### 4.11b. Inkling-2-Mini на vLLM (Docker)
 

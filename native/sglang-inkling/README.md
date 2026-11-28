@@ -22,9 +22,16 @@ this directory goes.
 ../scripts/mem-prep.sh idle && hf download thinkingmachines/Inkling-2-Mini \
   --revision ed40e7da625f594fc9c4990f5f66be24873c22d7 \
   --local-dir /models/thinkingmachines/Inkling-2-Mini
+../scripts/mem-prep.sh idle && hf download incoai/Inkling-2-Mini-DFlash2 \
+  --revision 4f9088ea66c21f2b99ed657d1941c306b03e84d2 \
+  --local-dir /models/incoai/Inkling-2-Mini-DFlash2
 ./pull.sh       # the container (~15 GB compressed), the digest in image.lock
-./serve.sh      # foreground, Ctrl-C stops; http://<host>:8888/v1, "inkling-2-mini"
+./serve.sh      # DFlash2, foreground, Ctrl-C stops; http://<host>:8888/v1, "inkling-2-mini"
+STRATEGY=dspark ./serve.sh    # the cookbook's DSpark recipe, no extra download
 ```
+
+The default is the DFlash2 draft (last section: 1.35x vLLM's DSpark on code,
+1.8x on prose, HumanEval unchanged); the cookbook's two recipes follow.
 
 Stop the SGLang server first (one pool of memory); `serve.sh` refuses
 otherwise, and the other servers here refuse while this one runs.
@@ -35,7 +42,7 @@ The cookbook's two `dgx-spark` cells
 (`docs/src/snippets/configs/thinkingmachines/inkling-2-mini.jsx` in the
 SGLang repository), both marked verified, flag for flag:
 
-| | Balanced | DSpark (default here) |
+| | Balanced | DSpark |
 |---|---|---|
 | Environment | `MAX_JOBS=4` | the same, plus `SGLANG_OPT_INKLING2_VERIFY_REL_BIAS_KERNEL=1`, `SGLANG_OPT_DSV41_DSPARK_MID_FOLD=1`, `SGLANG_OPT_DSV41_DSPARK_PREPARE_INPUTS_ONCE=1`, `SGLANG_OPT_DSV41_DSPARK_SKIP_PREFILLED_INPUTS=1` |
 | Parallelism | `--tp 1 --ep 1` | the same |
@@ -54,8 +61,9 @@ Added here: `--served-model-name inkling-2-mini` and `--enable-metrics`
 
 | Variable | Default | |
 |---|---|---|
-| `STRATEGY` | dspark | `dspark` or `balanced` (the cookbook's two recipes) |
-| `DRAFT_TOKENS` | 8 | `--speculative-num-draft-tokens` with DSpark |
+| `STRATEGY` | dflash2 | `dflash2` (incoai's draft, patched in), `dspark` or `balanced` (the cookbook's two recipes) |
+| `DRAFT_TOKENS` | 8 | `--speculative-num-draft-tokens` with DSpark and DFlash2 |
+| `DRAFT_DIR` | /models/incoai/Inkling-2-Mini-DFlash2 | the DFlash2 draft |
 | `MEM_FRACTION` | 0.45 | `--mem-fraction-static`; the cookbook's value, see below |
 | `MAX_RUNNING`, `CONTEXT_LENGTH` | SGLang's | `--max-running-requests`, `--context-length` |
 | `MULTIMODAL` | 1 | `--enable-multimodal`; 0 = text only |
@@ -108,3 +116,41 @@ GB10_TEMPLATE_KWARGS='{"reasoning_effort": "none"}' python3 ../bench/perf.py
 
 plus HumanEval and `DRAFT_TOKENS` / `MEM_FRACTION` sweeps. Details and the
 vLLM twin's first boot: `../vllm-inkling/README.md`.
+
+## DFlash2 draft (`STRATEGY=dflash2`)
+
+[incoai/Inkling-2-Mini-DFlash2](https://huggingface.co/incoai/Inkling-2-Mini-DFlash2)
+@ `4f9088ea`: a separate 5-layer block-diffusion draft (BF16, 0.99 GB, Apache-2.0)
+that reads four of the target's layer visits. Its SGLang patch is vendored in
+`patches/` at that revision and checked by sha256; on this image it edits 5
+SGLang files (`inkling2.py` model and config, `spec_aux_hidden_state.py`,
+`dflash.py`, `dflash_worker_v2.py`) and a second run changes nothing. The
+draft's card: 3.66 -> 4.80 accepted tokens a step against the bundled DSpark on
+HumanEval, 1.27x one stream (H200, temperature 1.0, default effort).
+
+Measured 2026-11-28, one session, one boot each, `../bench/perf.py` at effort
+`none`, temperature 0, each recipe as configured (vLLM: GPU_UTIL 0.8, ctx 256K,
+DSpark 7; SGLang: mem 0.45, 8 draft tokens):
+
+| | vLLM DSpark | SGLang DSpark | SGLang DFlash2 |
+|---|---:|---:|---:|
+| Decode, code prompt, 700 tokens | 55.3 tok/s | 59.7 | **74.5** |
+| Decode, Russian prose | 21.6 | 21.4 | **39.2** |
+| TTFT, short prompt | 193 ms | 218 | 190 |
+| Aggregate at 8 / 16 / 32 streams | 154 / 245 / 377 | 158 / 249 / 409 | **231 / 342 / 565** |
+| Peak aggregate | 377 (32) | 486 (48) | 565 (32) |
+| Prefill 2K / 8K / 32K / 101K | 2,332 / 2,769 / 2,417 / 2,349 | 2,719 / 3,428 / 3,341 / 2,739 | 2,748 / 3,503 / 3,347 / 2,771 |
+| One stream during a 32K prefill: longest pause | 2.6 s | 9.7 s | 9.6 s |
+| HumanEval, 4096 tokens | 158/164 (2026-11-21) | not run | **159/164** (4 truncated, 1 wrong) |
+
+DFlash2 is 1.35x vLLM's DSpark on code and 1.8x on prose (DSpark drafts prose
+badly here: 1.4 tokens a step), 1.5x at 32 streams; HumanEval unchanged, so the
+patch does not hurt answers (verification keeps the target's distribution
+anyway). What it does not fix: SGLang holds other streams for the whole of a
+long prefill (9.6 s against vLLM's 2.6 s). The draft's own accept-length gauge
+(`sglang:spec_accept_length`) is a last-batch value, not a run mean; not quoted.
+
+On `OpenUncensored/Inkling-2-Mini-Uncensored` (merged from the LoRA, see
+`../vllm-inkling/README.md`): 65.9 tok/s on code, 39.8 on prose, 532 at 32
+streams, 678 at 48. The replies differ from the base model's, so the 12% on
+code is not a clean acceptance loss; prose and aggregate match the base.

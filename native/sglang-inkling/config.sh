@@ -59,8 +59,25 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-inkling-2-mini}"
 #   dspark    speculative decoding on the bundled 3-layer DSpark draft head,
 #             8 draft tokens verified per step, plus four SGLANG_OPT_* switches
 #   balanced  plain decode
-STRATEGY="${STRATEGY:-dspark}"
-# --speculative-num-draft-tokens for dspark. The recipe's 8; the 27B's
+# and one not in the cookbook:
+#   dflash2   incoai/Inkling-2-Mini-DFlash2, a separate 5-layer block-diffusion
+#             draft (BF16, ~0.99 GB), with the compatibility patch from its
+#             repository (patches/sglang_inkling_dflash2.py, applied inside the
+#             container at each start; it edits 5 SGLang files of this image
+#             and nothing else). Its card's command, flag for flag: DFLASH,
+#             8 draft tokens (block size 8), FA4 for the draft too; TP1 only.
+# Default dflash2 since 2026-11-28 (README: 1.35x vLLM's DSpark on code, 1.8x
+# on prose, HumanEval unchanged); dspark is the cookbook recipe.
+STRATEGY="${STRATEGY:-dflash2}"
+# The DFlash2 draft, at the revision the patch was taken from:
+#   ../scripts/mem-prep.sh idle && hf download incoai/Inkling-2-Mini-DFlash2 \
+#     --revision 4f9088ea66c21f2b99ed657d1941c306b03e84d2 \
+#     --local-dir /models/incoai/Inkling-2-Mini-DFlash2
+# Public, Apache-2.0. model.safetensors sha256 217980ab00d1...; the patch's
+# sha256 is 14223ae2f3aa... (checked by serve.sh).
+DRAFT_DIR="${DRAFT_DIR:-/models/incoai/Inkling-2-Mini-DFlash2}"
+DFLASH2_PATCH_SHA256=14223ae2f3aa1d661da67cf0143ec33070d952a6e28a119e6cec64fcc0bebe50
+# --speculative-num-draft-tokens for dspark and dflash2. The recipes' 8; the 27B's
 # DFlash2 optimum moved with the workload (16 for one stream, 10 for many),
 # so worth a sweep here too.
 DRAFT_TOKENS="${DRAFT_TOKENS:-8}"

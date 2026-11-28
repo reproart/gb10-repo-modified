@@ -5,7 +5,8 @@
 # Spark recipe, with its values as knobs (config.sh):
 #
 #   ./pull.sh                           once: the container, pinned by image.lock
-#   ./serve.sh                          the DSpark recipe (8 draft tokens)
+#   ./serve.sh                          the DFlash2 draft (8 tokens; download: config.sh)
+#   STRATEGY=dspark ./serve.sh          the cookbook's DSpark recipe (8 draft tokens)
 #   STRATEGY=balanced ./serve.sh        plain decode
 #   MEM_FRACTION=0.7 ./serve.sh         more KV than the recipe's 0.45
 #   DRAFT_TOKENS=12 ./serve.sh          a draft-token sweep point
@@ -30,7 +31,16 @@ fi
 
 case "$STRATEGY" in
   dspark|balanced) ;;
-  *) echo "STRATEGY must be dspark or balanced, not '$STRATEGY'" >&2; exit 2 ;;
+  dflash2)
+    [ -f "$DRAFT_DIR/config.json" ] && [ -f "$DRAFT_DIR/model.safetensors" ] || {
+      echo "no DFlash2 draft at $DRAFT_DIR: download it, see DRAFT_DIR in $INKLING_ROOT/config.sh" >&2
+      exit 1; }
+    patch_file="$INKLING_ROOT/patches/sglang_inkling_dflash2.py"
+    [ "$(sha256sum "$patch_file" | cut -d' ' -f1)" = "$DFLASH2_PATCH_SHA256" ] || {
+      echo "$patch_file is not the pinned patch (sha256 $DFLASH2_PATCH_SHA256)" >&2
+      exit 1; }
+    ;;
+  *) echo "STRATEGY must be dspark, balanced or dflash2, not '$STRATEGY'" >&2; exit 2 ;;
 esac
 
 # One server at a time: the native SGLang service, a llama.cpp server or
@@ -95,8 +105,18 @@ docker_args=(
   -v "$MODEL_DIR:$MODEL_DIR$([ "$MODEL_RO" = 1 ] && echo :ro)"
   -v "$CACHE_DIR/cache:/root/.cache"
   -v "$CACHE_DIR/triton:/root/.triton"
-  --entrypoint sglang
 )
+if [ "$STRATEGY" = dflash2 ]; then
+  # The draft read-only beside the model, and the patch applied in the
+  # container (its changes go with it, --rm) before sglang starts.
+  docker_args+=(
+    -v "$DRAFT_DIR:$DRAFT_DIR:ro"
+    -v "$INKLING_ROOT/patches:/gb10-patches:ro"
+    --entrypoint bash
+  )
+else
+  docker_args+=(--entrypoint sglang)
+fi
 [ -t 0 ] && [ -t 1 ] && docker_args+=(-it)
 for e in "${envs[@]}"; do docker_args+=(-e "$e"); done
 
@@ -116,6 +136,8 @@ args=(
   --host "$HOST" --port "$PORT"
 )
 [ "$STRATEGY" = dspark ] && args+=(--speculative-algorithm DSPARK --speculative-num-draft-tokens "$DRAFT_TOKENS")
+[ "$STRATEGY" = dflash2 ] && args+=(--speculative-algorithm DFLASH --speculative-draft-model-path "$DRAFT_DIR"
+  --speculative-num-draft-tokens "$DRAFT_TOKENS" --speculative-draft-attention-backend fa4)
 [ "$MULTIMODAL" = 1 ] && args+=(--enable-multimodal)
 [ -n "$REASONING_PARSER" ] && args+=(--reasoning-parser "$REASONING_PARSER")
 [ -n "$TOOL_CALL_PARSER" ] && args+=(--tool-call-parser "$TOOL_CALL_PARSER")
@@ -127,9 +149,14 @@ args=(
 
 echo "image   $ref"
 echo "model   $MODEL_DIR (revision $(head -1 "$MODEL_DIR/.cache/huggingface/download/config.json.metadata" 2>/dev/null || echo unknown))"
-echo "serve   $STRATEGY$([ "$STRATEGY" = dspark ] && echo " ($DRAFT_TOKENS draft tokens)"), mem $MEM_FRACTION," \
+echo "serve   $STRATEGY$([ "$STRATEGY" != balanced ] && echo " ($DRAFT_TOKENS draft tokens)"), mem $MEM_FRACTION," \
   "ctx ${CONTEXT_LENGTH:-model default}, running ${MAX_RUNNING:-SGLang default}, images $([ "$MULTIMODAL" = 1 ] && echo on || echo off)"
 echo "listen  http://$HOST:$PORT/v1 as \"$SERVED_MODEL_NAME\""
 [ -n "$mem_line" ] && echo "${mem_line#\[*\] }"
+[ "$STRATEGY" = dflash2 ] && echo "draft   $DRAFT_DIR, patch patches/sglang_inkling_dflash2.py"
 echo
+if [ "$STRATEGY" = dflash2 ]; then
+  exec docker run "${docker_args[@]}" "$ref" -c \
+    'python3 /gb10-patches/sglang_inkling_dflash2.py >/dev/null && exec sglang "$@"' bash "${args[@]}"
+fi
 exec docker run "${docker_args[@]}" "$ref" "${args[@]}"

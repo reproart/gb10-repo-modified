@@ -252,3 +252,42 @@ Notes: the container runs as root, so
 `~/.cache/gb10-vllm-inkling` (compile caches, kept between runs) ends up
 root-owned; the weights are mounted read-only (`MODEL_RO=0` if the loader
 wants to write beside them).
+
+## Uncensored weights (OpenUncensored LoRA, merged)
+
+[OpenUncensored/Inkling-2-Mini-Uncensored-LoRA](https://huggingface.co/OpenUncensored/Inkling-2-Mini-Uncensored-LoRA)
+is an abliteration as a rank-2 LoRA on `attn.wo_ud` of layers 4-23 (20 BF16
+tensors; experts, vision and MTP untouched; Apache-2.0). This checkpoint keeps
+`wo_ud` in BF16 ([2304, 3072]), so its `merge_adapter.py` applies unchanged:
+
+```bash
+docker run --rm --entrypoint python3 -v /models:/models <any image with torch> -I \
+  /models/Inkling-2-Mini-Uncensored-LoRA/merge_adapter.py \
+  --base /models/thinkingmachines/Inkling-2-Mini \
+  --adapter /models/Inkling-2-Mini-Uncensored-LoRA \
+  --out /models/OpenUncensored/Inkling-2-Mini-Uncensored
+cp -r /models/thinkingmachines/Inkling-2-Mini/tiktoken /models/OpenUncensored/Inkling-2-Mini-Uncensored/
+```
+
+(the script copies files only, so `tiktoken/` by hand; files come out root-owned).
+24 s here. Checked: of 1,244 tensors only the 20 `wo_ud` differ, each by 7-12% of
+its norm and within one BF16 step of `W + B·A` (max 1.5e-3); `mtp.safetensors`
+and every other file byte for byte the same. Serve with
+`MODEL_DIR=/models/OpenUncensored/Inkling-2-Mini-Uncensored ./serve.sh`
+(here or in `../sglang-inkling/`).
+
+2026-11-28, one session with the base model, effort `none`, temperature 0:
+
+| | base | uncensored |
+|---|---:|---:|
+| Decode, code prompt | 55.3 tok/s, 3.48 a step | 61.9, 3.67 a step (different text) |
+| Decode, Russian prose | 21.6 | 22.6 |
+| Aggregate at 32 streams | 376.8 | 356.5 |
+| Prefill 32K / 101K | 2,417 / 2,349 | 2,530 / 2,149 |
+| HumanEval, 4096 tokens | 158/164 (2026-11-21) | 158/164 (5 truncated, 1 wrong) |
+
+Six borderline prompts (SQL injection, lock picking, a training phishing email,
+chemicals not to mix, a roast, a paywall): the base model sanitised the lock and
+phishing answers and refused the paywall; the uncensored one answered all three
+(the paywall with legal ways only). The chemicals prompt looped in its
+reasoning to the 700-token cap on both models (temperature 0), not a refusal.

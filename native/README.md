@@ -918,9 +918,12 @@ answers against the RadixArk build. Unmeasured.
 effective with three loop passes, text and images, ~18 GiB with its bundled
 DSpark draft) in LMSYS's `lmsysorg/sglang:inkling-2-mini` image, pinned by
 digest in `image.lock`: support is still an open SGLang PR (#51926), so no
-release venv loads it. The SGLang cookbook's two DGX Spark recipes (DSpark
-with 8 draft tokens, the default, or plain decode) as knobs, on :8888.
-Measured: 54 tok/s, 421 at 48 streams; once a release carries the model it
+release venv loads it. Default since 2026-11-28: incoai's separate DFlash2
+draft (`incoai/Inkling-2-Mini-DFlash2`, ~1 GB) with its SGLang patch, vendored
+in `patches/`: 74.5 tok/s on code, 39.2 on prose, 565 at 32 streams,
+HumanEval 159/164 (vLLM's DSpark, same session: 55.3 / 21.6 / 377). The
+cookbook's two DGX Spark recipes (DSpark with 8 draft tokens, or plain
+decode) stay as `STRATEGY=`, on :8888. Once a release carries the model it
 becomes a `models/` profile.
 
 ## Inkling-2-Mini on vLLM's container: `vllm-inkling/`
