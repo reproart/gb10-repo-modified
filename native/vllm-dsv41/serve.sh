@@ -22,11 +22,11 @@ ref="$(image_ref)"
 # One server at a time: each wants port 8888 and most of the memory, on both nodes for the pair ones.
 pgrep -f "sglang.launch_server" >/dev/null 2>&1 && {
   echo "an SGLang server is running: stop it first (sudo systemctl stop gb10-sglang, or Ctrl-C it)" >&2; exit 1; }
-for c in gb10-vllm-ling gb10-vllm-inkling gb10-sglang-inkling gb10-vllm-b12x tfv41-r0 glm53-flash-tf qwen38-flash qwen38-flash-v034; do
+for c in gb10-vllm-ernie gb10-vllm-ling gb10-vllm-inkling gb10-sglang-inkling gb10-vllm-b12x tfv41-r0 glm53-flash-tf qwen38-flash qwen38-flash-v034; do
   docker ps --format '{{.Names}}' | grep -qx "$c" && { echo "container $c runs: stop it first" >&2; exit 1; }
 done
-wssh "docker ps --format '{{.Names}}'" | grep -qx tfv41-r1 && {
-  echo "tfv41-r1 runs on the worker: ../tensorfold-dsv41/stop.sh first" >&2; exit 1; }
+wssh "docker ps --format '{{.Names}}'" | grep -qx -E 'tfv41-r1|gb10-vllm-ernie' && {
+  echo "a pair server (tfv41-r1 or gb10-vllm-ernie) runs on the worker: stop it first" >&2; exit 1; }
 [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models" 2>/dev/null)" = 000 ] || {
   echo "something already serves :$PORT" >&2; exit 1; }
 

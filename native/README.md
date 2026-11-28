@@ -311,7 +311,7 @@ a model server's CUDA allocations, in nobody's RSS) and the process list who.
 run lost its engine to earlyoom with 1015 MiB available and 6 GiB of swap in
 use; nothing else was running that anyone knew of.
 
-Every server here (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-ling/`, `vllm-flash-ar/`, `tensorfold-dsv41/`,
+Every server here (`./serve.sh`, `vllm-b12x/`, `sglang-inkling/`, `vllm-inkling/`, `vllm-ling/`, `vllm-ernie/`, `vllm-flash-ar/`, `tensorfold-dsv41/`,
 `vllm-dsv41/`, `tensorfold-glm53/`, `llamacpp/`) now runs `mem-prep.sh prep`
 before it starts, on both nodes for the pairs: with the GPU idle, it drops
 the page cache and compacts free memory, and prints a line with how much is
@@ -330,7 +330,7 @@ on it. It is a one-off before a start: `vm.compaction_proactiveness=0`
 (background compaction while serving) stays.
 
 The downloads, image pulls and copies (`tensorfold-dsv41/download.sh` and
-`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`, `sglang-inkling/pull.sh`, `vllm-inkling/pull.sh`, `vllm-ling/pull.sh`,
+`build.sh`, `vllm-dsv41/pull.sh`, `vllm-b12x/pull.sh`, `sglang-inkling/pull.sh`, `vllm-inkling/pull.sh`, `vllm-ling/pull.sh`, `vllm-ernie/build.sh`,
 `vllm-flash-ar/build.sh`, `download.sh` and `prepare.sh`,
 `tensorfold-glm53/setup.sh`, `./serve.sh install`, `llamacpp/build.sh`)
 refuse while anything runs on a GPU of a node they touch: their Spark
@@ -940,6 +940,16 @@ puts the two recipes and their measurements side by side.
 NVFP4 W4A16 experts, ~73 GiB) in a vLLM nightly container pinned in
 `image.lock`, with the card's command as knobs, on :8888. Measured: 22.7
 tok/s plain and 42.3 with MTP, HumanEval 93.9% without thinking, 98.2% with.
+
+## ERNIE 5.5 Flash Preview on two Sparks: `vllm-ernie/`
+
+[`vllm-ernie/`](vllm-ernie/README.md) serves ERNIE-5.5-Flash-Preview (280B
+MoE, 14B active, MXFP4 + FP8, DSpark, 1M context, 154.5 GiB) TP=2 + EP=2 across
+two Sparks on vLLM 0.32.0 + Baidu's vLLM-ERNIE, in an image built here with
+every source pinned: with jjang-ai's ernie-5.5-dgx-spark runtime and its
+launcher (`PROFILE=spark`) or as released (`PROFILE=stock`). DealignAI's
+abliterated weights by default, Baidu's official ones with `WEIGHTS=baidu`.
+Not run here yet.
 
 ## Flash-Next as Intel's AutoRound int4 on vLLM: `vllm-flash-ar/`
 

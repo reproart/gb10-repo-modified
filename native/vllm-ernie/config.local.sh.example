@@ -1,0 +1,15 @@
+# shellcheck shell=bash disable=SC2034
+# Values of your pair that differ from ../tensorfold-dsv41/config.local.sh (read too, after this
+# file). Copy and edit:  cp config.local.sh.example config.local.sh   (not committed)
+# Keep the NAME="${NAME:-value}" form, so the shell still wins.
+
+# HEAD_IP="${HEAD_IP:-10.100.80.1}"
+# WORKER_IP="${WORKER_IP:-10.100.80.2}"
+# WORKER_SSH="${WORKER_SSH:-10.100.80.2}"
+# FAB_IF="${FAB_IF:-enp1s0f1np1}"
+# Where the weights are, if not under /models (the same path on both nodes):
+# MODEL_DIR="${MODEL_DIR:-/media/andrew/5tb_pass/dealignai/ERNIE-5.5-Flash-Preview-UNCENSORED-MXFP4}"
+# sparknet, once the maps are known (ibdev2netdev, ip -br addr on both nodes):
+# SPARKNET="${SPARKNET:-1}"
+# SPARKNET_PEER_HCAS="${SPARKNET_PEER_HCAS:-{\"1\":[\"rocep1s0f1\"]}}"
+# SPARKNET_SUBNETS="${SPARKNET_SUBNETS:-{\"rocep1s0f1\":\"10.100.80.0/24\"}}"
